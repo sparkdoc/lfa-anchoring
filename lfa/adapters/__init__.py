@@ -144,7 +144,13 @@ def effective_weight(module: nn.Module) -> torch.Tensor:
     not already merged into the base weight -- a merged adapter's delta is in
     ``module.weight`` already, and adding it again would double-count it. Under
     ``disable_adapter()`` the base weight alone is returned, matching the forward pass
-    (PEFT's ``active_adapters`` does not itself reflect that flag).
+    (PEFT's ``active_adapters`` does not itself reflect that flag). Only ``active_adapters``
+    contribute: a second adapter that is loaded but inactive is excluded, again matching the
+    forward pass.
+
+    The result is promoted to the wider of the base and adapter dtypes -- a bf16 base carrying
+    fp32 LoRA factors returns fp32 -- so a caller comparing it against a bf16 teacher weight
+    must not assume the model dtype.
 
     The LoRA result stays connected to the autograd graph, so a caller may
     differentiate through it.
