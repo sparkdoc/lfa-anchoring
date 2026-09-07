@@ -839,11 +839,13 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     from lfa import __version__ as lfa_version
+    from lfa.workspace import code_identity
 
     # Provenance of the TRAINING, not of this process: a kept run re-scored later is scored by a
     # newer HEAD, and stamping the record with that HEAD is how a curve came to carry a commit it
     # was not trained under. `implementation` is written by `Workspace.train` at train time.
     implementation = entry.get("implementation") or {}
+    scoring_code = code_identity()
     results = {
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "lfa_version": lfa_version,
@@ -852,7 +854,13 @@ def main(argv: list[str] | None = None) -> int:
         "companion_commit_is": ("the revision the stage was trained under" if implementation
                                 else "unknown: the run recorded no implementation identity"),
         "scoring_process_commit": _git_revision(Path(__file__).resolve().parents[2]),
-        "reused_run_code_change_allowed": bool(args.allow_code_change),
+        "scoring_process_code_digest": scoring_code["code_digest"],
+        # Not a bare flag: when the override fires, the record has to name WHICH implementations
+        # were waved through, or "allowed" says that something was permitted without saying what.
+        "reused_run_code_change_allowed": (
+            {"trained_by": implementation.get("code_digest") or "unrecorded",
+             "scored_by": scoring_code["code_digest"]}
+            if args.allow_code_change else False),
         "research": str(inputs["research"]),
         "research_revision": _git_revision(inputs["research"]),
         "device": args.device,

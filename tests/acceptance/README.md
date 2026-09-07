@@ -128,9 +128,14 @@ committed **verbatim, as the harness wrote them** — absolute paths and all: th
 one run on one machine, and tidying a record is how a record stops being one. They are pruned from
 the sdist (`MANIFEST.in`), so they travel in git only.
 
-One thing to know when reading that particular file: its `companion_commit` (`8e7ef3ce…`) is the
-HEAD of the **scoring** process, not of the training — the stage was trained at 16:13 and scored at
-17:57, and the harness stamped the commit at write time. That is the defect the implementation
+Two things to know when reading that particular file, both of which are it being older than the
+text around it. Its two instrument rows are recorded under the **old** contract — `"kind":
+"sanity"`, a 2 % / 1.0 pp band, `"ok": true` (`results.json:522,531`) — because the run predates
+the change to reported rows described above, and it carries none of the provenance fields
+(`companion_code_digest`, `scoring_process_commit`) for the same reason. The numbers in it are
+unaffected: what changed is what the harness asserts about them, not what it measured. And its
+`companion_commit` (`8e7ef3ce…`) is the HEAD of the **scoring** process, not of the training — the
+stage was trained at 16:13 and scored at 17:57, and the harness stamped the commit at write time. That is the defect the implementation
 digest above now closes; the run's numbers were checked by hand afterwards and stand (the two
 training-path commits in that window are inert under `freeze_embed: true`), but the harness did not
 establish it and could not have. A record made from this commit on carries `companion_commit` and

@@ -625,21 +625,35 @@ class Workspace:
         allowed: the trainer restores that run's epoch counter, history and optimizer moments and
         continues it rather than starting over.
 
+        What counts as a run is what a run LEAVES BEHIND -- a curve, a checkpoint, or saved
+        optimizer state -- and deliberately not ``config.json``, which :func:`lfa.train.train`
+        writes before the first epoch. A start that was interrupted in its first epoch leaves the
+        config and nothing else; there is nothing there to protect, nothing to resume from
+        (:func:`lfa.train._load_training_state` raises without a ``training_state.pt``), and a
+        refusal would leave the user unable to simply run the command again.
+
         Raises:
             FileExistsError: the directory already holds a run and this is not a resume of it.
         """
         if resume:
             return
-        existing = [name for name in ("config.json", "training_history.json", "final_model",
-                                      "training_state.pt")
+        # `config.json` is not in this list, on purpose: see the docstring.
+        existing = [name for name in ("training_history.json", "final_model", "training_state.pt")
                     if (output_dir / name).exists()]
-        if existing:
-            raise FileExistsError(
-                f"{output_dir} already holds a training run ({', '.join(existing)}), and this "
-                "call would write over it -- its config, its curve and its checkpoint. Name the "
-                "run differently (`output_name=`, or the chain spec's `name:`), or pass "
-                "resume=True to continue the run that is there."
-            )
+        if not existing:
+            if (output_dir / "config.json").exists():
+                logger.info("%s holds a config from an interrupted start and nothing else; "
+                            "starting over in it", output_dir)
+            return
+        raise FileExistsError(
+            f"{output_dir} already holds a training run ({', '.join(existing)}), and this call "
+            "would write over it -- its config, its curve and its checkpoint. Either name this "
+            "run differently (`output_name=`, or the chain spec's `name:`), or delete that "
+            "directory if you meant to redo it"
+            + (", or pass resume=True to continue the run that is there."
+               if (output_dir / "training_state.pt").exists()
+               else " (resume=True cannot help: there is no training_state.pt to continue from).")
+        )
 
     def _run_name(self, stage: int, repeat: bool, resume: bool) -> str:
         """The default run directory for this stage.

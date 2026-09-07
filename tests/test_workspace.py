@@ -482,8 +482,13 @@ def test_an_explicit_run_name_will_not_write_over_the_run_already_there(tmp_path
     first = ws.train(corpus_a, recipe=tiny_recipe(base_dir), output_name="dup", device="cpu")
     curve = (Path(first["output_dir"]) / "training_history.json").read_text()
 
-    with pytest.raises(FileExistsError, match="dup"):
+    with pytest.raises(FileExistsError, match="dup") as refusal:
         ws.train(corpus_a, recipe=tiny_recipe(base_dir), output_name="dup", device="cpu")
+
+    # Every remedy the message names has to be one that works: this run saved a training state,
+    # so resume does; deleting the directory always does.
+    assert "delete that directory" in str(refusal.value)
+    assert "resume=True to continue" in str(refusal.value)
 
     assert len(ws.history) == 1                              # nothing was appended
     assert (Path(first["output_dir"]) / "training_history.json").read_text() == curve
@@ -494,6 +499,42 @@ def test_an_explicit_run_name_will_not_write_over_the_run_already_there(tmp_path
     resumed = ws.train(corpus_a, recipe=tiny_recipe(base_dir), output_name="dup", epochs=2,
                        resume=True, device="cpu")
     assert resumed["output_dir"] == first["output_dir"] and len(ws.history) == 2
+
+
+def test_a_start_interrupted_before_its_first_epoch_can_simply_be_run_again(tmp_path, registry,
+                                                                             base_dir, corpus_a):
+    """`lfa.train.train` writes `config.json` before epoch 1, so a run killed in its first epoch
+    leaves a config and nothing else. That is not a run to protect: there is no curve, no
+    checkpoint and no optimizer state, `resume=True` would raise `FileNotFoundError` on the
+    missing `training_state.pt`, and refusing would leave the user unable to run the command
+    again.
+    """
+    ws = new_workspace(tmp_path, base_dir)
+    run_dir = ws.path / "runs" / "attempt"
+    run_dir.mkdir(parents=True)
+    (run_dir / "config.json").write_text('{"num_epochs": 1}')
+
+    entry = ws.train(corpus_a, recipe=tiny_recipe(base_dir), output_name="attempt", device="cpu")
+
+    assert entry["output_dir"] == str(run_dir)
+    assert (run_dir / "training_history.json").is_file()
+    assert (run_dir / "final_model").is_dir()
+    assert len(ws.history) == 1
+
+
+def test_a_half_written_run_with_no_state_is_refused_without_offering_resume(tmp_path, registry,
+                                                                            base_dir, corpus_a):
+    """A directory that got as far as a checkpoint but has no `training_state.pt` is protected --
+    and the message must not send the user to a resume that cannot work."""
+    ws = new_workspace(tmp_path, base_dir)
+    run_dir = ws.path / "runs" / "partial"
+    (run_dir / "final_model").mkdir(parents=True)
+
+    with pytest.raises(FileExistsError, match="final_model") as refusal:
+        ws.train(corpus_a, recipe=tiny_recipe(base_dir), output_name="partial", device="cpu")
+
+    assert "delete that directory" in str(refusal.value)
+    assert "resume=True cannot help" in str(refusal.value)
 
 
 def test_a_chain_spec_that_names_two_domains_alike_is_refused_before_anything_trains(

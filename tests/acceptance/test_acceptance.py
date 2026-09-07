@@ -270,7 +270,7 @@ def test_the_measured_agreement_of_the_real_run_clears_the_curve_tolerances():
     assert held["ok"] and held["measured"] == pytest.approx(0.0105, abs=0.001)
 
 
-# --- the sanity checks ------------------------------------------------------------------------
+# --- the instrument rows, reported and unasserted --------------------------------------------
 
 @pytest.mark.parametrize("domain, seed, deviations", [
     # 3 % over the reference's domain perplexity, and no WikiText-2 gap.
