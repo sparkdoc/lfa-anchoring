@@ -52,9 +52,10 @@ class ChunkedCorpus(Dataset):
             chunk (``<= max_length`` tokens) ignores the epoch offset and is therefore present in
             EVERY epoch. ``False`` is the the research code research default, under which the offset loop
             ``range(offset, len(doc), stride)`` yields no chunk at all for a document shorter than
-            the epoch's offset — short documents drop out of most epochs. That behaviour is kept
-            available (and reproducible) because the published results were produced under it and
-            arms compared against them must match it; new work should keep the default.
+            the epoch's offset — short documents drop out of most epochs. ``False`` is offered
+            only so a run can be matched deliberately to a corpus chunked that way; nothing in
+            this package sets it, and it is a frame field (:mod:`lfa.workspace`), so perplexities
+            are not comparable across the two settings.
 
     Attributes:
         report: counts for the *current* chunking, refreshed on construction and on every

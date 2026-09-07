@@ -24,9 +24,10 @@ documents). Two levels are involved, and they carry different numbers:
   defaults of :func:`prepare_seed_corpus`. The pretraining target is a per-source *cap* of
   ``n/6`` = 2,000 (:func:`allocate`), applied before any filtering; a source with fewer rows
   within reach of the scan simply comes up short.
-* the **realized corpus** -- 9,663 pretraining documents and 966 instruction pairs, after arXiv
-  and GitHub exhaust below their cap and the 10:1 mix trims the instruction side
-  (:func:`weighted_mix`). This is :data:`SHIPPED_COMPOSITION`::
+* the **realized corpus** -- 9,663 pretraining documents and 966 instruction pairs, after two
+  pretraining sources land below their cap and the 10:1 mix trims the instruction side
+  (:func:`weighted_mix`). This is :data:`SHIPPED_COMPOSITION`, a RECORD of what the February
+  2026 datasets yielded, not a target a rebuild must hit::
 
     pretraining (9,663 documents)        instruction (966 pairs)
       redpajama_stackexchange  2,000         dolly          203
@@ -37,8 +38,11 @@ documents). Two levels are involved, and they carry different numbers:
       redpajama_github           147
 
 GitHub is far short of its 2,000 cap because GitHub entries are sparse in the head of the
-RedPajama sample the scan reaches (see :func:`download_pretraining`); arXiv falls short for the
-same reason. The instruction side is cut from ~20,000 available pairs to the 966 the 10:1 ratio
+RedPajama sample the scan reaches (see :func:`download_pretraining`). Why arXiv landed at 1,524
+is NOT established: a 2,000-row streaming spot-check in September 2026 found the head of that
+split roughly three-quarters arXiv, so scarcity cannot be the explanation there. Treat both
+counts as a record of the corpus that was built, and expect a rebuild to drift as the upstream
+sample moves. The instruction side is cut from ~20,000 available pairs to the 966 the 10:1 ratio
 allows, so its per-source counts are a uniform draw from the pool rather than a cap. A rebuild
 will not reproduce the shipped corpus byte for byte -- the upstream datasets move, and the
 sampling RNG is this module's own -- but it reproduces its *composition*, which is what p(h)
@@ -458,8 +462,9 @@ def prepare_seed_corpus(
 
     The defaults are the **download targets** that realize the shipped ``gmm1543k`` corpus:
     12,000 pretraining documents (a per-source cap of 2,000) and 20,000 instruction pairs. What
-    lands is smaller -- arXiv and GitHub exhaust below the cap, and the 10:1 mix then trims the
-    instruction side -- giving the shipped 9,663 + 966 of :data:`SHIPPED_COMPOSITION`. Read the
+    lands is smaller -- two pretraining sources came up below the cap, and the 10:1 mix then
+    trims the instruction side -- giving the shipped 9,663 + 966 of
+    :data:`SHIPPED_COMPOSITION`, which is a record rather than a target. Read the
     realized per-source counts off the ``.stats.json`` sidecar written beside the corpus, not off
     the targets.
 
