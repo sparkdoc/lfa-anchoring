@@ -266,8 +266,9 @@ class Workspace:
                 against -- so naming it here stops a recipe warning that lambda was calibrated
                 against a different artifact when it was calibrated against exactly this one. It
                 is taken on the caller's word (the file is not digest-checked against the
-                registry), so name it only for a file you know the provenance of; it is ignored
-                when ``artifact`` is itself a registry id.
+                registry), so name it only for a file you know the provenance of. Passing it
+                beside an ``artifact`` that is itself a registry id is accepted when the two agree
+                and refused when they disagree -- a conflicting pair is a mistake, not a choice.
 
         Raises:
             FileExistsError: ``path`` already holds a workspace.
@@ -286,6 +287,14 @@ class Workspace:
         # artifact must not shadow the published artifact, which is the one the recipe's lambda
         # was calibrated against.
         if artifact in ARTIFACTS:
+            if artifact_id is not None and artifact_id != artifact:
+                # More likely a mistake than an intention, and silently keeping `artifact` would
+                # record a provenance the caller did not ask for.
+                raise ValueError(
+                    f"artifact={artifact!r} is itself a published artifact id, but artifact_id="
+                    f"{artifact_id!r} names a different one. Pass artifact_id only for a local "
+                    "artifact FILE that is a copy of a published artifact."
+                )
             artifact_id, source = artifact, None
         elif Path(artifact).exists():
             source = Path(artifact)
@@ -583,8 +592,13 @@ class Workspace:
                                            max_length=config.sequence_length,
                                            val_fraction=config.val_fraction, seed=config.seed,
                                            keep_short_whole=config.keep_short_whole)
+            # Documents AND chunks: the document counts say how the split fell, the chunk counts
+            # say what the loader made of it, and only the second is comparable with another
+            # implementation's loader (the research code logs exactly these two numbers per run).
             counts = {"n_train_docs": dataset.report["n_docs"],
-                      "n_val_docs": holdout.report["n_docs"] if holdout is not None else 0}
+                      "n_val_docs": holdout.report["n_docs"] if holdout is not None else 0,
+                      "n_train_chunks": dataset.report["n_chunks"],
+                      "n_val_chunks": holdout.report["n_chunks"] if holdout is not None else 0}
 
             training = run_training(teacher, student, dataset, sampler, adapter, config,
                                     output_dir, resume=resume, tokenizer=tokenizer,

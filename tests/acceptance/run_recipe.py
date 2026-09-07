@@ -49,6 +49,7 @@ import importlib.util
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import time
@@ -110,6 +111,10 @@ FRAME_FIELDS = {
 
 class MissingInput(RuntimeError):
     """A required read-only input is not on this machine (the test turns this into a skip)."""
+
+
+class FrameMismatch(RuntimeError):
+    """The reference run and the companion run are not the same configuration."""
 
 
 class ReusedRunDiffers(RuntimeError):
@@ -252,16 +257,16 @@ def _refuse_a_different_run(entry: dict, recipe, corpus: Path, keep_short_whole:
         "val_fraction": recipe.val_fraction,
         "recipe_digest": _digest(dataclasses.asdict(recipe)),
     }
-    found = {
+    on_disk = {
         "corpus": entry["corpus"],
         "keep_short_whole": entry["keep_short_whole"],
         "val_fraction": entry["val_fraction"],
         "recipe_digest": _digest(entry["recipe"]),
     }
-    moved = {key: (found[key], value) for key, value in asked.items() if found[key] != value}
+    moved = {key: (on_disk[key], value) for key, value in asked.items() if on_disk[key] != value}
     if moved:
-        detail = "; ".join(f"{key}: on disk {found!r}, asked for {want!r}"
-                           for key, (found, want) in moved.items())
+        detail = "; ".join(f"{key}: on disk {have!r}, asked for {want!r}"
+                           for key, (have, want) in moved.items())
         raise ReusedRunDiffers(
             f"the run already in this output directory was made under a different frame -- "
             f"{detail}. Re-scoring it would report numbers for a configuration nobody asked for. "
@@ -352,10 +357,115 @@ def content_curve(history: list[dict]) -> list[float]:
     return [float(record["loss_content"]) for record in history]
 
 
+def optimizer_steps(history: list[dict]) -> list[int]:
+    """Per-epoch cumulative optimizer step, in epoch order. Both repos write ``global_step``.
+
+    This is the deterministic backbone of the comparison. The number of optimizer steps an epoch
+    takes is a function of the document set, the split, the chunker, the epoch's chunk offset, the
+    batch size and the accumulation window -- so fifteen integers agreeing exactly say that all of
+    those agree, in one comparison that no amount of floating-point drift can blur. It is also
+    what turns the learning rate into an assertion rather than a hand check: the schedule is a
+    deterministic function of the step.
+    """
+    return [int(record["global_step"]) for record in history]
+
+
+def held_out_curve(history: list[dict]) -> list[float]:
+    """Per-epoch held-out loss, in epoch order, from either repo's history.
+
+    the research code records it as ``eval.loss`` (``scripts/lra_run_experiment.py``'s
+    ``evaluate_holdout``); the companion records it as ``val_loss``
+    (:func:`lfa.train.validation_loss`). The two compute the same token-weighted cross-entropy
+    over the same held-out text, so the fifteen-point curves are directly comparable.
+    """
+    values = []
+    for record in history:
+        if "val_loss" in record:
+            values.append(float(record["val_loss"]))
+        elif isinstance(record.get("eval"), dict) and "loss" in record["eval"]:
+            values.append(float(record["eval"]["loss"]))
+    return values
+
+
+def held_out_tokens(history: list[dict]) -> list[int]:
+    """Per-epoch held-out token count, from either repo's history.
+
+    Exact equality of this integer is the assertion that the two runs held out the *same text*,
+    chunked the same way -- not merely the same number of documents.
+    """
+    counts = []
+    for record in history:
+        if "val_tokens" in record:
+            counts.append(int(record["val_tokens"]))
+        elif isinstance(record.get("eval"), dict) and "tokens" in record["eval"]:
+            counts.append(int(record["eval"]["tokens"]))
+    return counts
+
+
+#: the research code logs its chunk counts rather than recording them in JSON, so they are read back off
+#: the run's own log. Both lines are written by ``scripts/lra_run_experiment.py`` for every run.
+_REFERENCE_COUNT_LINES = {
+    "train_chunks": re.compile(r"Training examples:\s*(\d+)"),
+    "val_chunks": re.compile(r"Evaluation examples:\s*(\d+)"),
+}
+
+
+def reference_chunk_counts(log_path: Path) -> dict[str, int | None]:
+    """The reference run's training and held-out chunk counts, read from its log."""
+    text = Path(log_path).read_text(errors="replace")
+    found = {}
+    for key, pattern in _REFERENCE_COUNT_LINES.items():
+        match = pattern.search(text)
+        found[key] = int(match.group(1)) if match else None
+    return found
+
+
+def companion_chunk_counts(entry: dict) -> dict[str, int | None]:
+    """The companion run's chunk counts: recorded if the run recorded them, else rebuilt.
+
+    :meth:`lfa.workspace.Workspace.train` records ``n_train_chunks``/``n_val_chunks``. A run made
+    before it did is not left unchecked: the split is rebuilt from the frame the entry itself
+    records -- same corpus, seed, sequence length, held-out fraction and loader frame -- which is
+    deterministic, so it reproduces the counts the run used.
+    """
+    if entry.get("n_train_chunks") is not None:
+        return {"train_chunks": int(entry["n_train_chunks"]),
+                "val_chunks": int(entry.get("n_val_chunks") or 0)}
+
+    from lfa.corpus import load_corpus
+    from lfa.models import load_tokenizer
+
+    recipe = entry["recipe"]
+    frame = entry.get("keep_short_whole")
+    tokenizer = load_tokenizer(str(entry["base_model"]))
+    train, held_out = load_corpus(
+        entry["corpus"], tokenizer, max_length=recipe["sequence_length"],
+        val_fraction=float(entry["val_fraction"]), seed=recipe["seed"],
+        keep_short_whole=recipe["keep_short_whole"] if frame is None else bool(frame),
+    )
+    return {"train_chunks": len(train), "val_chunks": 0 if held_out is None else len(held_out)}
+
+
 def check_equivalence(companion: dict, reference: dict, base_seed_ppl: float | None,
-                      companion_curve: list[float], reference_curve: list[float],
-                      frame: list[dict], expected: dict | None = None) -> list[dict]:
-    """Compare the companion's run with the reference's, on the three axes that can differ.
+                      companion_history: list[dict], reference_history: list[dict],
+                      frame: list[dict], counts: dict, expected: dict | None = None) -> list[dict]:
+    """Compare the companion's run with the reference's, and say which comparison is the criterion.
+
+    The rows come in three kinds, and the distinction is the point:
+
+    ``frame``
+        The two runs are the same experiment at all. Nothing below means anything without it.
+    ``criterion``
+        The deterministic evidence: optimizer steps per epoch, the corpus counts, the training
+        curve and the held-out curve. These are what says the two implementations compute the same
+        thing. They are exact or near-exact because they are not resampled quantities.
+    ``sanity``
+        One draw each of an instrument, at the end. They are coarse end-to-end checks that the run
+        produced a domain-adapted model at all -- NOT the equivalence criterion. The anchor is a
+        Monte-Carlo term drawn from independent RNG streams on the two sides (the research code's sampler
+        uses torch's global generator, the companion's a private one), so two full runs are two
+        draws of a stochastic objective and their end perplexities differ by a seed-scale amount.
+        A failure here means *investigate* -- a second seed on each side -- not *regression*.
 
     Returns one row per axis: what was measured, what it had to be within, and whether it was. A
     missing measurement is a failure, not a skip -- it means an instrument produced no number.
@@ -365,9 +475,12 @@ def check_equivalence(companion: dict, reference: dict, base_seed_ppl: float | N
             against. Measured in this same run by :func:`score_with_companion`.
         frame: the output of :func:`frame_differences`; a non-empty list fails its own row,
             because two runs of different configurations are not evidence about either.
+        counts: ``{"companion": {...}, "reference": {...}}`` chunk counts, plus the companion's
+            document counts under ``"documents"`` for the record.
     """
     expected = expected or json.loads(EXPECTED_FILE.read_text())
     checks = [{
+        "kind": "frame",
         "name": "the two runs are the same configuration",
         "measured": len(frame),
         "detail": frame,
@@ -375,11 +488,77 @@ def check_equivalence(companion: dict, reference: dict, base_seed_ppl: float | N
         "ok": not frame,
     }]
 
+    # -- criterion 1: the optimizer steps themselves
+    ours, theirs = optimizer_steps(companion_history), optimizer_steps(reference_history)
+    mismatched = [{"epoch": i + 1, "companion": a, "reference": b}
+                  for i, (a, b) in enumerate(zip(ours, theirs)) if a != b]
+    checks.append({
+        "kind": "criterion",
+        "name": "optimizer steps per epoch",
+        "measured": len(mismatched),
+        "detail": {"companion": ours, "reference": theirs, "mismatched": mismatched},
+        "tolerance": f"exact equality on all {len(theirs)} epochs",
+        "ok": bool(theirs) and len(ours) == len(theirs) and not mismatched,
+    })
+
+    # -- criterion 2: the corpus the two runs actually saw
+    our_counts, their_counts = counts.get("companion", {}), counts.get("reference", {})
+    our_tokens = held_out_tokens(companion_history)
+    their_tokens = held_out_tokens(reference_history)
+    same_counts = [
+        our_counts.get("train_chunks") is not None
+        and our_counts.get("train_chunks") == their_counts.get("train_chunks"),
+        our_counts.get("val_chunks") is not None
+        and our_counts.get("val_chunks") == their_counts.get("val_chunks"),
+        # The held-out token count is one constant per run, so it is compared as a value rather
+        # than epoch by epoch: a run that stopped early should fail the step and curve rows, not
+        # this one, which is about the corpus.
+        bool(our_tokens) and bool(their_tokens) and set(our_tokens) == set(their_tokens),
+    ]
+    checks.append({
+        "kind": "criterion",
+        "name": "corpus: training chunks, held-out chunks, held-out tokens",
+        "measured": sum(1 for ok in same_counts if not ok),
+        "detail": {"companion": our_counts, "reference": their_counts,
+                   "documents": counts.get("documents"),
+                   "held_out_tokens": {"companion": sorted(set(our_tokens)),
+                                       "reference": sorted(set(their_tokens))}},
+        "tolerance": "exact equality on all three",
+        "ok": all(same_counts),
+    })
+
+    # -- criterion 3: the training curve, every epoch
+    checks.append(_curve_check(
+        kind="criterion",
+        name="content loss per epoch",
+        ours=content_curve(companion_history), theirs=content_curve(reference_history),
+        epochs=expected["content_curve"]["epochs"], tol_rel=expected["content_curve"]["tol_rel"],
+    ))
+
+    # -- criterion 4: the held-out curve, every epoch (absolute, in nats: it is a loss)
+    ours, theirs = held_out_curve(companion_history), held_out_curve(reference_history)
+    epochs = expected["held_out_curve"]["epochs"]
+    tol_nats = expected["held_out_curve"]["tol_abs_nats"]
+    pairs = list(zip(ours[:epochs], theirs[:epochs]))
+    per_epoch = [{"epoch": i + 1, "companion": a, "reference": b, "deviation_nats": abs(a - b)}
+                 for i, (a, b) in enumerate(pairs)]
+    worst = max((row["deviation_nats"] for row in per_epoch), default=None)
+    checks.append({
+        "kind": "criterion",
+        "name": f"held-out loss per epoch, 1-{epochs}",
+        "measured": worst,
+        "detail": per_epoch,
+        "tolerance": f"every epoch within {tol_nats:.3g} nats (all {epochs} epochs present)",
+        "ok": len(pairs) == epochs and worst is not None and worst <= tol_nats,
+    })
+
+    # -- sanity 1: the domain instrument, one draw
     domain_tol = expected["domain_ppl"]["tol_rel"]
     ours, theirs = companion["domain_direct_ppl"], reference["domain_direct_ppl"]
     relative = None if ours is None or not theirs else abs(ours - theirs) / theirs
     checks.append({
-        "name": "domain direct-QA perplexity vs the reference run",
+        "kind": "sanity",
+        "name": "SANITY (one draw, not the criterion): domain direct-QA perplexity",
         "measured": ours,
         "reference": theirs,
         "deviation": None if relative is None else relative * 100,
@@ -387,12 +566,14 @@ def check_equivalence(companion: dict, reference: dict, base_seed_ppl: float | N
         "ok": relative is not None and relative <= domain_tol,
     })
 
+    # -- sanity 2: the preservation instrument, one draw
     drift_tol = expected["seed_drift"]["tol_abs_pct"]
     our_drift = _drift(companion["seed_ppl"], base_seed_ppl)
     their_drift = _drift(reference["seed_ppl"], base_seed_ppl)
     gap = None if our_drift is None or their_drift is None else abs(our_drift - their_drift)
     checks.append({
-        "name": "WikiText-2 drift vs the reference run (base %s)" % (
+        "kind": "sanity",
+        "name": "SANITY (one draw, not the criterion): WikiText-2 drift vs base %s" % (
             "n/a" if base_seed_ppl is None else f"{base_seed_ppl:.2f}"),
         "measured": our_drift,
         "reference": their_drift,
@@ -401,23 +582,26 @@ def check_equivalence(companion: dict, reference: dict, base_seed_ppl: float | N
                      f"{'n/a' if their_drift is None else round(their_drift, 3)}",
         "ok": gap is not None and gap <= drift_tol,
     })
+    return checks
 
-    epochs = expected["content_curve"]["epochs"]
-    curve_tol = expected["content_curve"]["tol_rel"]
-    pairs = list(zip(companion_curve[:epochs], reference_curve[:epochs]))
-    per_epoch = [{"epoch": i + 1, "companion": ours, "reference": theirs,
-                  "deviation_pct": abs(ours - theirs) / theirs * 100 if theirs else None}
-                 for i, (ours, theirs) in enumerate(pairs)]
+
+def _curve_check(*, kind: str, name: str, ours: list[float], theirs: list[float], epochs: int,
+                 tol_rel: float) -> dict:
+    """One per-epoch relative-deviation row (used for the content curve)."""
+    pairs = list(zip(ours[:epochs], theirs[:epochs]))
+    per_epoch = [{"epoch": i + 1, "companion": a, "reference": b,
+                  "deviation_pct": abs(a - b) / b * 100 if b else None}
+                 for i, (a, b) in enumerate(pairs)]
     worst = max((row["deviation_pct"] for row in per_epoch if row["deviation_pct"] is not None),
                 default=None)
-    checks.append({
-        "name": f"content loss, epochs 1-{epochs}, vs the reference curve",
+    return {
+        "kind": kind,
+        "name": f"{name}, 1-{epochs}",
         "measured": worst,
         "detail": per_epoch,
-        "tolerance": f"every epoch within {curve_tol * 100:.3g}% (all {epochs} epochs present)",
-        "ok": len(pairs) == epochs and worst is not None and worst <= curve_tol * 100,
-    })
-    return checks
+        "tolerance": f"every epoch within {tol_rel * 100:.3g}% (all {epochs} epochs present)",
+        "ok": len(pairs) == epochs and worst is not None and worst <= tol_rel * 100,
+    }
 
 
 def _drift(perplexity: float | None, base: float | None) -> float | None:
@@ -428,6 +612,11 @@ def _drift(perplexity: float | None, base: float | None) -> float | None:
 
 
 def format_checks(checks: list[dict]) -> str:
+    """The checks as lines, with a failing frame row expanded field by field.
+
+    The expansion is selected on the row's ``kind``, not on its display name: renaming a check
+    should not silently drop the detail that makes its failure diagnosable.
+    """
     lines = []
     for check in checks:
         measured = check["measured"]
@@ -435,7 +624,7 @@ def format_checks(checks: list[dict]) -> str:
                                                 if isinstance(measured, float) else str(measured))
         lines.append(f"  [{'PASS' if check['ok'] else 'FAIL'}] {check['name']}: {shown} "
                      f"({check['tolerance']})")
-        if check["name"].startswith("the two runs") and check["detail"]:
+        if check.get("kind") == "frame":
             for difference in check["detail"]:
                 lines.append(f"        {difference['field']}: reference "
                              f"{difference['reference']!r} vs companion "
@@ -469,6 +658,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help=f"override the reference run (default <the research code>/{REFERENCE_REL})")
     parser.add_argument("--skip-research-scoring", action="store_true",
                         help="train and report the companion's own metrics only")
+    parser.add_argument("--allow-frame-mismatch", action="store_true",
+                        help="train and score even though the reference run is a different "
+                             "configuration; the difference is reported as a failing check")
     parser.add_argument("--strict", action="store_true",
                         help="exit non-zero when a measured number falls outside its tolerance")
     return parser
@@ -502,13 +694,22 @@ def main(argv: list[str] | None = None) -> int:
     reference_config = json.loads(inputs["reference_config"].read_text())
     reference_history = json.loads(inputs["reference_history"].read_text())
 
-    # The frame is checked against the config the recipe produces, before an hour of GPU time is
-    # spent on a comparison that could not have meant anything.
+    # Checked BEFORE anything is trained, and fatal: two hours of GPU time spent comparing two
+    # different experiments produces numbers, and numbers about nothing are worse than no numbers.
     frame = frame_differences(reference_config,
                               recipe.to_train_config(1, inputs["artifact"],
                                                      keep_short_whole=recipe.keep_short_whole))
+    if frame and not args.allow_frame_mismatch:
+        raise FrameMismatch(
+            "the reference run and this recipe are not the same configuration, so comparing them "
+            "would measure the difference rather than the implementations: "
+            + "; ".join(f"{d['field']} reference {d['reference']!r} vs companion "
+                        f"{d['companion']!r}" for d in frame)
+            + ". Fix the recipe or point --reference at a matching run; --allow-frame-mismatch "
+              "runs anyway and reports the difference as a failing check."
+        )
     if frame:
-        print("[warn] the reference run and this recipe differ on: "
+        print("[warn] --allow-frame-mismatch: the reference run and this recipe differ on: "
               + ", ".join(difference["field"] for difference in frame), file=sys.stderr)
 
     workspace, entry, wall_clock = train_stage(
@@ -526,6 +727,12 @@ def main(argv: list[str] | None = None) -> int:
                                          out / "scoring_reference", dict(os.environ))
     companion = score_with_companion(workspace, device=args.device)
 
+    counts = {
+        "companion": companion_chunk_counts(entry),
+        "reference": reference_chunk_counts(inputs["reference"] / "training.log"),
+        "documents": {"train": entry["n_train_docs"], "held_out": entry["n_val_docs"]},
+    }
+
     reference_record = {
         "run": str(inputs["reference"]),
         "checkpoint": str(inputs["reference_model"]),
@@ -534,6 +741,10 @@ def main(argv: list[str] | None = None) -> int:
         "domain_direct_ppl": None if reference is None else reference["domain_direct_ppl"],
         "seed_ppl": None if reference is None else reference["seed_ppl"],
         "content_curve": content_curve(reference_history),
+        "held_out_curve": held_out_curve(reference_history),
+        "optimizer_steps": optimizer_steps(reference_history),
+        "held_out_tokens": held_out_tokens(reference_history),
+        "chunk_counts": counts["reference"],
         "measured_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "instrument": None if reference is None else reference["results_file"],
     }
@@ -543,9 +754,10 @@ def main(argv: list[str] | None = None) -> int:
         companion=research or {"domain_direct_ppl": None, "seed_ppl": None},
         reference=reference or {"domain_direct_ppl": None, "seed_ppl": None},
         base_seed_ppl=companion["base_wikitext2_ppl"],
-        companion_curve=content_curve(companion_history),
-        reference_curve=reference_record["content_curve"],
+        companion_history=companion_history,
+        reference_history=reference_history,
         frame=frame,
+        counts=counts,
     )
 
     from lfa import __version__ as lfa_version
@@ -569,7 +781,11 @@ def main(argv: list[str] | None = None) -> int:
         "epochs": entry["epochs"],
         "checkpoint": entry["adapter"],
         "content_curve": content_curve(companion_history),
-        "val_curve": [record.get("val_perplexity") for record in companion_history],
+        "held_out_curve": held_out_curve(companion_history),
+        "optimizer_steps": optimizer_steps(companion_history),
+        "held_out_tokens": held_out_tokens(companion_history),
+        "chunk_counts": counts["companion"],
+        "val_perplexity_curve": [record.get("val_perplexity") for record in companion_history],
         "learning_rate_curve": [record["learning_rate"] for record in companion_history],
         "research_instrument": research,
         "reference": reference_record,

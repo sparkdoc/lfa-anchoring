@@ -556,8 +556,18 @@ def validation_loss(student: nn.Module, dataloader: DataLoader) -> dict[str, flo
 
     It leaves the training stream untouched, which is what makes it safe to add to a run whose
     numbers are being compared against another implementation: no gradients, no optimizer, and a
-    loader built with ``shuffle=False`` -- so it draws from no generator and consumes no RNG. The
-    student is put in ``eval()`` for the pass and restored to whatever mode it was in.
+    loader built with ``shuffle=False``, which therefore takes no generator. (A ``DataLoader`` with
+    ``generator=None`` still draws a ``_base_seed`` from torch's global CPU RNG once per epoch;
+    that is harmless here precisely because nothing in the training path reads the global stream --
+    the anchor sampler owns a private generator and LoRA dropout is 0.) The student is put in
+    ``eval()`` for the pass and restored to whatever mode it was in.
+
+    ``tokens`` counts label positions that are not ``-100``, which is one per sequence more than
+    the causal-LM loss averages over, since the labels are shifted inside the model. That is
+    deliberate parity with the research code's ``evaluate_holdout`` (``scripts/lra_run_experiment.py``),
+    which weights the same way: it is what makes the two implementations' held-out losses and
+    token counts the same quantity, and the equivalence harness compares both. Do not "fix" the
+    arithmetic without saying so there.
 
     Returns:
         ``{"loss": ..., "perplexity": ..., "tokens": ...}``; an empty split gives loss ``0.0``.
@@ -748,8 +758,11 @@ def train(
             pad_token_id = source.pad_token_id
             break
     dataloader = make_dataloader(dataset, config.batch_size, True, config.seed, pad_token_id)
-    # shuffle=False: the held-out pass takes no generator, so it draws no randomness and the
-    # training stream is bit-identical to a run without it.
+    # shuffle=False: the held-out pass takes no generator, and nothing in the training path reads
+    # the global RNG (the anchor sampler is seeded privately), so the training stream is
+    # bit-identical to a run without it -- which
+    # `test_the_held_out_pass_leaves_the_training_stream_untouched` asserts by comparing the two
+    # runs' adapters byte for byte.
     val_dataloader = (None if val_dataset is None else
                       make_dataloader(val_dataset, config.batch_size, False, config.seed,
                                       pad_token_id))
