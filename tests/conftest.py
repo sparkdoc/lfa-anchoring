@@ -1,4 +1,5 @@
 import copy
+from pathlib import Path
 
 import pytest, torch
 from transformers import LlamaConfig, LlamaForCausalLM, PreTrainedTokenizerFast
@@ -68,3 +69,75 @@ def tiny_artifact(tmp_path_factory):
     path = tmp_path_factory.mktemp("art") / "distribution_stats.pt"
     torch.save(params, path)
     return params, path
+
+
+# ============================================================================================
+# A workspace-sized setup: the tiny model as a checkpoint, a corpus, a recipe, and a registry
+# that serves the fixture artifact. Shared by `test_workspace.py` and `test_cli.py`, which
+# exercise the same state machine through two different front doors.
+# ============================================================================================
+
+@pytest.fixture(scope="module")
+def base_dir(tmp_path_factory, tiny_model):
+    """The tiny model as a checkpoint directory -- what a workspace's `model_id` points at."""
+    model, tokenizer = tiny_model
+    path = tmp_path_factory.mktemp("base_model")
+    model.save_pretrained(path)
+    tokenizer.save_pretrained(path)
+    return path
+
+
+def make_corpus(directory, word, n_docs=8):
+    """A handful of short documents about `word`, written into `directory`."""
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    for i in range(n_docs):
+        text = f"document {i} about {word}: anchoring the function of a sub-module " * 6
+        (directory / f"doc_{i}.txt").write_text(text, encoding="utf-8")
+    return directory
+
+
+@pytest.fixture(scope="module")
+def corpus_a(tmp_path_factory):
+    return make_corpus(tmp_path_factory.mktemp("domains") / "domain_a", "consciousness")
+
+
+@pytest.fixture(scope="module")
+def corpus_b(tmp_path_factory):
+    return make_corpus(tmp_path_factory.mktemp("domains") / "domain_b", "archaeology")
+
+
+def tiny_recipe(base_dir, **overrides):
+    """A one-epoch rank-2 operating point, calibrated (by declaration) at exactly this point."""
+    from lfa import Recipe
+
+    kwargs = dict(
+        name="tiny", model_id=str(base_dir), artifact="tiny",
+        lora_rank=2, lora_alpha=4, lambda_qkv=10.0, lambda_mlp=10.0, mu=0.05,
+        n_anchor_samples=4, epochs=1, schedule_horizon_epochs=1, checkpoint_mode="none",
+        learning_rate=1e-2, warmup_steps=1, batch_size=2, sequence_length=64, seed=0,
+        calibrated_rank=2, calibrated_artifact="tiny",
+    )
+    kwargs.update(overrides)
+    return Recipe(**kwargs)
+
+
+@pytest.fixture(scope="module")
+def registry(tiny_artifact):
+    """The "tiny" artifact, published in the registry and served by a local copy."""
+    import lfa.artifact.fetch as fetch_module
+    from lfa.artifact.fetch import ARTIFACTS, sha256_file
+
+    _, path = tiny_artifact
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setitem(ARTIFACTS, "tiny", {
+            "model_id": "tiny",
+            "url": "https://example.invalid/artifacts-v1/tiny.pt",
+            "sha256": sha256_file(path),
+            "n_samples_total": 1000,
+            "kind": "test fixture",
+            "size_mb": 1,
+        })
+        patch.setattr(fetch_module, "_download_with_requests",
+                      lambda url, dest: dest.write_bytes(path.read_bytes()))
+        yield ARTIFACTS["tiny"]

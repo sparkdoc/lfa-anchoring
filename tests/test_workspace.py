@@ -20,7 +20,6 @@ import torch
 import yaml
 from transformers import AutoModelForCausalLM
 
-import lfa.artifact.fetch as fetch_module
 import lfa.workspace as workspace_module
 from lfa import Recipe, Workspace
 from lfa.artifact.fetch import ARTIFACTS, sha256_file
@@ -32,69 +31,16 @@ from lfa.sampler import Sampler
 from lfa.train import EMBED_ANCHOR_DISABLED_NOTICE
 from lfa.workspace import StageOrderError
 
+from conftest import make_corpus, tiny_recipe
+
 NEED, K_DOMAIN = 400, 2
 
 
 # ------------------------------------------------------------------------------------ fixtures
-
-@pytest.fixture(scope="module")
-def base_dir(tmp_path_factory, tiny_model):
-    """The tiny model as a checkpoint directory -- what a workspace's `model_id` points at."""
-    model, tokenizer = tiny_model
-    path = tmp_path_factory.mktemp("base_model")
-    model.save_pretrained(path)
-    tokenizer.save_pretrained(path)
-    return path
-
-
-def _corpus(directory, word, n_docs=8):
-    directory.mkdir(parents=True, exist_ok=True)
-    for i in range(n_docs):
-        text = f"document {i} about {word}: anchoring the function of a sub-module " * 6
-        (directory / f"doc_{i}.txt").write_text(text, encoding="utf-8")
-    return directory
-
-
-@pytest.fixture(scope="module")
-def corpus_a(tmp_path_factory):
-    return _corpus(tmp_path_factory.mktemp("domains") / "domain_a", "consciousness")
-
-
-@pytest.fixture(scope="module")
-def corpus_b(tmp_path_factory):
-    return _corpus(tmp_path_factory.mktemp("domains") / "domain_b", "archaeology")
-
-
-def tiny_recipe(base_dir, **overrides) -> Recipe:
-    """A one-epoch rank-2 operating point, calibrated (by declaration) at exactly this point."""
-    kwargs = dict(
-        name="tiny", model_id=str(base_dir), artifact="tiny",
-        lora_rank=2, lora_alpha=4, lambda_qkv=10.0, lambda_mlp=10.0, mu=0.05,
-        n_anchor_samples=4, epochs=1, schedule_horizon_epochs=1, checkpoint_mode="none",
-        learning_rate=1e-2, warmup_steps=1, batch_size=2, sequence_length=64, seed=0,
-        calibrated_rank=2, calibrated_artifact="tiny",
-    )
-    kwargs.update(overrides)
-    return Recipe(**kwargs)
-
-
-@pytest.fixture(scope="module")
-def registry(tiny_artifact):
-    """The "tiny" artifact, published in the registry and served by a local copy."""
-    _, path = tiny_artifact
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setitem(ARTIFACTS, "tiny", {
-            "model_id": "tiny",
-            "url": "https://example.invalid/artifacts-v1/tiny.pt",
-            "sha256": sha256_file(path),
-            "n_samples_total": 1000,
-            "kind": "test fixture",
-            "size_mb": 1,
-        })
-        patch.setattr(fetch_module, "_download_with_requests",
-                      lambda url, dest: dest.write_bytes(path.read_bytes()))
-        yield ARTIFACTS["tiny"]
-
+#
+# `base_dir`, `corpus_a`, `corpus_b`, `registry` and the `tiny_recipe` helper live in
+# `tests/conftest.py`: `test_cli.py` drives the same state machine through the command line and
+# needs exactly the same setup.
 
 def new_workspace(path, base_dir, **overrides) -> Workspace:
     return Workspace.init(path, str(base_dir), artifact="tiny", **overrides)
@@ -672,7 +618,7 @@ def test_chain_resolves_a_relative_corpus_against_the_spec_file(tmp_path, regist
                                                                 corpus_a):
     ws = _chain_workspace(tmp_path, base_dir)
     spec_dir = tmp_path / "spec_dir"
-    _corpus(spec_dir / "alpha", "consciousness")
+    make_corpus(spec_dir / "alpha", "consciousness")
     spec = spec_dir / "domains.yaml"
     spec.write_text(yaml.safe_dump({"domains": [{"name": "alpha", "corpus": "alpha"}]}))
 
