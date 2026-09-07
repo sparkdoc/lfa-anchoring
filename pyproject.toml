@@ -9,7 +9,7 @@ description = "Layerwise Function Anchoring: preserve sub-module functions on sa
 readme = "README.md"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.11"
-dependencies = ["torch>=2.2", "transformers>=4.45,<5", "peft>=0.13,<1", "numpy>=1.24", "pyyaml>=6", "tqdm>=4.65", "datasets>=2.18", "requests>=2.31"]
+dependencies = ["torch>=2.2", "transformers>=4.45,<5", "peft>=0.18,<1", "numpy>=1.24", "pyyaml>=6", "tqdm>=4.65", "datasets>=2.18", "requests>=2.31"]
 
 [project.optional-dependencies]
 pdf = ["marker-pdf"]

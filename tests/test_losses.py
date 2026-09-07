@@ -29,9 +29,10 @@ def test_mu_fast_path_matches_general(tiny_model):
     for n, p in student.named_parameters():
         if "lora_B" in n:
             with torch.no_grad(): p.normal_(0, 0.1)
-    fast = lora_factored_weight_loss(model, student, ad, [1.0] * 2)
+    lw = compute_layer_weights(2, 0.1, "cosine")
+    fast = lora_factored_weight_loss(model, student, ad, lw)
     assert fast is not None
-    slow = weight_loss(model, student, ad, [1.0] * 2, force_general=True)
+    slow = weight_loss(model, student, ad, lw, force_general=True)
     assert torch.allclose(fast, slow, rtol=1e-3, atol=1e-6)
 
 def test_mu_fast_path_refused_when_base_differs(tiny_model):
@@ -40,3 +41,24 @@ def test_mu_fast_path_refused_when_base_differs(tiny_model):
     student = get_peft_model(copy.deepcopy(model), LoraConfig(r=2, lora_alpha=4, target_modules=ad.lora_target_modules()))
     with torch.no_grad(): student.base_model.model.model.layers[0].mlp.up_proj.weight.add_(1e-3)
     assert lora_factored_weight_loss(model, student, ad, [1.0] * 2) is None
+
+def test_lm_head_skip_when_site_absent(tiny_model, tiny_artifact, tmp_path, caplog, monkeypatch):
+    """An artifact without the head's site leaves the head unanchored, warning exactly once."""
+    import lfa.losses
+    monkeypatch.setattr(lfa.losses, "_warned_no_lm_head_site", False)
+    model, _ = tiny_model; params, _ = tiny_artifact; ad = get_adapter(model)
+    trimmed = {k: v for k, v in params.items() if k != "2_pre_lm_head"}
+    path = tmp_path / "no_head" / "distribution_stats.pt"
+    path.parent.mkdir()
+    torch.save(trimmed, path)
+    s = Sampler(path, device="cpu", seed=0)
+
+    student = copy.deepcopy(model)
+    with torch.no_grad(): student.model.layers[1].mlp.down_proj.weight.add_(0.05)
+    with caplog.at_level("WARNING", logger="lfa.losses"):
+        out = anchor_loss(model, student, s, ad, n_samples=4, include_embed=False)
+        assert out["lm_head"].item() == 0
+        assert sum("left unanchored" in r.message for r in caplog.records) == 1
+        caplog.clear()
+        anchor_loss(model, student, s, ad, n_samples=4, include_embed=False)
+        assert not caplog.records

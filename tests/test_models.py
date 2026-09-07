@@ -98,7 +98,7 @@ def test_single_device_dict_passes_through_but_a_split_one_is_refused():
 
 # --- path resolution and tokenizer ---------------------------------------------------------
 
-def test_model_path_is_untouched_when_online(tmp_path):
+def test_model_path_is_untouched_when_online():
     assert resolve_model_path("org/some-model", local_files_only=False) == "org/some-model"
 
 
@@ -149,6 +149,8 @@ def test_lora_trains_only_lora_parameters(lora_setup):
     names = trainable_names(peft_model)
     assert names, "LoRA wrapping left nothing to train"
     assert all("lora_" in name for name in names), names
+    cfg = peft_model.peft_config["default"]
+    assert (cfg.r, cfg.lora_alpha) == (2, 4)
 
 
 def test_lora_leaves_the_embedding_frozen(lora_setup):
