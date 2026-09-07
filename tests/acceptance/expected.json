@@ -1,0 +1,21 @@
+{
+  "_comment": [
+    "The published Layerwise Function Anchoring (LFA) operating point for Qwen3-0.6B on the",
+    "Chalmers corpus, epoch 15. Both numbers are the RESEARCH instrument's:",
+    "domain_ppl  = extract_domain_direct_ppl of the research code's eval_domain_perplexity.py over",
+    "              data/domain_perplexity_questions/chalmers/domain_perplexity_qa_direct_20260310_123856.jsonl",
+    "              (chat-formatted held-out Q&A -- NOT raw-prose held-out perplexity, a different",
+    "              quantity that is never comparable with this one).",
+    "seed_ppl    = compute_wikitext2_perplexity on the FULL WikiText-2 test split (window 2048,",
+    "              stride 512), i.e. the companion's wikitext2_perplexity(n_windows=0).",
+    "Source: docs/judge_search.csv rows gmm_r32_lam100000_f0.13 e15 (seed 42) and",
+    "s2_gmm_r32_lam100000_f0.13 e15 (seed 1337).",
+    "The tolerances cover three known sources of drift, none of which is a regression:",
+    "(1) the two-seed spread, 8.7625 (seed 42) / 8.8293 (seed 1337);",
+    "(2) the research code's mu fast path, mathematically exact but not bit-reproducing (expect ~8.77);",
+    "(3) the int8 p(h) artifact -- the paper's e15 run anchored on the fp16 gmm1543k, and int8",
+    "    is recorded at ~1.1-1.5 pp worse on seed preservation, tied on domain fit."
+  ],
+  "domain_ppl": {"ref": 8.76, "ref_seed2": 8.83, "tol_rel": 0.02},
+  "seed_ppl": {"ref": 16.36, "base": 18.18, "drift_pct_ref": -10.0, "tol_abs_pct": 1.5}
+}
