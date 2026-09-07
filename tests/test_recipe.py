@@ -24,6 +24,7 @@ SHIPPED = dict(
     epochs=15, schedule_horizon_epochs=100, checkpoint_mode="all", checkpoint_every=5,
     learning_rate=3e-4, batch_size=6, gradient_accumulation_steps=1,
     warmup_steps=50, weight_decay=0.01, sequence_length=512, seed=42, keep_short_whole=True,
+    val_fraction=0.1,
     stage2_lambda_multiplier=3.0, calibrated_rank=32,
     calibrated_artifact="qwen3-0.6b-gmm1543k-int8",
 )
@@ -228,3 +229,19 @@ def test_the_stage_two_multiplier_must_be_positive(tmp_path):
 def test_lora_rank_must_be_at_least_one(tmp_path):
     with pytest.raises(ValueError, match="lora_rank"):
         Recipe.load(_write(tmp_path, lora_rank=0))
+
+
+@pytest.mark.parametrize("bad", [-0.1, 1.0, 1.5])
+def test_val_fraction_must_leave_something_to_train_on(tmp_path, bad):
+    with pytest.raises(ValueError, match="val_fraction"):
+        Recipe.load(_write(tmp_path, val_fraction=bad))
+
+
+def test_the_shipped_point_holds_a_tenth_of_the_documents_out(tmp_path):
+    """The paper's runs never trained on a tenth of the corpus, so their domain perplexity is a
+    held-out measurement; a recipe that trained on everything would report a fit under the same
+    name."""
+    recipe = Recipe.load("qwen3-0.6b")
+    assert recipe.val_fraction == 0.1
+    assert yaml.safe_load((BUNDLED_DIR / "qwen3-0.6b.yaml").read_text())["val_fraction"] == 0.1
+    assert recipe.to_train_config(1, tmp_path / "s.pt").val_fraction == 0.1

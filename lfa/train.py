@@ -159,6 +159,12 @@ class TrainConfig:
     # -- data
     seed: int = 42
     keep_short_whole: bool = True
+    #: Share of DOCUMENTS held out of training, shuffled under ``seed`` (the paper's runs held out
+    #: 0.1). :func:`lfa.train.train` is handed a corpus that is already built, so this field is
+    #: read by whoever builds it -- :meth:`lfa.workspace.Workspace.train` passes it to
+    #: :func:`lfa.corpus.load_corpus` -- and recorded in ``config.json`` so a run says which
+    #: documents it was allowed to see.
+    val_fraction: float = 0.1
 
     def to_dict(self) -> dict[str, Any]:
         """The config as a JSON-serializable dict (what lands in ``config.json``)."""

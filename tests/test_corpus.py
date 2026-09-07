@@ -217,6 +217,15 @@ def test_load_corpus_validation_split_is_deterministic(tmp_path, tiny_model, tin
     assert [ex["input_ids"].tolist() for ex in again_val] == [ex["input_ids"].tolist() for ex in val]
 
 
+def test_a_split_that_holds_out_every_document_is_refused(tmp_path, tiny_model):
+    """The shipped recipe holds a tenth out by default, and a one-document corpus rounds that up
+    to all of it -- which would otherwise train on nothing and report a plausible loss for it."""
+    _, tok = tiny_model
+    (tmp_path / "only.txt").write_text("the only document in this corpus " * 20)
+    with pytest.raises(ValueError, match="nothing to train on"):
+        load_corpus(tmp_path, tok, max_length=128, val_fraction=0.1)
+
+
 def test_load_corpus_keeps_short_docs_by_default(tmp_path, tiny_model):
     _, tok = tiny_model
     (tmp_path / "short.txt").write_text("a short document")

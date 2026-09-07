@@ -9,7 +9,7 @@ defaults, and it records *which* rank and *which* artifact it was calibrated at 
 departing from either can be told that lambda no longer means what it meant
 (:meth:`Recipe.warnings`).
 
-Two settings in the shipped point are easy to lose in a re-implementation and are carried here
+Several settings in the shipped point are easy to lose in a re-implementation and are carried here
 deliberately:
 
 * ``epochs`` and ``schedule_horizon_epochs`` come apart. The published dose is epoch 15 **of a
@@ -26,6 +26,10 @@ deliberately:
   under either setting is not comparable with a run under the other, and the paper's perplexity
   points were measured under ``False`` -- pass ``keep_short_whole=False`` to
   :meth:`Recipe.to_train_config` to reproduce them.
+* ``val_fraction=0.1``: the paper's runs held a tenth of the *documents* out (shuffled under seed
+  42) and never trained on them, so the domain perplexity reported for a stage is a held-out
+  measurement rather than a fit. Set it to ``0.0`` to train on everything -- and then read the
+  domain number as a fit.
 
 ``Recipe.load`` resolves a bare name against the recipes bundled inside the package, so it works
 from an installed wheel and from any working directory; anything that looks like a path is read as
@@ -102,6 +106,7 @@ class Recipe:
     sequence_length: int = 512
     seed: int = 42
     keep_short_whole: bool = True
+    val_fraction: float = 0.1
 
     # -- what the point was calibrated at
     stage2_lambda_multiplier: float = 3.0
@@ -124,6 +129,11 @@ class Recipe:
             )
         if self.lora_rank < 1:
             raise ValueError(f"lora_rank must be at least 1, got {self.lora_rank}")
+        if not 0.0 <= self.val_fraction < 1.0:
+            raise ValueError(
+                f"val_fraction must be in [0, 1), got {self.val_fraction}: it is the share of "
+                "DOCUMENTS held out of training, so 1.0 would leave nothing to train on"
+            )
 
     # ------------------------------------------------------------------ loading and saving
 
@@ -224,6 +234,7 @@ class Recipe:
             full_weight=self.full_weight,
             seed=self.seed,
             keep_short_whole=self.keep_short_whole if keep_short_whole is None else keep_short_whole,
+            val_fraction=self.val_fraction,
         )
 
     def warnings(self, rank: int, artifact_id: str) -> list[str]:

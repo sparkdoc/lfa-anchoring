@@ -68,6 +68,8 @@ weight_decay: 0.01
 sequence_length: 512
 seed: 42
 keep_short_whole: true
+# the paper's runs held out 10 % of documents under seed 42
+val_fraction: 0.1
 
 # -- what this point was calibrated at (the couplings above are checked against these)
 stage2_lambda_multiplier: 3.0

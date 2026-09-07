@@ -547,6 +547,81 @@ def test_evaluate_before_any_stage_says_what_is_missing(tmp_path, registry, base
         ws.evaluate(n_windows=None, device="cpu")
 
 
+# ------------------------------------------------------------------- the held-out split
+
+def test_a_stage_records_the_documents_it_held_out(tmp_path, registry, base_dir, corpus_a):
+    """The paper's runs held a tenth of the documents out; the split is a property of the run, so
+    the history has to say how it fell or `evaluate` cannot rebuild it."""
+    ws = new_workspace(tmp_path, base_dir)
+    entry = ws.train(corpus_a, recipe=tiny_recipe(base_dir, val_fraction=0.5), device="cpu")
+
+    assert entry["val_fraction"] == 0.5
+    assert (entry["n_train_docs"], entry["n_val_docs"]) == (4, 4)          # eight documents, halved
+    assert json.loads((ws.path / "runs" / "stage1" / "config.json").read_text())["val_fraction"] == 0.5
+
+
+def test_evaluate_scores_the_half_the_stage_never_trained_on(tmp_path, registry, base_dir,
+                                                             corpus_a, monkeypatch):
+    """Domain perplexity of a model on text it was just trained on is a fit. With a hold-out
+    recorded, `evaluate` rebuilds that split and scores the other half instead."""
+    ws = new_workspace(tmp_path, base_dir)
+    recipe = tiny_recipe(base_dir, val_fraction=0.5)
+    ws.train(corpus_a, recipe=recipe, device="cpu")
+
+    tokenizer = load_tokenizer(str(base_dir))
+    trained_on, held_out = load_corpus(corpus_a, tokenizer, max_length=recipe.sequence_length,
+                                       val_fraction=0.5, seed=recipe.seed,
+                                       keep_short_whole=recipe.keep_short_whole)
+    assert len(held_out) and len(trained_on)
+
+    scored = []
+    real = workspace_module.domain_perplexity
+    monkeypatch.setattr(workspace_module, "domain_perplexity",
+                        lambda model, tok, corpus, **kw: scored.append(
+                            [ex["input_ids"].tolist() for ex in corpus]) or real(model, tok,
+                                                                                corpus, **kw))
+    ws.evaluate(n_windows=None, device="cpu")
+
+    expected = [ex["input_ids"].tolist() for ex in held_out]
+    assert scored == [expected, expected]                       # the "before" and "after" columns
+    assert expected != [ex["input_ids"].tolist() for ex in trained_on]
+
+
+def test_evaluate_falls_back_to_the_training_corpus_when_nothing_was_held_out(
+        tmp_path, registry, base_dir, corpus_a, caplog):
+    """A stage trained on everything has no held-out split, and the number is then a fit -- which
+    the log says, rather than the caller having to remember the recipe."""
+    ws = new_workspace(tmp_path, base_dir)
+    ws.train(corpus_a, recipe=tiny_recipe(base_dir, val_fraction=0.0), device="cpu")
+
+    with caplog.at_level("INFO", logger="lfa.workspace"):
+        result = ws.evaluate(n_windows=None, device="cpu")
+
+    assert 0 < result["after"]["domain"] < float("inf")
+    assert any("not a held-out measurement" in r.getMessage() for r in caplog.records)
+
+
+def test_a_named_corpus_is_scored_whole(tmp_path, registry, base_dir, corpus_a, corpus_b,
+                                        monkeypatch):
+    """Text the caller names IS the held-out text; splitting it again would score a fraction of
+    what was asked for."""
+    ws = new_workspace(tmp_path, base_dir)
+    recipe = tiny_recipe(base_dir, val_fraction=0.5)
+    ws.train(corpus_a, recipe=recipe, device="cpu")
+
+    tokenizer = load_tokenizer(str(base_dir))
+    whole, _ = load_corpus(corpus_b, tokenizer, max_length=recipe.sequence_length,
+                           val_fraction=0.0, seed=recipe.seed,
+                           keep_short_whole=recipe.keep_short_whole)
+
+    scored = []
+    monkeypatch.setattr(workspace_module, "domain_perplexity",
+                        lambda model, tok, corpus, **kw: scored.append(len(corpus)) or 1.0)
+    ws.evaluate(corpus_b, n_windows=None, device="cpu")
+
+    assert scored == [len(whole), len(whole)]
+
+
 # ---------------------------------------------------------------------------------------- fuse
 
 def test_fuse_exports_a_plain_model_that_loads_on_its_own(flow):

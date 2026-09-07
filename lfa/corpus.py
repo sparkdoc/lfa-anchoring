@@ -272,6 +272,12 @@ def load_corpus(
         return build(texts), None
 
     split_idx = int(len(texts) * (1 - val_fraction))
+    if split_idx == 0:
+        raise ValueError(
+            f"val_fraction={val_fraction} holds out all {len(texts)} document(s) found in "
+            f"{path}, leaving nothing to train on. Lower it, or pass val_fraction=0.0 to train "
+            "on everything and read the domain number as a fit rather than a measurement."
+        )
     return build(texts[:split_idx]), build(texts[split_idx:])
 
 

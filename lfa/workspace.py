@@ -129,6 +129,17 @@ def _stage_frame(entry: dict) -> bool:
     return bool(entry["recipe"]["keep_short_whole"])
 
 
+def _stage_val_fraction(entry: dict) -> float:
+    """The document share a recorded stage held out of training.
+
+    Read from the entry rather than from the recipe so that the split is rebuilt exactly as the
+    run made it -- the recipe is what was asked for, the entry is what ran.
+    """
+    if entry.get("val_fraction") is not None:
+        return float(entry["val_fraction"])
+    return float(entry["recipe"].get("val_fraction", 0.0))
+
+
 def _delta(before: float, after: float) -> str:
     return "n/a" if before == 0 else f"{(after - before) / before * 100:+.1f}%"
 
@@ -437,10 +448,10 @@ class Workspace:
                     corpus_path, self.state["artifact_version"], config.lambda_qkv,
                     config.num_epochs)
 
-        training = self._run_training(config, corpus_path, base_model, output_dir,
-                                      placement=placement, dtype=dtype,
-                                      allow_sharding=allow_sharding, resume=resume,
-                                      anchored=True)
+        training, corpus_counts = self._run_training(config, corpus_path, base_model, output_dir,
+                                                     placement=placement, dtype=dtype,
+                                                     allow_sharding=allow_sharding, resume=resume,
+                                                     anchored=True)
 
         entry = {
             "stage": stage,
@@ -460,6 +471,11 @@ class Workspace:
             # move away from the recipe's own values.
             "keep_short_whole": config.keep_short_whole,
             "full_weight": config.full_weight,
+            # What the stage was allowed to see. `evaluate` rebuilds the same split from the
+            # corpus, the seed and this fraction, and scores the documents this run never trained
+            # on -- so the number it reports is held out rather than fitted.
+            "val_fraction": config.val_fraction,
+            **corpus_counts,
             "final_loss": training.history[-1]["loss_total"] if training.history else None,
             # Where and in what precision this stage ran: an export merges in the dtype it was
             # trained in rather than in a default that may not be the same one.
@@ -539,12 +555,19 @@ class Workspace:
                 sampler.build_embedding_lookup_from_model(teacher, adapter)
 
             tokenizer = load_tokenizer(str(base_model))
-            dataset, _ = load_corpus(corpus_path, tokenizer, max_length=config.sequence_length,
-                                     val_fraction=0.0, seed=config.seed,
-                                     keep_short_whole=config.keep_short_whole)
+            # The held-out split is built and then not passed to the trainer: holding documents
+            # out is what makes this stage's domain perplexity a measurement rather than a fit,
+            # and `evaluate` rebuilds the same split from the recorded corpus, seed and fraction.
+            dataset, holdout = load_corpus(corpus_path, tokenizer,
+                                           max_length=config.sequence_length,
+                                           val_fraction=config.val_fraction, seed=config.seed,
+                                           keep_short_whole=config.keep_short_whole)
+            counts = {"n_train_docs": dataset.report["n_docs"],
+                      "n_val_docs": holdout.report["n_docs"] if holdout is not None else 0}
 
-            return run_training(teacher, student, dataset, sampler, adapter, config, output_dir,
-                                resume=resume, tokenizer=tokenizer)
+            training = run_training(teacher, student, dataset, sampler, adapter, config,
+                                    output_dir, resume=resume, tokenizer=tokenizer)
+            return training, counts
         finally:
             del teacher, student, sampler
             gc.collect()
@@ -693,9 +716,12 @@ class Workspace:
         pair isolates the stage rather than the chain.
 
         Args:
-            corpus: text to measure domain perplexity on. Defaults to the corpus the stage
-                trained on, which makes the domain number a *fit* rather than a held-out
-                measurement -- pass a separate held-out corpus for the number the paper reports.
+            corpus: text to measure domain perplexity on, scored whole. The default is the
+                stage's own held-out split -- the documents its ``val_fraction`` kept out of
+                training, rebuilt from the recorded corpus, seed and fraction -- so the domain
+                number is a held-out measurement. A stage trained with ``val_fraction=0.0`` has
+                no such split and is scored on what it trained on, which is a *fit*; the log line
+                says which of the two happened.
             compare_unanchored: re-run the stage with lambda = mu = 0 into
                 ``runs/{run}_unanchored`` (named after the run it controls) and report it as a
                 third column. It is the control
@@ -718,12 +744,23 @@ class Workspace:
         recipe = Recipe(**entry["recipe"])
 
         tokenizer = load_tokenizer(str(entry["base_model"]))
+        # A corpus named here is already the held-out text the caller wants scored, so it is
+        # scored whole. Defaulting to the stage's own corpus instead rebuilds that stage's split
+        # -- same documents, same seed, same fraction -- and scores the part it never trained on.
         corpus_path = Path(corpus).expanduser().resolve() if corpus else Path(entry["corpus"])
-        heldout, _ = load_corpus(corpus_path, tokenizer, max_length=recipe.sequence_length,
-                                 val_fraction=0.0, seed=recipe.seed,
-                                 keep_short_whole=_stage_frame(entry))
-        logger.info("Evaluating stage %d on %s (%d chunks)", entry["stage"], corpus_path,
-                    len(heldout))
+        val_fraction = 0.0 if corpus else _stage_val_fraction(entry)
+        trained_on, held_out = load_corpus(corpus_path, tokenizer,
+                                           max_length=recipe.sequence_length,
+                                           val_fraction=val_fraction, seed=recipe.seed,
+                                           keep_short_whole=_stage_frame(entry))
+        # A held-out split that chunks to nothing (documents shorter than a chunk, under the
+        # research frame) would score nothing at all; fall back and say which was used.
+        held_out_used = held_out is not None and len(held_out) > 0
+        heldout = held_out if held_out_used else trained_on
+        logger.info("Evaluating stage %d on %s (%d chunks, %s)", entry["stage"], corpus_path,
+                    len(heldout),
+                    "held out from training" if held_out_used
+                    else "trained on -- a fit, not a held-out measurement")
 
         before = self._score(entry["base_model"], None, tokenizer, heldout, n_windows, placement,
                              dtype)

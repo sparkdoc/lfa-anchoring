@@ -245,8 +245,9 @@ def build_parser() -> argparse.ArgumentParser:
         "evaluate", help="read the last stage on both axes: what it learned and what it kept")
     _add_workspace(evaluate)
     evaluate.add_argument("--corpus", metavar="DIR",
-                          help="text to measure domain perplexity on (default: the corpus the "
-                               "stage trained on, which makes it a fit rather than held out)")
+                          help="text to measure domain perplexity on, scored whole "
+                               "(default: the stage's own held-out split -- the documents "
+                               "its val_fraction kept out of training)")
     evaluate.add_argument("--compare-unanchored", action="store_true",
                           help="re-run the stage with lambda = mu = 0 and report it as a third "
                                "column: the control that says what the anchor bought")
