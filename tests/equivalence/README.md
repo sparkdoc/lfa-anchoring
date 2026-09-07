@@ -19,11 +19,11 @@ is absent.
 The marker is deselected by the default `addopts`, so ask for it explicitly:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 pytest tests/equivalence -m equivalence -q      # all nine
-pytest tests/equivalence -m "equivalence and not gpu" -q               # the three CPU ones
+CUDA_VISIBLE_DEVICES=0 pytest tests/equivalence -m equivalence -q      # all ten
+pytest tests/equivalence -m "equivalence and not gpu" -q               # the four CPU ones
 ```
 
-Two of them import `src.*` from the the research code checkout in-process. `src.lra_distribution` imports
+Three of them import `src.*` from the the research code checkout in-process. `src.lra_distribution` imports
 `scipy` at module level, which is not a dependency of this package; without it those two skip
 with a message naming it (`uv pip install scipy -p .venv` to run them).
 
@@ -40,6 +40,7 @@ with a message naming it (`uv pip install scipy -p .venv` to run them).
 | `test_the_extension_merges_the_domain_into_the_artifact` | Component count, accumulated sample count, the domain's weight share, and the merged mixture's held-out likelihood | exact / 5% (see below) |
 | `test_blockwise_quantization_is_bit_identical_on_a_real_basis_block` | `quantize_blockwise` on a shipped `pca_components` basis | **zero** |
 | `test_the_whole_fidelity_ladder_replays_bit_for_bit_on_a_synthetic_artifact` | Full-covariance heads, whitened top-m heads with a Gaussian tail, PCA-only and moments-only sites, and the frequency-weighted layer-0 lookup | **zero** |
+| `test_the_artifact_build_fits_the_same_pca_basis` | The build's `pca_n_components` and eigen-spectrum on a real activation covariance | exact / fp16 storage |
 
 **The sampler is the one checked at zero tolerance**, because it is the input side of the anchor:
 a sample stream that has drifted is a different `p(h)`, every anchor number moves with it, and

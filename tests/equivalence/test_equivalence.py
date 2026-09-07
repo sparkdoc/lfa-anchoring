@@ -596,3 +596,58 @@ def test_the_whole_fidelity_ladder_replays_bit_for_bit_on_a_synthetic_artifact(
     # The layer-0 draw came off the exact lookup table, so it must be a table row verbatim.
     table = ours.params["embedding_lookup"]["pre_qkv_table"]
     assert ((our_draws[0].unsqueeze(1) == table.unsqueeze(0)).all(-1).any(-1)).all()
+
+
+def test_the_artifact_build_fits_the_same_pca_basis(tiny_model):
+    """``fit_site``'s PCA against the research pipeline's, on a real activation covariance.
+
+    The build's other half is already pinned elsewhere -- the collection by the extension's
+    stream comparison, the mixture by the fitter comparison -- which leaves the basis: the
+    eigendecomposition, the descending sort, the clamp, and the rule that turns a 95% variance
+    target into a component count. That count is what the artifact's whole size and the sampler's
+    residual term are computed from, and it is an integer with a threshold in it, so it can move
+    by one without anything else looking different.
+
+    The covariance is reconstructed from the shipped artifact's own basis plus its off-basis
+    residual, so the spectrum is a real one (~1024 dimensions of real decay) rather than a
+    synthetic matrix whose threshold would fall in an easy place. Passing no reservoir stops the
+    reference method after its PCA block, which is the part under comparison.
+    """
+    reference_distribution = import_from_research("src.lra_distribution")
+
+    from lfa.artifact.collect import SiteStats
+    from lfa.artifact.fit import fit_site
+
+    reference = load_reference("losses.pt")          # the smallest fixture naming the artifact
+    entry = load_artifact(require(reference["artifact"], "the shipped p(h) artifact"))["12_pre_mlp"]
+    basis = entry["pca_components"].float()
+    eigenvalues, mean, std = (entry["pca_eigenvalues"].float(), entry["mean"].float(),
+                              entry["std"].float())
+    explained = (basis ** 2 * eigenvalues).sum(dim=1)
+    covariance = basis @ torch.diag(eigenvalues) @ basis.T + torch.diag(
+        (std ** 2 - explained).clamp_min(0))
+    covariance = (covariance + covariance.T) / 2                    # exactly symmetric for eigh
+
+    n = 4_000
+    stats = SiteStats()
+    stats.n, stats.hidden_dim = n, covariance.shape[0]
+    stats._sum_x = mean.double() * n
+    stats._sum_xx = (covariance.double() + torch.outer(mean.double(), mean.double())) * n
+    stats._m2 = std.double() ** 2 * n
+    ours = fit_site(stats, pca_variance=0.95, device="cpu")
+
+    model, _ = tiny_model
+    estimator = reference_distribution.LayerDistributionEstimator(
+        model, None, device="cpu", max_samples=8, use_covariance_accumulation=True)
+    site = reference_distribution.LayerStatistics(layer_idx=12, level="pre_mlp")
+    site.mean, site.std = mean, std
+    estimator.statistics = {(12, "pre_mlp"): site}
+    estimator.compute_micro_structure_from_covariance(
+        {(12, "pre_mlp"): covariance}, {}, show_progress=False, store_pca_components=True,
+        pca_variance_threshold=0.95)
+
+    assert ours["pca_n_components"] == site.pca_n_components
+    assert torch.equal(ours["pca_eigenvalues"], site.pca_eigenvalues)
+    # The companion stores the basis fp16 (as the shipped artifact does) and the reference keeps
+    # fp32, so the bases agree to the storage rounding rather than bitwise.
+    assert torch.allclose(ours["pca_components"].float(), site.pca_components, atol=1e-3)
