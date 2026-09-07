@@ -1,0 +1,66 @@
+# The shipped Layerwise Function Anchoring (LFA) operating point for Qwen3-0.6B.
+#
+# This is a JOINT point: the values below were tuned together and measured together, and three of
+# them do not travel independently.
+#
+#   * lambda is coupled to LoRA RANK. It constrains motion inside the rank-r update subspace, so
+#     the same value binds far harder at a lower rank. Lower rank => lower lambda: at rank 16 the
+#     measured frontier on this corpus sits at roughly 2e4-5e4, not 1e5. Re-tune lambda rather
+#     than porting it across ranks, and diagnose against held-out DOMAIN perplexity -- over-
+#     anchoring makes general-text perplexity look its best while domain quality collapses.
+#   * lambda is coupled to the p(h) ARTIFACT. `calibrated_artifact` below records what these
+#     lambdas were priced against; a sharper or flatter p(h) changes the anchor's scale, so an
+#     artifact swap is a re-tune.
+#   * lambda is coupled to the corpus composition. A corpus with a different share of chat-
+#     formatted Q&A is a different regularization problem; re-tune there too.
+#
+# Dose and schedule come apart on purpose. `epochs: 15` is the PERPLEXITY-OPTIMAL shipped dose,
+# and it is epoch 15 of a 100-EPOCH cosine horizon (`schedule_horizon_epochs: 100`): the learning
+# rate is still near its peak at that point, where a 15-epoch horizon would have decayed it to the
+# floor by the same step. Training stops at `epochs` whatever the horizon says. Dose is a
+# preservation-versus-quality dial rather than a converged endpoint -- e20 is the JUDGE-OPTIMAL
+# dose of the same run -- which is why checkpointing keeps every fifth epoch.
+#
+# Full-weight training (`full_weight: true`) is outside the paper's validated envelope: every
+# published LFA result is LoRA. If you go there, calibrate lambda in 50,000-100,000 and check
+# held-out domain perplexity.
+
+name: qwen3-0.6b
+model_id: Qwen/Qwen3-0.6B
+artifact: qwen3-0.6b-gmm1543k-int8
+
+# -- adapter
+lora_rank: 32
+lora_alpha: 64
+freeze_embed: true
+full_weight: false
+
+# -- anchoring: lambda (function anchor) and mu (the uniform weight backstop)
+lambda_qkv: 100000.0
+lambda_mlp: 100000.0
+mu: 0.05
+mu_end_ratio: 1.0
+anchor_end_ratio: 0.1
+anchor_schedule: cosine
+n_anchor_samples: 16
+
+# -- dose and schedule (see the note above: 15 trained epochs of a 100-epoch horizon)
+epochs: 15
+schedule_horizon_epochs: 100
+checkpoint_mode: all
+checkpoint_every: 5
+
+# -- optimization
+learning_rate: 3.0e-4
+batch_size: 6
+gradient_accumulation_steps: 1
+warmup_steps: 50
+weight_decay: 0.01
+sequence_length: 512
+seed: 42
+keep_short_whole: true
+
+# -- what this point was calibrated at (the couplings above are checked against these)
+stage2_lambda_multiplier: 3.0
+calibrated_rank: 32
+calibrated_artifact: qwen3-0.6b-gmm1543k-int8

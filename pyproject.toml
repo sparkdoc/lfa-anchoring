@@ -23,6 +23,9 @@ lfa = "lfa.cli:main"
 [tool.setuptools.packages.find]
 include = ["lfa*"]
 
+[tool.setuptools.package-data]
+lfa = ["recipes/*.yaml"]
+
 [tool.pytest.ini_options]
 markers = ["gpu: needs CUDA", "equivalence: needs the research code checkout", "acceptance: ~1 GPU-hour on the Chalmers corpus", "slow: downloads data from the Hugging Face Hub"]
 addopts = "-m 'not gpu and not equivalence and not acceptance and not slow'"
