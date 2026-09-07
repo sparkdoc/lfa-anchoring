@@ -1,36 +1,40 @@
 #!/usr/bin/env python3
-"""The acceptance run: the shipped Layerwise Function Anchoring (LFA) recipe, end to end.
+"""The equivalence run: this package trains what the research code trains.
 
-This trains ``lfa``'s bundled ``qwen3-0.6b`` recipe on the paper's own domain-A corpus and scores
-the resulting epoch-15 checkpoint on the paper's own two axes, so that the companion package can
-be shown to land on the published operating point rather than merely to run.
+The companion's bundled ``qwen3-0.6b`` recipe is run end to end on one domain, and the checkpoint
+it produces is compared against the checkpoint an **the research code run of the identical configuration**
+produced -- same corpus, same int8 artifact, same seed, same fifteen epochs of cosine, same loader
+frame. What is asserted is that the two implementations land in the same place, not that either
+lands on a number recorded in a paper: the reference is re-measured beside the companion, on the
+same instrument, on the same machine.
 
-Two instruments are reported, and the distinction matters:
+The instrument is the research code's ``scripts/eval_domain_perplexity.py``, shelled out to *in
+the research code's own virtualenv* and pointed at both checkpoints in turn:
 
-* **The research instrument decides.** The paper's ``domain 8.76`` is the mean conditional
-  perplexity of held-out *chat-formatted* domain Q&A, and its ``seed 16.36`` is WikiText-2 over
-  the full test split. Both come out of the research code's ``scripts/eval_domain_perplexity.py``, which
-  this script shells out to *in the research code's own virtualenv* -- the same call
-  ``scripts/judge_search.sh`` made when the published numbers were produced. Held-out raw-prose
-  perplexity is a different quantity and is never comparable with the Q&A one, so the acceptance
-  band is checked against these two numbers and nothing else.
-* **The companion's own metrics are reported beside them**, un-banded:
-  :func:`lfa.evaluate.domain_perplexity` on the stage's held-out document split and
-  :func:`lfa.evaluate.wikitext2_perplexity` with ``n_windows=0``. The WikiText-2 pair should
-  agree closely with the research instrument (it is the same computation); the two domain numbers
-  should *not* be expected to agree, because they measure different text.
+* **domain** = ``direct_perplexity.overall.mean_perplexity`` over the held-out chat-formatted Q&A
+  set (never comparable with held-out raw-prose perplexity, which is a different quantity), and
+* **seed** = WikiText-2 over the full test split, read as drift against the base model.
+
+The companion's own metrics are reported beside them, un-banded: :func:`lfa.evaluate.
+domain_perplexity` on the stage's held-out documents and :func:`lfa.evaluate.wikitext2_perplexity`
+with ``n_windows=0``. The WikiText-2 pair should agree closely (it is the same computation); the
+two domain numbers should not, because they measure different text.
+
+Tolerances live in ``expected.json`` and are the only numbers in this directory that are written
+down; the reference's measured values are written *out*, to ``reference.json``, by this script.
 
 the research code is read-only here. Every byte this script writes goes under ``--out``: the workspace,
-the training run, and the scorer's output directory (``--output`` is passed explicitly so that
-nothing lands in the checkout the corpus and the artifact came from).
+the training run, and both scoring directories (``--output`` is passed explicitly so that nothing
+lands in the checkout the corpus, the artifact and the reference run came from).
 
-Idempotent, because the training run is roughly an hour of GPU time: a workspace that already
-carries a trained stage is not retrained, and a scoring directory that already holds a result is
-not rescored. Delete ``--out`` to start over.
+Idempotent, because the training run is over an hour of GPU time: a workspace that already carries
+a trained stage is reused -- but only after its recorded frame is checked against the one being
+asked for -- and a scoring directory that already holds a result for the same checkpoint and Q&A
+file is not rescored. Delete ``--out`` to start over.
 
 Usage::
 
-    python tests/acceptance/run_recipe.py --out tests/acceptance/_runs/2026-09-07
+    python tests/acceptance/run_recipe.py --out tests/acceptance/_runs/2026-09-07-equiv
 
 Run it on ONE pinned card (the default ``--cuda-visible-devices 0``); the anchoring forward is
 launch-bound at this model size and a second tenant on the card silently corrupts the timing.
@@ -40,6 +44,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import hashlib
 import importlib.util
 import json
 import logging
@@ -56,30 +61,63 @@ DEFAULT_RESEARCH_ROOT = Path(__file__).resolve().parents[3]
 MODEL_ID = "Qwen/Qwen3-0.6B"
 RECIPE = "qwen3-0.6b"
 
-#: The corpus the paper's run trained on: the raw Chalmers prose PLUS the generated Q&A
-#: supplement at a 0.13 token share. The supplement is part of the shipped point, not an extra --
-#: lambda is coupled to the corpus composition, so training the raw prose alone is a different
-#: regularization problem and does not reproduce these numbers.
+#: The corpus both runs train on: raw Chalmers prose plus a generated Q&A supplement. Lambda is
+#: coupled to corpus composition, so this is part of the configuration the two runs share, not a
+#: detail of one of them.
 CORPUS_REL = "data/domain/chalmers_qa0.15"
 
-#: The int8 p(h) artifact. The paper's e15 run anchored on the fp16 ``gmm1543k``; int8 is the
-#: shippable form of the same estimate and costs ~1-1.5 pp of seed preservation, which the
-#: acceptance band covers.
+#: The int8 p(h) artifact both runs anchor against, and the registry id it is a copy of.
 ARTIFACT_REL = "data/distributions/qwen3-0.6b-gmm1543k-int8/distribution_stats.pt"
+ARTIFACT_ID = "qwen3-0.6b-gmm1543k-int8"
 
-#: The held-out direct-QA set the published domain number is measured on.
+#: The held-out direct-QA set the domain number is measured on.
 QA_REL = ("data/domain_perplexity_questions/chalmers/"
           "domain_perplexity_qa_direct_20260310_123856.jsonl")
 
-#: Which checkpoint carries the shipped dose. The recipe trains 15 epochs, so ``final_model`` is
-#: the same weights; the epoch-named directory is what the research runs were scored from.
-CHECKPOINT = "checkpoint_epoch_15"
+#: The the research code run this one is compared against, trained from
+#: ``scripts/_lfa_companion_reference.sh`` (15 epochs, cosine over 15, --keep-short-whole, int8
+#: artifact, seed 42). ``final_model/`` is its checkpoint and ``training_history.json`` its curve.
+REFERENCE_REL = "outputs/lra/qwen3-0.6b/chalmers/judge_search/gmm_r32_lam100000_e15cos_keepshort"
 
 EXPECTED_FILE = Path(__file__).with_name("expected.json")
+
+#: What the two runs must agree on before their outputs mean anything: the research code's ``config.json``
+#: key on the left, the companion's :class:`lfa.train.TrainConfig` attribute on the right. These
+#: are the *frame* -- corpus geometry, optimizer geometry, anchoring strength, loader -- not the
+#: thing under comparison, which is the two implementations of the same objective.
+FRAME_FIELDS = {
+    "lora_rank": "lora_rank",
+    "lora_alpha": "lora_alpha",
+    "freeze_embed": "freeze_embed",
+    "lambda_qkv": "lambda_qkv",
+    "lambda_mlp": "lambda_mlp",
+    "mu": "mu",
+    "anchor_end_ratio": "anchor_end_ratio",
+    "anchor_schedule": "anchor_schedule",
+    "n_anchor_samples": "n_anchor_samples",
+    "num_epochs": "num_epochs",
+    "learning_rate": "learning_rate",
+    "batch_size": "batch_size",
+    "gradient_accumulation_steps": "gradient_accumulation_steps",
+    "warmup_steps": "warmup_steps",
+    "weight_decay": "weight_decay",
+    "sequence_length": "sequence_length",
+    "seed": "seed",
+    "keep_short_whole": "keep_short_whole",
+    "val_fraction": "val_fraction",
+}
 
 
 class MissingInput(RuntimeError):
     """A required read-only input is not on this machine (the test turns this into a skip)."""
+
+
+class FrameMismatch(RuntimeError):
+    """The reference run and the companion run are not the same configuration."""
+
+
+class ReusedRunDiffers(RuntimeError):
+    """The run already in ``--out`` was made under a different frame than the one asked for."""
 
 
 # ==============================================================================================
@@ -88,15 +126,19 @@ class MissingInput(RuntimeError):
 
 def resolve_inputs(research: Path, corpus: str | Path | None = None,
                    artifact: str | Path | None = None,
-                   qa_file: str | Path | None = None) -> dict[str, Path]:
+                   qa_file: str | Path | None = None,
+                   reference: str | Path | None = None) -> dict[str, Path]:
     """Locate everything this run reads, or say precisely which piece is missing.
 
     Raises:
-        MissingInput: naming the path that is absent. The corpora, artifacts and checkpoints are
+        MissingInput: naming the path that is absent. The corpora, artifacts and reference run are
             gigabytes and are not distributed with the companion, so a machine without the
-            research checkout should skip this run rather than fail it.
+            research checkout should skip this run rather than fail it. The reference run's
+            ``final_model/`` is included: until it is there, there is nothing to compare against.
     """
     research = Path(research).expanduser().resolve()
+    reference_dir = (Path(reference).expanduser().resolve() if reference
+                     else research / REFERENCE_REL)
     wanted = {
         "research": (research, "the the research code checkout"),
         "python": (research / ".venv" / "bin" / "python", "the research code's virtualenv"),
@@ -108,6 +150,11 @@ def resolve_inputs(research: Path, corpus: str | Path | None = None,
                      else research / ARTIFACT_REL, "the p(h) artifact"),
         "qa_file": (Path(qa_file).expanduser().resolve() if qa_file else research / QA_REL,
                     "the held-out direct-QA set"),
+        "reference": (reference_dir, "the the research code reference run"),
+        "reference_model": (reference_dir / "final_model", "the reference run's checkpoint"),
+        "reference_config": (reference_dir / "config.json", "the reference run's config"),
+        "reference_history": (reference_dir / "training_history.json",
+                              "the reference run's training curve"),
     }
     resolved = {}
     for key, (path, what) in wanted.items():
@@ -133,39 +180,97 @@ def _load_module(path: Path, name: str):
     return module
 
 
+def _digest(payload) -> str:
+    """A stable sha256 over a JSON-able value (used for the recipe and the reference's config)."""
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+
+# ==============================================================================================
+# The frame
+# ==============================================================================================
+
+def frame_differences(reference_config: dict, config) -> list[dict]:
+    """Where the reference run's configuration and the companion's disagree.
+
+    Empty means the two runs are the same experiment and their outputs are comparable. Anything
+    in it means they are not, whatever the perplexities come out as -- which is the failure mode
+    this whole comparison exists to be safe from.
+    """
+    differences = []
+    for their_key, our_attr in FRAME_FIELDS.items():
+        theirs = reference_config.get(their_key)
+        ours = getattr(config, our_attr)
+        same = (abs(theirs - ours) <= 1e-12 * max(1.0, abs(ours))
+                if isinstance(ours, float) and isinstance(theirs, (int, float))
+                else theirs == ours)
+        if not same:
+            differences.append({"field": their_key, "reference": theirs, "companion": ours})
+    return differences
+
+
 # ==============================================================================================
 # The run
 # ==============================================================================================
 
-def train_stage(out: Path, corpus: Path, artifact: Path, *, device: str,
-                keep_short_whole: bool, val_fraction: float) -> tuple[object, dict, float]:
+def train_stage(out: Path, recipe, corpus: Path, artifact: Path, *, device: str,
+                keep_short_whole: bool) -> tuple[object, dict, float]:
     """Train stage 1 of a fresh workspace on ``corpus``, or reuse the one already at ``out``.
+
+    A reused run is checked against what was asked for -- corpus, loader frame, held-out fraction
+    and the recipe itself -- and refused if any of them moved (:class:`ReusedRunDiffers`). Silently
+    re-scoring a run made under a different configuration is exactly the mistake this script is
+    supposed to catch in others.
 
     Returns ``(workspace, history_entry, wall_clock_seconds)``; the wall clock is ``0.0`` for a
     reused run, which is what tells the caller not to quote it as a timing.
     """
-    from lfa import Recipe, Workspace
+    from lfa import Workspace
 
     workspace_dir = out / "workspace"
     if (workspace_dir / "workspace.json").exists():
         workspace = Workspace.open(workspace_dir)
         if workspace.history:
-            print(f"[reuse] stage already trained at {workspace.history[-1]['output_dir']}")
-            return workspace, workspace.history[-1], 0.0
+            entry = workspace.history[-1]
+            _refuse_a_different_run(entry, recipe, corpus, keep_short_whole)
+            print(f"[reuse] stage already trained at {entry['output_dir']}")
+            return workspace, entry, 0.0
     else:
         # `fetch=False` and a local artifact path: the published registry digests are
-        # placeholders, so a path is the supported route to the real file. Artifact *extension*
-        # (the multi-domain path) is not exercised by this run.
+        # placeholders, so a path is the supported route to the real file. `artifact_id` says
+        # which published artifact that file is, so the recipe's calibration is read against the
+        # id rather than against a path it has never heard of.
         workspace = Workspace.init(workspace_dir, MODEL_ID, artifact=str(artifact),
-                                   recipe=RECIPE, fetch=False)
-
-    recipe = Recipe.load(RECIPE)
-    if val_fraction != recipe.val_fraction:
-        recipe = dataclasses.replace(recipe, val_fraction=val_fraction)
+                                   recipe=RECIPE, fetch=False, artifact_id=ARTIFACT_ID)
 
     started = time.time()
     entry = workspace.train(corpus, recipe, keep_short_whole=keep_short_whole, device=device)
     return workspace, entry, time.time() - started
+
+
+def _refuse_a_different_run(entry: dict, recipe, corpus: Path, keep_short_whole: bool) -> None:
+    """Raise unless the run already on disk is the run being asked for."""
+    asked = {
+        "corpus": str(corpus),
+        "keep_short_whole": keep_short_whole,
+        "val_fraction": recipe.val_fraction,
+        "recipe_digest": _digest(dataclasses.asdict(recipe)),
+    }
+    found = {
+        "corpus": entry["corpus"],
+        "keep_short_whole": entry["keep_short_whole"],
+        "val_fraction": entry["val_fraction"],
+        "recipe_digest": _digest(entry["recipe"]),
+    }
+    moved = {key: (found[key], value) for key, value in asked.items() if found[key] != value}
+    if moved:
+        detail = "; ".join(f"{key}: on disk {found!r}, asked for {want!r}"
+                           for key, (found, want) in moved.items())
+        raise ReusedRunDiffers(
+            f"the run already in this output directory was made under a different frame -- "
+            f"{detail}. Re-scoring it would report numbers for a configuration nobody asked for. "
+            "Point --out at a fresh directory, or delete this one."
+        )
 
 
 def score_with_research(inputs: dict[str, Path], checkpoint: Path, out_dir: Path,
@@ -173,13 +278,24 @@ def score_with_research(inputs: dict[str, Path], checkpoint: Path, out_dir: Path
     """Score ``checkpoint`` with the research instrument, in the research code's own virtualenv.
 
     This is the call ``scripts/judge_search.sh`` makes, with ``--output`` added so the result
-    lands under this run rather than in the checkpoint directory. The checkpoint is a PEFT
-    adapter directory and the research code's ``src/model_loading.py`` loads one directly, exactly as it
-    did for the published runs.
+    lands under this run rather than in the checkpoint directory. A result already in ``out_dir``
+    is reused only when it names this same checkpoint and this same Q&A file -- the two fields the
+    scorer itself records.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     results = sorted(out_dir.glob("domain_perplexity_results_*.json"))
     if results:
+        payload = json.loads(results[-1].read_text())
+        scored, qa = Path(payload.get("model", "")), Path(payload.get("direct_qa_file", ""))
+        same = (_same_path(scored, checkpoint, inputs["research"])
+                and _same_path(qa, inputs["qa_file"], inputs["research"]))
+        if not same:
+            raise ReusedRunDiffers(
+                f"{results[-1]} scored {payload.get('model')!r} against "
+                f"{payload.get('direct_qa_file')!r}, but this run asked for {checkpoint} against "
+                f"{inputs['qa_file']}. Delete that directory rather than reading its numbers as "
+                "this checkpoint's."
+            )
         print(f"[reuse] research scoring already at {results[-1]}")
     else:
         command = [
@@ -194,10 +310,11 @@ def score_with_research(inputs: dict[str, Path], checkpoint: Path, out_dir: Path
         results = sorted(out_dir.glob("domain_perplexity_results_*.json"))
         if not results:
             raise RuntimeError(f"the scorer wrote no result into {out_dir}")
+        payload = json.loads(results[-1].read_text())
 
-    payload = json.loads(results[-1].read_text())
     metrics = _load_module(inputs["metrics"], "research_comparison_metrics")
     return {
+        "checkpoint": str(checkpoint),
         "domain_direct_ppl": metrics.extract_domain_direct_ppl(payload),
         "seed_ppl": metrics.extract_seed_ppl_domain(payload),
         "results_file": str(results[-1]),
@@ -205,14 +322,20 @@ def score_with_research(inputs: dict[str, Path], checkpoint: Path, out_dir: Path
     }
 
 
+def _same_path(recorded: Path, wanted: Path, root: Path) -> bool:
+    """Paths the scorer recorded are relative to the research code's root; ours are absolute."""
+    recorded = recorded if recorded.is_absolute() else root / recorded
+    return recorded.resolve() == Path(wanted).resolve()
+
+
 def score_with_companion(workspace, *, device: str) -> dict:
     """The companion's own two axes, reported beside the research instrument's.
 
     ``Workspace.evaluate`` scores the stage's base model and the adapted model on the stage's
-    held-out document split (raw prose plus Q&A files, the tenth of the corpus the run never
-    trained on) and on the full WikiText-2 test split. The WikiText-2 numbers are the same
-    quantity the research instrument reports; the domain numbers are not -- they are held-out
-    *documents*, not held-out chat-formatted Q&A.
+    held-out document split (the tenth of the corpus the run never trained on) and on the full
+    WikiText-2 test split. The WikiText-2 numbers are the same quantity the research instrument
+    reports -- and the base one is what both runs' seed *drift* is measured against, so it is not
+    only decoration here.
     """
     scores = workspace.evaluate(n_windows=0, device=device)
     return {
@@ -225,52 +348,101 @@ def score_with_companion(workspace, *, device: str) -> dict:
 
 
 # ==============================================================================================
-# The band
+# The comparison
 # ==============================================================================================
 
-def check_band(domain_ppl: float | None, seed_ppl: float | None,
-               expected: dict | None = None) -> list[dict]:
-    """Compare the research instrument's two numbers with the published band.
+def content_curve(history: list[dict]) -> list[float]:
+    """Per-epoch content loss, in epoch order. Both repos write the key under the same name."""
+    return [float(record["loss_content"]) for record in history]
 
-    Returns one row per axis: the measured value, the interval it had to fall in, and whether it
-    did. A missing measurement is a failure, not a skip -- it means the scorer produced no number.
+
+def check_equivalence(companion: dict, reference: dict, base_seed_ppl: float | None,
+                      companion_curve: list[float], reference_curve: list[float],
+                      frame: list[dict], expected: dict | None = None) -> list[dict]:
+    """Compare the companion's run with the reference's, on the three axes that can differ.
+
+    Returns one row per axis: what was measured, what it had to be within, and whether it was. A
+    missing measurement is a failure, not a skip -- it means an instrument produced no number.
+
+    Args:
+        base_seed_ppl: the base model's WikiText-2 perplexity, which both drifts are read
+            against. Measured in this same run by :func:`score_with_companion`.
+        frame: the output of :func:`frame_differences`; a non-empty list fails its own row,
+            because two runs of different configurations are not evidence about either.
     """
     expected = expected or json.loads(EXPECTED_FILE.read_text())
-    domain, seed = expected["domain_ppl"], expected["seed_ppl"]
+    checks = [{
+        "name": "the two runs are the same configuration",
+        "measured": len(frame),
+        "detail": frame,
+        "tolerance": "0 differing frame fields",
+        "ok": not frame,
+    }]
 
-    domain_low = domain["ref"] * (1 - domain["tol_rel"])
-    domain_high = domain["ref"] * (1 + domain["tol_rel"])
+    domain_tol = expected["domain_ppl"]["tol_rel"]
+    ours, theirs = companion["domain_direct_ppl"], reference["domain_direct_ppl"]
+    relative = None if ours is None or not theirs else abs(ours - theirs) / theirs
+    checks.append({
+        "name": "domain direct-QA perplexity vs the reference run",
+        "measured": ours,
+        "reference": theirs,
+        "deviation": None if relative is None else relative * 100,
+        "tolerance": f"within {domain_tol * 100:.3g}% of {theirs}",
+        "ok": relative is not None and relative <= domain_tol,
+    })
 
-    drift = None if seed_ppl is None else (seed_ppl - seed["base"]) / seed["base"] * 100
-    drift_low = seed["drift_pct_ref"] - seed["tol_abs_pct"]
-    drift_high = seed["drift_pct_ref"] + seed["tol_abs_pct"]
+    drift_tol = expected["seed_drift"]["tol_abs_pct"]
+    our_drift = _drift(companion["seed_ppl"], base_seed_ppl)
+    their_drift = _drift(reference["seed_ppl"], base_seed_ppl)
+    gap = None if our_drift is None or their_drift is None else abs(our_drift - their_drift)
+    checks.append({
+        "name": "WikiText-2 drift vs the reference run (base %s)" % (
+            "n/a" if base_seed_ppl is None else f"{base_seed_ppl:.2f}"),
+        "measured": our_drift,
+        "reference": their_drift,
+        "deviation": gap,
+        "tolerance": f"within {drift_tol:.3g} pp of {'n/a' if their_drift is None else round(their_drift, 3)}",
+        "ok": gap is not None and gap <= drift_tol,
+    })
 
-    return [
-        {
-            "name": "domain direct QA perplexity (research instrument)",
-            "measured": domain_ppl,
-            "reference": f"{domain['ref']} (seed 42) / {domain['ref_seed2']} (seed 1337)",
-            "band": [domain_low, domain_high],
-            "ok": domain_ppl is not None and domain_low <= domain_ppl <= domain_high,
-        },
-        {
-            "name": "WikiText-2 seed drift %% vs base %.2f (research instrument)" % seed["base"],
-            "measured": drift,
-            "measured_ppl": seed_ppl,
-            "reference": f"{seed['drift_pct_ref']}% (seed PPL {seed['ref']})",
-            "band": [drift_low, drift_high],
-            "ok": drift is not None and drift_low <= drift <= drift_high,
-        },
-    ]
+    epochs = expected["content_curve"]["epochs"]
+    curve_tol = expected["content_curve"]["tol_rel"]
+    pairs = list(zip(companion_curve[:epochs], reference_curve[:epochs]))
+    per_epoch = [{"epoch": i + 1, "companion": ours, "reference": theirs,
+                  "deviation_pct": abs(ours - theirs) / theirs * 100 if theirs else None}
+                 for i, (ours, theirs) in enumerate(pairs)]
+    worst = max((row["deviation_pct"] for row in per_epoch if row["deviation_pct"] is not None),
+                default=None)
+    checks.append({
+        "name": f"content loss, epochs 1-{epochs}, vs the reference curve",
+        "measured": worst,
+        "detail": per_epoch,
+        "tolerance": f"every epoch within {curve_tol * 100:.3g}% (all {epochs} epochs present)",
+        "ok": len(pairs) == epochs and worst is not None and worst <= curve_tol * 100,
+    })
+    return checks
+
+
+def _drift(perplexity: float | None, base: float | None) -> float | None:
+    """Percentage change from the base model's perplexity; ``None`` if either is missing."""
+    if perplexity is None or not base:
+        return None
+    return (perplexity - base) / base * 100
 
 
 def format_checks(checks: list[dict]) -> str:
     lines = []
     for check in checks:
-        measured = "n/a" if check["measured"] is None else f"{check['measured']:.4f}"
-        low, high = check["band"]
-        lines.append(f"  [{'PASS' if check['ok'] else 'FAIL'}] {check['name']}: {measured} "
-                     f"(band {low:.4f}..{high:.4f}; reference {check['reference']})")
+        measured = check["measured"]
+        shown = "n/a" if measured is None else (f"{measured:.4f}"
+                                                if isinstance(measured, float) else str(measured))
+        lines.append(f"  [{'PASS' if check['ok'] else 'FAIL'}] {check['name']}: {shown} "
+                     f"({check['tolerance']})")
+        if check["name"].startswith("the two runs") and check["detail"]:
+            for difference in check["detail"]:
+                lines.append(f"        {difference['field']}: reference "
+                             f"{difference['reference']!r} vs companion "
+                             f"{difference['companion']!r}")
     return "\n".join(lines)
 
 
@@ -296,18 +468,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help=f"override the p(h) artifact (default <the research code>/{ARTIFACT_REL})")
     parser.add_argument("--qa-file", default=None,
                         help=f"override the held-out QA set (default <the research code>/{QA_REL})")
-    parser.add_argument("--val-fraction", type=float, default=0.1,
-                        help="documents held out of training (the recipe's own value)")
-    keep = parser.add_mutually_exclusive_group()
-    keep.add_argument("--keep-short-whole", dest="keep_short_whole", action="store_true",
-                      help="keep short documents in every epoch (NOT the published frame)")
-    keep.add_argument("--no-keep-short-whole", dest="keep_short_whole", action="store_false",
-                      help="the research loader frame the published numbers were measured under")
-    parser.set_defaults(keep_short_whole=False)
+    parser.add_argument("--reference", default=None,
+                        help=f"override the reference run (default <the research code>/{REFERENCE_REL})")
     parser.add_argument("--skip-research-scoring", action="store_true",
                         help="train and report the companion's own metrics only")
     parser.add_argument("--strict", action="store_true",
-                        help="exit non-zero when a measured number falls outside the band")
+                        help="exit non-zero when a measured number falls outside its tolerance")
     return parser
 
 
@@ -328,26 +494,62 @@ def main(argv: list[str] | None = None) -> int:
     os.environ.setdefault("HF_HUB_OFFLINE", "1")
     os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
-    inputs = resolve_inputs(args.research, args.corpus, args.artifact, args.qa_file)
+    inputs = resolve_inputs(args.research, args.corpus, args.artifact, args.qa_file,
+                            args.reference)
     out = Path(args.out).expanduser().resolve()
     out.mkdir(parents=True, exist_ok=True)
 
+    from lfa import Recipe
+
+    recipe = Recipe.load(RECIPE)
+    reference_config = json.loads(inputs["reference_config"].read_text())
+    reference_history = json.loads(inputs["reference_history"].read_text())
+
+    # The frame is checked against the config the recipe produces, before an hour of GPU time is
+    # spent on a comparison that could not have meant anything.
+    frame = frame_differences(reference_config,
+                              recipe.to_train_config(1, inputs["artifact"],
+                                                     keep_short_whole=recipe.keep_short_whole))
+    if frame:
+        print("[warn] the reference run and this recipe differ on: "
+              + ", ".join(difference["field"] for difference in frame), file=sys.stderr)
+
     workspace, entry, wall_clock = train_stage(
-        out, inputs["corpus"], inputs["artifact"], device=args.device,
-        keep_short_whole=args.keep_short_whole, val_fraction=args.val_fraction,
+        out, recipe, inputs["corpus"], inputs["artifact"], device=args.device,
+        keep_short_whole=recipe.keep_short_whole,
     )
+    companion_history = json.loads(
+        (Path(entry["output_dir"]) / "training_history.json").read_text())
 
-    checkpoint = Path(entry["output_dir"]) / CHECKPOINT
-    if not checkpoint.is_dir():                      # a shorter dose than the shipped one
-        checkpoint = Path(entry["adapter"])
-
-    research = None
+    research = reference = None
     if not args.skip_research_scoring:
-        research = score_with_research(inputs, checkpoint, out / "scoring", dict(os.environ))
+        research = score_with_research(inputs, Path(entry["adapter"]), out / "scoring_companion",
+                                        dict(os.environ))
+        reference = score_with_research(inputs, inputs["reference_model"],
+                                         out / "scoring_reference", dict(os.environ))
     companion = score_with_companion(workspace, device=args.device)
 
-    checks = check_band(None if research is None else research["domain_direct_ppl"],
-                        None if research is None else research["seed_ppl"])
+    reference_record = {
+        "run": str(inputs["reference"]),
+        "checkpoint": str(inputs["reference_model"]),
+        "config_digest": _digest(reference_config),
+        "config": {key: reference_config.get(key) for key in FRAME_FIELDS},
+        "domain_direct_ppl": None if reference is None else reference["domain_direct_ppl"],
+        "seed_ppl": None if reference is None else reference["seed_ppl"],
+        "content_curve": content_curve(reference_history),
+        "measured_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "instrument": None if reference is None else reference["results_file"],
+    }
+    (out / "reference.json").write_text(json.dumps(reference_record, indent=2))
+
+    checks = check_equivalence(
+        companion=research or {"domain_direct_ppl": None, "seed_ppl": None},
+        reference=reference or {"domain_direct_ppl": None, "seed_ppl": None},
+        base_seed_ppl=companion["base_wikitext2_ppl"],
+        companion_curve=content_curve(companion_history),
+        reference_curve=reference_record["content_curve"],
+        frame=frame,
+    )
 
     from lfa import __version__ as lfa_version
 
@@ -368,8 +570,12 @@ def main(argv: list[str] | None = None) -> int:
         "n_train_docs": entry["n_train_docs"],
         "n_val_docs": entry["n_val_docs"],
         "epochs": entry["epochs"],
-        "checkpoint": str(checkpoint),
+        "checkpoint": entry["adapter"],
+        "content_curve": content_curve(companion_history),
+        "val_curve": [record.get("val_perplexity") for record in companion_history],
+        "learning_rate_curve": [record["learning_rate"] for record in companion_history],
         "research_instrument": research,
+        "reference": reference_record,
         "companion_instrument": companion,
         "checks": checks,
         "passed": all(check["ok"] for check in checks),
@@ -377,9 +583,9 @@ def main(argv: list[str] | None = None) -> int:
     (out / "results.json").write_text(json.dumps(results, indent=2))
 
     print("\n" + companion["table"])
-    print(f"\nResearch instrument ({'skipped' if research is None else research['results_file']}):")
+    print(f"\nEquivalence against {inputs['reference']}:")
     print(format_checks(checks))
-    print(f"\nWrote {out / 'results.json'}")
+    print(f"\nWrote {out / 'results.json'} and {out / 'reference.json'}")
     return 0 if (results["passed"] or not args.strict) else 1
 
 
