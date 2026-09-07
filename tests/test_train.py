@@ -7,8 +7,10 @@ really learns, that a switched-off anchor is switched off -- not convergence.
 
 import copy
 import json
+import math
 
 import pytest
+import safetensors.torch
 import torch
 
 from lfa.adapters import get_adapter
@@ -155,6 +157,16 @@ def test_resume_reattaches_the_adapter_and_keeps_learning(setup, tmp_path):
     assert history[-1]["grad_norm"] > 0
     assert history[-1]["global_step"] > history[-2]["global_step"]
 
+    # The re-attached model is a NEW object, so the run has to hand it back: the caller's own
+    # `student` variable still points at the bare base model.
+    from peft import get_peft_model_state_dict
+    trainable = [name for name, p in state.model.named_parameters() if p.requires_grad]
+    assert trainable and all("lora_" in name for name in trainable), trainable
+    saved = safetensors.torch.load_file(tmp_path / "final_model" / "adapter_model.safetensors")
+    live = get_peft_model_state_dict(state.model)
+    assert set(saved) == set(live) and saved
+    assert all(torch.equal(saved[key], live[key].detach().cpu()) for key in saved)
+
 
 def test_resume_without_a_prior_run_says_so(setup, tmp_path):
     teacher, fresh_student, dataset, sampler, adapter = setup
@@ -223,3 +235,71 @@ def test_an_empty_epoch_is_skipped_rather_than_dividing_by_zero(setup, tiny_mode
 
     assert (metrics.num_steps, global_step) == (0, 7)
     assert any("Empty training epoch" in record.message for record in caplog.records)
+
+
+def test_accumulation_steps_over_an_odd_number_of_batches(setup):
+    """ga=2 halves the optimizer steps, and the trailing odd micro-batch still takes one."""
+    teacher, fresh_student, dataset, sampler, adapter = setup
+    config = make_config(gradient_accumulation_steps=2, num_epochs=1)
+    student = apply_lora(fresh_student(), adapter, rank=config.lora_rank, alpha=config.lora_alpha)
+    dataloader = make_dataloader(dataset, config.batch_size, False, config.seed, 0)
+    n_batches = len(dataloader)
+    assert n_batches % 2 == 1, "this test needs an odd batch count to exercise the last window"
+    optimizer = torch.optim.AdamW(student.parameters(), lr=config.learning_rate)
+
+    metrics, global_step = train_epoch(student, teacher, dataloader, sampler, adapter, config,
+                                       optimizer)
+
+    assert metrics.num_steps == math.ceil(n_batches / 2) == global_step
+
+
+def test_resume_inside_the_warmup_replays_the_schedule(setup, tmp_path):
+    """A mid-warmup resume must replay the schedule, not compound the lr the optimizer saved.
+
+    torch's schedulers are chainable -- a step multiplies the group's current lr -- so restoring
+    the optimizer (which overwrites that lr with a mid-warmup value) and then fast-forwarding
+    compounds the restored value. The interrupted run must land on the same learning rate as the
+    uninterrupted one.
+    """
+    teacher, fresh_student, dataset, sampler, adapter = setup
+    # A horizon longer than the run keeps both runs strictly inside the warmup window, which is
+    # where the bug lives (the next phase resets the lr from base_lrs and hides it).
+    knobs = dict(warmup_steps=50, schedule_horizon_epochs=10, batch_size=6)
+
+    def run(directory, epochs, resume=False):
+        config = make_config(num_epochs=epochs, **knobs)
+        dataset.rechunk(0, config.seed)          # same chunking => same steps_per_epoch
+        student = fresh_student() if resume else apply_lora(
+            fresh_student(), adapter, rank=config.lora_rank, alpha=config.lora_alpha)
+        return train(teacher, student, dataset, sampler, adapter, config, directory,
+                     resume=resume)
+
+    uninterrupted = run(tmp_path / "one_go", 2)
+    run(tmp_path / "interrupted", 1)
+    resumed = run(tmp_path / "interrupted", 2, resume=True)
+
+    assert resumed.history[-1]["global_step"] == uninterrupted.history[-1]["global_step"]
+    assert resumed.history[-1]["learning_rate"] == pytest.approx(
+        uninterrupted.history[-1]["learning_rate"], rel=1e-9)
+    # ...and it is still climbing through the warmup, not sitting at the peak.
+    assert 0 < resumed.history[-1]["learning_rate"] < make_config().learning_rate
+
+
+def test_schedule_horizon_keeps_the_learning_rate_high_past_num_epochs(setup, tmp_path):
+    """The recipe trains 15 epochs of a 100-epoch cosine; the horizon field is what allows that."""
+    teacher, fresh_student, dataset, sampler, adapter = setup
+
+    def final_lr(directory, **overrides):
+        config = make_config(num_epochs=2, warmup_steps=1, **overrides)
+        dataset.rechunk(0, config.seed)
+        student = apply_lora(fresh_student(), adapter, rank=config.lora_rank,
+                             alpha=config.lora_alpha)
+        state = train(teacher, student, dataset, sampler, adapter, config, directory)
+        return state.history[-1]["learning_rate"]
+
+    short = final_lr(tmp_path / "short")
+    long_horizon = final_lr(tmp_path / "long", schedule_horizon_epochs=20)
+
+    assert long_horizon > 10 * short
+    assert json.loads((tmp_path / "long" / "config.json").read_text())[
+        "schedule_horizon_epochs"] == 20

@@ -83,6 +83,11 @@ class TrainConfig:
     Learning rate schedule: ``warmup_steps`` of linear warmup (0.1x -> 1.0x), then a plateau
     (constant, or a linear ramp down to ``plateau_end_factor``), then cosine decay over
     ``cosine_fraction`` of the post-warmup steps to a floor of ``lr_floor * learning_rate``.
+    ``schedule_horizon_epochs`` is the number of epochs the schedule is laid over; ``None`` means
+    ``num_epochs``. They come apart deliberately: the paper's recipe *trains* 15 epochs of a
+    100-epoch horizon, so the cosine has barely begun to bite at the dose that ships, where a
+    15-epoch horizon would have decayed the learning rate to its floor by then. Training always
+    stops at ``num_epochs`` whatever the horizon says.
 
     Checkpoint modes: ``"none"`` writes only ``best_model``/``final_model``; ``"rolling"``
     overwrites ``latest_model`` every ``checkpoint_every`` epochs; ``"all"`` accumulates
@@ -115,6 +120,7 @@ class TrainConfig:
     gradient_accumulation_steps: int = 1
     num_epochs: int = 15
     sequence_length: int = 512
+    schedule_horizon_epochs: int | None = None
 
     # -- lambda ramp across epochs (None = constant lambda)
     lambda_end_ratio: float | None = None
@@ -189,6 +195,10 @@ class TrainingState:
     history: list[dict[str, Any]] = field(default_factory=list)
     #: Losses of the untrained student over the whole training set, measured before epoch 1.
     baseline: dict[str, float] | None = None
+    #: The model that was actually trained. A resume re-attaches a saved adapter, which produces a
+    #: NEW object -- the caller's own variable still points at the bare base model -- so the run
+    #: hands its model back here rather than leaving that to be discovered.
+    model: nn.Module | None = None
 
 
 def _value(x: Any) -> float:
@@ -608,10 +618,13 @@ def train(
         resume: continue a run in this directory. The saved optimizer moments, epoch counter,
             history and scheduler position are restored, and a saved LoRA adapter is re-attached
             to ``student`` *trainable* -- attaching one for inference instead is the classic
-            silent no-op, so this path asserts that something can train.
+            silent no-op, so this path asserts that something can train. Re-attaching builds a new
+            model object, so a resumed run's trained model is the one in
+            :attr:`TrainingState.model` (and on disk under ``final_model/``), not the ``student``
+            the caller passed in.
 
     Returns:
-        The final :class:`TrainingState`, with ``history`` and ``baseline``.
+        The final :class:`TrainingState`, with ``history``, ``baseline`` and the trained ``model``.
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -650,6 +663,7 @@ def train(
                 run_logger.info("  Adapter re-attached (trainable) from %s", checkpoint_dir)
         assert_trainable_params(student, context=f"resume from {output_dir}")
 
+    state.model = student            # the object a resume re-attached, not the caller's base
     optimizer = AdamW(student.parameters(), lr=config.learning_rate,
                       weight_decay=config.weight_decay)
 
@@ -663,13 +677,23 @@ def train(
     # Ceiling division: a trailing partial accumulation window takes an optimizer step too.
     steps_per_epoch = ((len(dataloader) + config.gradient_accumulation_steps - 1)
                        // config.gradient_accumulation_steps)
-    scheduler = _build_scheduler(optimizer, config, steps_per_epoch * config.num_epochs,
-                                 run_logger)
+    horizon_epochs = config.schedule_horizon_epochs or config.num_epochs
+    if horizon_epochs != config.num_epochs:
+        run_logger.info("LR schedule laid over %d epochs; training stops at %d",
+                        horizon_epochs, config.num_epochs)
+    scheduler = _build_scheduler(optimizer, config, steps_per_epoch * horizon_epochs, run_logger)
 
     if resume:
+        # torch's LR schedulers are chainable: each step multiplies the group's CURRENT lr rather
+        # than recomputing it from the base. `load_state_dict` overwrites that lr with whatever
+        # was saved mid-schedule, so fast-forwarding from there compounds the saved value instead
+        # of replaying the schedule. Put the peak lr back first, then fast-forward.
+        peak_lrs = [group["lr"] for group in optimizer.param_groups]
         if "optimizer_state_dict" in saved:
             optimizer.load_state_dict(saved["optimizer_state_dict"])
             run_logger.info("  Optimizer state restored")
+        for group, lr in zip(optimizer.param_groups, peak_lrs):
+            group["lr"] = lr
         with warnings.catch_warnings():
             # Fast-forwarding a fresh scheduler is the only way to restore its position, and
             # torch cannot tell that from the real mistake it warns about (stepping the
@@ -739,6 +763,7 @@ def train(
             "loss_embed": epoch_metrics.avg_loss_embed,
             "loss_mu": epoch_metrics.avg_loss_mu,
             "grad_norm": epoch_metrics.avg_grad_norm,
+            "learning_rate": optimizer.param_groups[0]["lr"],
             "duration": epoch_metrics.duration_seconds,
         }
         if config.lambda_end_ratio is not None:
