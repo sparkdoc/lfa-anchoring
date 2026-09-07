@@ -10,11 +10,13 @@ Layerwise Function Anchoring (LFA) that are easy to get silently wrong, and a CL
 re-implemented any of them would be a second place for them to drift.
 
 The one thing this layer does own is how a *refusal* reads. The library raises rather than
-guesses -- a chain out of order, a device map that would shard the model, an artifact that is not
-published yet, a recipe field that does not validate -- and each of those is a message written to
-be read by the person who typed the command. So they are caught at the top level and printed as
-one line with exit status 2; a traceback would bury the sentence that says what to do. Anything
-*not* on that list is a bug, and a bug should show its traceback.
+guesses -- a chain out of order, a workspace that is not there, a device map that would shard the
+model, an artifact that is not published yet, a recipe field that does not validate -- and each of
+those is a message written to be read by the person who typed the command, usually ending in the
+command to run instead. So every exception the library raises *at the user*
+(:data:`USER_FACING_ERRORS`) is caught at the top level and printed as one line with exit status
+2; a traceback would bury the sentence that says what to do. Anything *not* in that tuple is a
+bug, and a bug should show its traceback.
 
 Run ``lfa --help``, or ``lfa <subcommand> --help``, for the flags.
 """
@@ -24,19 +26,29 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from pathlib import Path
 
 from .artifact.build import build_artifact
-from .artifact.fetch import ArtifactNotPublished, fetch_artifact, list_artifacts
-from .models import DEFAULT_DEVICE, ShardingRefused
+from .artifact.fetch import (ArtifactNotPublished, ChecksumMismatch, fetch_artifact,
+                             list_artifacts)
+from .models import DEFAULT_DEVICE, NoTrainableParameters, ShardingRefused
 from .prepare_domain import prepare_domain
 from .seed_corpus import prepare_seed_corpus
+from .train import ResumeSourceHasNoAdapter
 from .workspace import StageOrderError, Workspace
 
 __all__ = ["main"]
 
-#: What is caught and reported as one line: everything the library raises *at* the user.
-USER_FACING_ERRORS = (StageOrderError, ShardingRefused, ArtifactNotPublished, ValueError)
+#: Every exception the library raises **at the user** rather than at a caller: a chain out of
+#: order, a workspace that is not there or is already there, a device map that would shard the
+#: model, an artifact that is unpublished or arrives corrupted, a resume with no adapter to
+#: continue, a student with nothing trainable, and any value a recipe or a flag fails validation
+#: on. Each carries a message written to be read, so each is reported as one line rather than as
+#: the last line of a traceback. Anything outside this tuple is a bug and keeps its traceback.
+USER_FACING_ERRORS = (
+    StageOrderError, ShardingRefused, ArtifactNotPublished, ChecksumMismatch,
+    ResumeSourceHasNoAdapter, NoTrainableParameters,
+    FileNotFoundError, FileExistsError, ValueError,
+)
 
 
 # ==============================================================================================
@@ -134,9 +146,8 @@ def _prepare_seed_corpus(args) -> int:
 
 
 def _prepare_domain(args) -> int:
-    written = prepare_domain(args.inputs, args.out, min_length=args.min_length,
-                             combine=args.combine)
-    print(f"{len(written)} document(s) written to {Path(args.out)}")
+    # No report of its own: `prepare_domain` already logs what it wrote and what it skipped.
+    prepare_domain(args.inputs, args.out, min_length=args.min_length, combine=args.combine)
     return 0
 
 

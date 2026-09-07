@@ -15,6 +15,7 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 
 from conftest import tiny_recipe
 from lfa.cli import main
@@ -173,6 +174,67 @@ def test_an_unknown_artifact_id_exits_two_with_one_line(tmp_path, base_dir, caps
 
     assert code == 2
     assert len(error_lines(capsys)) == 1
+
+
+def test_a_directory_that_is_not_a_workspace_exits_two_with_one_line(tmp_path, corpus_a,
+                                                                     recipe_path, capsys):
+    code = main(["train", "--workspace", str(tmp_path), "--corpus", str(corpus_a),
+                 "--recipe", str(recipe_path), "--device", "cpu"])
+
+    assert code == 2
+    lines = error_lines(capsys)
+    assert len(lines) == 1
+    assert "lfa init" in lines[0]                # the message ends in the command to run instead
+
+
+def test_initialising_over_an_existing_workspace_exits_two_with_one_line(tmp_path, registry,
+                                                                         base_dir, capsys):
+    workspace = tmp_path / "ws"
+    assert main(["init", str(workspace), "--model", str(base_dir), "--artifact", "tiny"]) == 0
+
+    code = main(["init", str(workspace), "--model", str(base_dir), "--artifact", "tiny"])
+
+    assert code == 2
+    lines = error_lines(capsys)
+    assert len(lines) == 1
+    assert "already an LFA workspace" in lines[0]
+
+
+# ------------------------------------------------------------------------------ extend, chain
+
+def test_extend_folds_the_stage_into_a_second_artifact_version(tmp_path, registry, base_dir,
+                                                               corpus_a, recipe_path):
+    workspace = tmp_path / "ws"
+    assert main(["init", str(workspace), "--model", str(base_dir), "--artifact", "tiny"]) == 0
+    assert main(["train", "--workspace", str(workspace), "--corpus", str(corpus_a),
+                 "--recipe", str(recipe_path), "--device", "cpu"]) == 0
+
+    assert main(["extend", "--workspace", str(workspace), "--need", "400",
+                 "--k-domain", "2", "--device", "cpu"]) == 0
+
+    assert (workspace / "artifacts" / "v2.pt").is_file()
+    assert (workspace / "models" / "stage1_fused" / "config.json").is_file()
+    state = json.loads((workspace / "workspace.json").read_text())
+    assert state["artifact_version"] == 2
+    assert state["pending_extend"] is False
+
+
+def test_chain_trains_every_domain_in_the_spec(tmp_path, registry, base_dir, corpus_a, corpus_b,
+                                               recipe_path):
+    workspace = tmp_path / "ws"
+    assert main(["init", str(workspace), "--model", str(base_dir), "--artifact", "tiny",
+                 "--recipe", str(recipe_path)]) == 0
+    spec = tmp_path / "domains.yaml"
+    spec.write_text(yaml.safe_dump({"domains": [{"name": "alpha", "corpus": str(corpus_a)},
+                                                {"name": "beta", "corpus": str(corpus_b)}]}))
+
+    assert main(["chain", str(spec), "--workspace", str(workspace), "--device", "cpu"]) == 0
+
+    history = json.loads((workspace / "history.json").read_text())
+    assert len(history) == 2
+    assert [entry["stage"] for entry in history] == [1, 2]
+    # The chain folded the first domain in before starting the second: that is what a chain is.
+    assert history[1]["artifact_version"] == 2
 
 
 # ------------------------------------------------------------------------------------ evaluate
