@@ -7,6 +7,7 @@ really learns, that a switched-off anchor is switched off -- not convergence.
 
 import copy
 import json
+import shutil
 import math
 
 import pytest
@@ -19,6 +20,7 @@ from lfa.models import apply_lora
 from lfa.sampler import Sampler
 from lfa.train import (
     EMBED_ANCHOR_DISABLED_NOTICE,
+    ResumeSourceHasNoAdapter,
     TrainConfig,
     train,
     train_epoch,
@@ -353,3 +355,22 @@ def test_a_deliberately_frozen_embedding_is_not_warned_about(setup, tmp_path, ca
         train(teacher, student, dataset, sampler, adapter, config, tmp_path)
 
     assert EMBED_ANCHOR_DISABLED_NOTICE not in [r.message for r in caplog.records]
+
+
+def test_a_lora_resume_whose_checkpoint_saved_no_adapter_is_refused(setup, tmp_path):
+    """There is nothing to resume, and every later symptom is indirect.
+
+    Left to run, this used to reach `optimizer.load_state_dict`, which raises about a parameter
+    group of the wrong size -- true only because the saved moments happen to be there to
+    disagree, and only after the run has been set up. `assert_trainable_params` cannot catch it
+    either: `load_student` hands back a model whose every parameter is trainable.
+    """
+    teacher, fresh_student, dataset, sampler, adapter = setup
+    config = make_config()
+    student = apply_lora(fresh_student(), adapter, rank=config.lora_rank, alpha=config.lora_alpha)
+    train(teacher, student, dataset, sampler, adapter, config, tmp_path)
+
+    shutil.rmtree(tmp_path / "final_model")               # a run whose adapter is not there
+
+    with pytest.raises(ResumeSourceHasNoAdapter, match="no adapter"):
+        train(teacher, fresh_student(), dataset, sampler, adapter, config, tmp_path, resume=True)

@@ -237,8 +237,10 @@ class Workspace:
             model_id: a Hub id or a local checkpoint path. It is not loaded here -- init stays
                 cheap, and the artifact is checked against the model when a stage starts.
             artifact: a registry id (see :data:`lfa.artifact.fetch.ARTIFACTS`) or a path to an
-                artifact file. Either way it is copied to ``artifacts/v1.pt``, so the workspace
-                carries its own p(h) and later versions sit beside it.
+                artifact file -- a registry id wins, so a local file named like a published
+                artifact cannot shadow it. Either way the artifact ends up copied to
+                ``artifacts/v1.pt``, so the workspace carries its own p(h) and later versions sit
+                beside it.
             recipe: the default recipe for this workspace -- a bundled name or a path. When
                 omitted, a bundled recipe whose own ``model_id`` is this model is adopted; if
                 none is, every training call has to name one.
@@ -499,8 +501,10 @@ class Workspace:
         """Load teacher, student, sampler and corpus for one run, and train it.
 
         A resume passes the bare student through: the trainer re-attaches the saved adapter
-        (trainable), and doing it here as well would train a fresh one instead. If the resume
-        source carries no adapter, the trainer raises rather than training a frozen model.
+        (trainable), and doing it here as well would train a fresh one instead. A LoRA resume
+        whose checkpoint saved no adapter is refused by the trainer
+        (:class:`lfa.train.ResumeSourceHasNoAdapter`) -- not by the frozen-model guard, which
+        cannot see it: ``load_student`` hands back a fully trainable model.
 
         The embedding lookup is rebuilt from the teacher here rather than shipped: layer-0
         ``pre_qkv`` is ``input_layernorm(embed_tokens(id))``, exactly reconstructible and ~300 MB
@@ -623,6 +627,9 @@ class Workspace:
             base_n=base_n, k_domain=k_domain, need=need,
             seq_len=entry["recipe"]["sequence_length"], seed=entry["recipe"]["seed"],
             device=_primary_device(placement), quantize=True,
+            # Collected under the frame the stage trained under: the new components have to
+            # describe the training stream the model actually saw.
+            keep_short_whole=_stage_frame(entry),
         )
 
         self.state.update(
@@ -690,7 +697,8 @@ class Workspace:
                 trained on, which makes the domain number a *fit* rather than a held-out
                 measurement -- pass a separate held-out corpus for the number the paper reports.
             compare_unanchored: re-run the stage with lambda = mu = 0 into
-                ``runs/stage{N}_unanchored`` and report it as a third column. It is the control
+                ``runs/{run}_unanchored`` (named after the run it controls) and report it as a
+                third column. It is the control
                 that says what the anchor bought: an unanchored run reaches the domain by giving
                 up the general axis.
             n_windows: WikiText-2 windows for the general axis; ``0`` scores the whole split and
@@ -778,8 +786,16 @@ class Workspace:
             return None
 
     def _train_unanchored(self, entry: dict, recipe: Recipe, *, placement, dtype) -> Path:
-        """Re-run the stage with the anchor and the weight backstop switched off."""
-        control = dataclasses.replace(recipe, lambda_qkv=0.0, lambda_mlp=0.0, mu=0.0)
+        """Re-run the stage with the anchor and the weight backstop switched off.
+
+        Everything else about the run is the stage's own, per-call overrides included: the
+        control answers "what would this run have done without the anchor", and a control that
+        trained a different way answers a different question.
+        """
+        control = dataclasses.replace(
+            recipe, lambda_qkv=0.0, lambda_mlp=0.0, mu=0.0,
+            full_weight=bool(entry.get("full_weight", recipe.full_weight)),
+        )
         config = control.to_train_config(entry["stage"], entry["artifact"],
                                          keep_short_whole=_stage_frame(entry))
         # Named after the run it controls, so a repeat of a stage gets its own control.

@@ -49,6 +49,7 @@ logger = logging.getLogger("lfa.train")
 
 __all__ = [
     "TrainConfig",
+    "ResumeSourceHasNoAdapter",
     "StepMetrics",
     "EpochMetrics",
     "TrainingState",
@@ -58,6 +59,10 @@ __all__ = [
     "train_epoch",
     "train",
 ]
+
+class ResumeSourceHasNoAdapter(RuntimeError):
+    """Raised when a LoRA run resumes from a checkpoint that saved no adapter."""
+
 
 #: Said once, at the start of a full-weight run. Every published LFA result is LoRA.
 FULL_WEIGHT_NOTICE = (
@@ -629,7 +634,9 @@ def train(
         resume: continue a run in this directory. The saved optimizer moments, epoch counter,
             history and scheduler position are restored, and a saved LoRA adapter is re-attached
             to ``student`` *trainable* -- attaching one for inference instead is the classic
-            silent no-op, so this path asserts that something can train. Re-attaching builds a new
+            silent no-op, so this path asserts that something can train. A LoRA resume whose
+            checkpoint saved no adapter is refused up front
+            (:class:`ResumeSourceHasNoAdapter`). Re-attaching builds a new
             model object, so a resumed run's trained model is the one in
             :attr:`TrainingState.model` (and on disk under ``final_model/``), not the ``student``
             the caller passed in.
@@ -675,6 +682,20 @@ def train(
         state.baseline = saved.get("baseline")
 
         checkpoint_dir = output_dir / saved.get("model_checkpoint", "final_model")
+        if config.use_lora and not (checkpoint_dir / "adapter_config.json").exists():
+            # Said here rather than left to a later symptom. A LoRA resume whose checkpoint has
+            # no adapter used to continue into `optimizer.load_state_dict`, which raises about a
+            # parameter-group size mismatch -- true, but only because the saved moments happen to
+            # be there to disagree, and only after the run has been set up. There is nothing to
+            # resume: `load_student` hands back a fully trainable model, so the frozen-model
+            # guard below would not catch it either.
+            raise ResumeSourceHasNoAdapter(
+                f"resume from {output_dir}: this is a LoRA run, but {checkpoint_dir} carries no "
+                "adapter_config.json, so there is no adapter to continue. Training from here "
+                "would start a fresh adapter over the restored epoch counter, history and "
+                "optimizer moments, and then overwrite the checkpoint it resumed from. Point at "
+                "a run that saved an adapter, or start a new run without resume."
+            )
         if config.use_lora and (checkpoint_dir / "adapter_config.json").exists():
             if not hasattr(student, "peft_config"):
                 student = load_adapter_for_training(student, checkpoint_dir)

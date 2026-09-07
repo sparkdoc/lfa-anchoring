@@ -327,6 +327,9 @@ def test_full_weight_can_be_overridden_per_run(tmp_path, registry, base_dir, cor
     config = json.loads((Path(entry["output_dir"]) / "config.json").read_text())
     assert (config["full_weight"], config["use_lora"]) == (True, False)
     assert entry["full_weight"] is True
+    # The override is folded into the recipe before the recipe is recorded, which is what makes a
+    # later reconstruction of this stage -- the unanchored control -- train the way this run did.
+    assert entry["recipe"]["full_weight"] is True
     assert not (Path(entry["adapter"]) / "adapter_config.json").exists()
 
 
@@ -444,6 +447,28 @@ def test_the_extended_artifact_unions_the_domain_into_the_base(flow, tiny_artifa
     assert entry["gmm_n_components"] == base["1_pre_mlp"]["gmm_n_components"] + K_DOMAIN
     assert entry["n_samples"] == 1000 + NEED
     assert torch.isclose(entry["gmm_weights"].sum(), torch.tensor(1.0), atol=1e-4)
+
+
+def test_extend_collects_under_the_frame_the_stage_trained_under(tmp_path, registry, base_dir,
+                                                                corpus_a, monkeypatch):
+    """The new components describe the training stream the model saw, so the collection uses the
+    stage's own loader frame rather than the loader's default."""
+    seen = {}
+    real = workspace_module.extend_artifact
+
+    def recording(*args, **kwargs):
+        seen.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(workspace_module, "extend_artifact", recording)
+    ws = new_workspace(tmp_path, base_dir)
+    ws.train(corpus_a, recipe=tiny_recipe(base_dir, keep_short_whole=True),
+             keep_short_whole=False, device="cpu")
+
+    ws.extend(need=NEED, k_domain=K_DOMAIN, device="cpu")
+
+    assert seen["keep_short_whole"] is False
+    assert seen["seq_len"] == 64
 
 
 def test_extend_reads_the_base_count_from_the_registry_when_the_artifact_carries_none(
@@ -608,8 +633,14 @@ def test_a_full_weight_stage_carries_no_adapter_through_fuse_and_evaluate(tmp_pa
     assert not (Path(entry["adapter"]) / "adapter_config.json").exists()
     assert (Path(entry["adapter"]) / "model.safetensors").is_file()
 
-    result = ws.evaluate(n_windows=None, device="cpu")
+    result = ws.evaluate(compare_unanchored=True, n_windows=None, device="cpu")
     assert 0 < result["after"]["domain"] < float("inf")
+
+    # The control answers "this run without the anchor", so it trains the way this run did.
+    control = json.loads((ws.path / "runs" / "stage1_unanchored" / "config.json").read_text())
+    assert (control["full_weight"], control["use_lora"]) == (True, False)
+    assert (control["lambda_qkv"], control["mu"]) == (0.0, 0.0)
+    assert 0 < result["unanchored"]["domain"] < float("inf")
 
     out = ws.fuse()
     assert (out / "config.json").is_file() and (out / "tokenizer.json").is_file()

@@ -125,16 +125,18 @@ def _collect_domain_activations(
     seq_len: int,
     seed: int,
     device: str,
+    keep_short_whole: bool,
 ) -> dict[str, torch.Tensor]:
     """Record ``need`` activations per site, from the stage's own chunked training stream.
 
-    The chunks are the ones training saw -- same loader, same length, no validation split -- taken
+    The chunks are the ones training saw -- same loader, same length, same ``keep_short_whole``
+    frame, no validation split -- taken
     in a seeded random order rather than in file order, so the sample spans the whole corpus at the
     proportions it is trained on. (The reference implementation's other mode, the first ~78 files
     each truncated to one chunk, is a thin order-dependent sample and is deliberately not ported.)
     """
     dataset, _ = load_corpus(corpus_path, tokenizer, max_length=seq_len, stride=0,
-                             val_fraction=0.0, seed=seed)
+                             val_fraction=0.0, seed=seed, keep_short_whole=keep_short_whole)
     if len(dataset) == 0:
         raise ValueError(f"No training chunks in {corpus_path}: nothing to collect.")
 
@@ -251,6 +253,7 @@ def extend_artifact(
     seed: int = 42,
     device: str = "cuda:0",
     quantize: bool = True,
+    keep_short_whole: bool = True,
 ) -> Path:
     """Add a domain to ``base_artifact_path`` and write the extended artifact to ``out_path``.
 
@@ -273,6 +276,10 @@ def extend_artifact(
         seed: seeds the chunk order and every site's mixture fit.
         device: device to run the collection and the fits on.
         quantize: store the extended artifact blockwise-int8.
+        keep_short_whole: the corpus-chunking frame to collect under. It should be the one the
+            stage trained under: the two frames differ in whether a document shorter than the
+            epoch's chunk offset appears at all, so collecting under the other one describes a
+            training stream the model was not trained on.
 
     Returns:
         The path written.
@@ -297,6 +304,7 @@ def extend_artifact(
     activations = _collect_domain_activations(
         model, tokenizer, adapter, corpus_path, gmm_keys,
         need=need, seq_len=seq_len, seed=seed, device=device,
+        keep_short_whole=keep_short_whole,
     )
     del model
     gc.collect()
