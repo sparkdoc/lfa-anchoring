@@ -1,0 +1,33 @@
+# A three-domain chain, as `lfa chain` and `Workspace.chain` read it.
+#
+# Each entry is one stage: the domain is trained into the workspace's current model, and then
+# folded into that model and into p(h) before the next one starts. That folding is not optional
+# and there is no flag for skipping it -- without it the second domain would adapt the first
+# domain's starting model and anchor against a p(h) that does not describe what it is anchoring.
+#
+# Fields:
+#   name    the run directory under runs/ (optional; the corpus path is used when it is absent)
+#   corpus  a file or directory of documents, resolved RELATIVE TO THIS FILE
+#   epochs  optional override of the recipe's epoch count for this stage
+#
+# Lambda is not a field here: stage 1 uses the recipe's value and every later stage multiplies it
+# by the recipe's `stage2_lambda_multiplier`, because a later stage anchors a model that already
+# carries a domain. See docs/multi-domain-chains.md.
+#
+# The corpora named below are NOT shipped with this package. `examples/chain_three_domains.py`
+# writes a small synthetic stand-in for each one under its `--out` directory and runs a copy of
+# this spec that points at those, so the example runs offline and writes nothing next to this
+# file. Point `corpus` at your own documents to run it for real.
+
+domains:
+  - name: philosophy
+    corpus: corpora/philosophy
+    epochs: 15
+
+  - name: cybersecurity
+    corpus: corpora/cybersecurity
+    epochs: 15
+
+  - name: archaeology
+    corpus: corpora/archaeology
+    epochs: 15
