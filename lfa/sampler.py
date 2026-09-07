@@ -30,7 +30,8 @@ from pathlib import Path
 
 import torch
 
-from .artifact.schema import load_artifact, parse_site_key, site_key
+from .artifact.schema import LM_HEAD_SITE, load_artifact, parse_site_key, site_key
+from .quantize import dequantize_params
 
 
 class Sampler:
@@ -47,7 +48,10 @@ class Sampler:
                 the global RNG, matching the reference implementation call for call.
         """
         self.device = device
-        self.params = artifact if isinstance(artifact, dict) else load_artifact(artifact)
+        # `dequantize_params` is idempotent and a no-op on an already-dequantized artifact, so
+        # running it on the dict path too means a quantized dict fails nowhere.
+        self.params = (dequantize_params(artifact) if isinstance(artifact, dict)
+                       else load_artifact(artifact))
         self.generator = None if seed is None else torch.Generator(device=device).manual_seed(seed)
 
         # Device/dtype cache for the immutable per-site tensors (see `_dev`). The artifact is loaded
@@ -76,9 +80,8 @@ class Sampler:
     # `generator=None` as "use the global default generator" -- so these helpers are transparent
     # when unseeded and keep the draw order identical in both modes.
 
-    def _randn(self, *shape: int, device=None) -> torch.Tensor:
-        return torch.randn(*shape, device=self.device if device is None else device,
-                           generator=self.generator)
+    def _randn(self, *shape: int) -> torch.Tensor:
+        return torch.randn(*shape, device=self.device, generator=self.generator)
 
     def _randn_like(self, x: torch.Tensor) -> torch.Tensor:
         if self.generator is None:
@@ -95,8 +98,13 @@ class Sampler:
     # -------------------------------------------------------------- topology
 
     def num_layers(self) -> int:
-        """Number of layers with statistics."""
-        return len({layer for layer, _ in self.available})
+        """Number of transformer layers with statistics.
+
+        The model-level ``pre_lm_head`` site is stored under layer index ``num_layers()`` (a
+        2-layer model keeps it at ``"2_pre_lm_head"``), so it is excluded here: callers use this
+        as a loop bound over the transformer layers.
+        """
+        return len({layer for layer, site in self.available if site != LM_HEAD_SITE})
 
     def hidden_dim(self, layer: int = 0, site: str = "pre_mlp") -> int:
         """Hidden dimension of the sampled vectors."""
@@ -373,6 +381,7 @@ class Sampler:
             lookup["token_frequencies"] = (freqs / freqs.sum()).cpu()
         self.params["embedding_lookup"] = lookup
         self._embedding_lookup_loaded = False  # force re-load onto device on the next sample
+        self._embed_moments = None  # derived from the table -- must not survive a new one
 
     def has_embedding_lookup(self) -> bool:
         """Whether the exact layer-0 pre_qkv lookup table is available."""
@@ -509,7 +518,8 @@ class Sampler:
 
     # ------------------------------------------------------------ the ladder
 
-    def sample_best(self, layer: int, site: str, n: int, weighted: bool = True):
+    def sample_best(self, layer: int, site: str, n: int,
+                    weighted: bool = True) -> torch.Tensor | None:
         """Sample with the highest-fidelity model this artifact has for the layer and site.
 
         Ladder: exact embedding lookup (layer-0 pre_qkv only) -> GMM -> PCA -> diagonal Gaussian.

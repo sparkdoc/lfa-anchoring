@@ -11,6 +11,11 @@ def test_shapes_and_determinism(tiny_artifact):
     assert a.sample_best(2, "pre_lm_head", 4).shape == (4, 32)
     assert a.sample_best(0, "pre_qkv", 4) is None          # no lookup built yet, no 0_pre_qkv key
 
+def test_num_layers_excludes_lm_head(tiny_artifact):
+    _, path = tiny_artifact
+    # 2_pre_lm_head is the model-level site at index num_layers(), not a third transformer layer
+    assert Sampler(path, device="cpu").num_layers() == 2
+
 def test_embedding_lookup_from_model(tiny_artifact, tiny_model):
     _, path = tiny_artifact; model, _ = tiny_model
     s = Sampler(path, device="cpu", seed=1)
