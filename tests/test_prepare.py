@@ -16,6 +16,7 @@ from lfa.prepare_domain import clean_text, find_input_files, prepare_domain
 from lfa.seed_corpus import (
     INSTRUCTION_SOURCES,
     PRETRAINING_SOURCES,
+    REDPAJAMA_PATH,
     SHIPPED_COMPOSITION,
     allocate,
     download_instruction,
@@ -87,12 +88,16 @@ def test_prepare_domain_drops_a_file_under_min_length(tmp_path):
 
 
 def test_prepare_domain_min_length_is_characters_after_cleaning(tmp_path):
+    # A link farm: long on disk, almost nothing once the URLs and blank lines are gone.
+    raw = "[see also](https://example.com/a/very/long/tracking/url/that/carries/no/prose)\n\n" * 40
     src, out = tmp_path / "src", tmp_path / "out"
     src.mkdir()
-    _write(src / "a.txt", PARAGRAPH * 3)          # ~240 chars
+    _write(src / "links.md", raw)
 
-    assert prepare_domain([src], out, min_length=100) != []
-    assert prepare_domain([src], tmp_path / "out2", min_length=10_000) == []
+    assert len(raw) > 1000 > len(clean_text(raw))          # raw would pass; cleaned must not
+
+    assert prepare_domain([src], out, min_length=1000) == []
+    assert prepare_domain([src], tmp_path / "out2", min_length=100) != []
 
 
 def test_prepare_domain_combine_writes_one_file(tmp_path):
@@ -457,7 +462,7 @@ def _instruction_tables(n: int = 30) -> dict[str, list[dict]]:
 
 
 def _fake_loader() -> FakeLoader:
-    tables = {"ZengXiangyu/RedPajama-Data-1T-Sample": _redpajama_rows()}
+    tables = {REDPAJAMA_PATH: _redpajama_rows()}
     tables.update(_instruction_tables())
     return FakeLoader(tables)
 
@@ -561,10 +566,61 @@ def test_prepare_seed_corpus_is_deterministic_in_the_seed(tmp_path):
     assert a.read_bytes() != c.read_bytes()
 
 
-def test_prepare_seed_corpus_defaults_are_the_shipped_composition():
+def test_prepare_seed_corpus_defaults_are_the_download_targets():
+    """The defaults are what to ASK for, not what lands: 12,000/6 = 2,000 caps each pretraining
+    source and 20,000 instruction pairs are cut to 966 by the mix. What lands is the shipped
+    9,663 + 966, which the test below realizes end to end."""
     import inspect
 
     defaults = {p.name: p.default for p in inspect.signature(prepare_seed_corpus).parameters.values()}
-    assert defaults["n_pretraining"] == 9663      # the shipped corpus' pretraining rows
-    assert defaults["n_instruction"] == 966       # ... and its instruction rows, i.e. 10:1
+    assert defaults["n_pretraining"] == 12_000
+    assert defaults["n_instruction"] == 20_000
+    assert defaults["n_pretraining"] // len(PRETRAINING_SOURCES) == 2000    # the per-source cap
     assert defaults["seed"] == 42 and defaults["max_length"] == 2048
+
+
+def _shipped_availability_loader() -> FakeLoader:
+    """A loader whose sources hold exactly what the shipped corpus' sources held.
+
+    Pretraining availability is the shipped composition itself (arXiv 1,524 and GitHub 147 below
+    the 2,000 cap, the other four at or just under it); instruction availability is each source's
+    full allocation, of which the 10:1 mix keeps 966.
+    """
+    metas = {
+        "redpajama_arxiv": {"arxiv_id": "2401.00001"},
+        "redpajama_wikipedia": {"url": "https://en.wikipedia.org/wiki/Anchor"},
+        "redpajama_github": {"url": "https://github.com/org/repo"},
+        "redpajama_stackexchange": {"url": "https://stats.stackexchange.com/q/1"},
+        "redpajama_book": {"short_book_title": "Moby Dick"},
+        "redpajama_web": {"url": "https://example.com/page"},
+    }
+    redpajama = [{"text": f"{name} document {i}. " + PARAGRAPH, "meta": metas[name]}
+                 for name, available in SHIPPED_COMPOSITION["pretraining"].items()
+                 for i in range(available)]
+
+    allocations = allocate({n: c["default_samples"] for n, c in INSTRUCTION_SOURCES.items()}, 20_000)
+    instruction = _instruction_tables(n=5000)
+    tables = {REDPAJAMA_PATH: redpajama}
+    for name, config in INSTRUCTION_SOURCES.items():
+        tables[config["path"]] = instruction[config["path"]][:allocations[name]]
+    return FakeLoader(tables)
+
+
+def test_prepare_seed_corpus_defaults_realize_the_shipped_composition(tmp_path):
+    out = tmp_path / "seed_corpus_10to1.jsonl"
+
+    prepare_seed_corpus(out, seed=42, loader=_shipped_availability_loader())
+
+    rows = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+    pretraining = [r for r in rows if "text" in r]
+    instruction = [r for r in rows if "prompt" in r]
+    per_source = {name: sum(1 for r in pretraining if r["source"] == name)
+                  for name in PRETRAINING_SOURCES}
+
+    assert len(pretraining) == 9663
+    assert per_source == SHIPPED_COMPOSITION["pretraining"]
+    assert len(instruction) == 966
+    # The instruction side is a uniform draw from ~20,000 pairs, not a per-source cap, so only its
+    # total is fixed; every source is represented, in proportion to its share of the pool.
+    assert {r["source"] for r in instruction} == set(INSTRUCTION_SOURCES)
+    assert len(rows) == 10_629

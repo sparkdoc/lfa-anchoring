@@ -18,7 +18,15 @@ together -- which is why the pair is kept in two fields rather than joined here.
 
 **The shipped artifact's corpus.** The published ``gmm1543k`` artifact was estimated on 10,629
 documents in exactly this 10:1 shape (the "1543k" counts hidden-state samples per site, not
-documents):
+documents). Two levels are involved, and they carry different numbers:
+
+* the **download targets** -- 12,000 pretraining documents and 20,000 instruction pairs, the
+  defaults of :func:`prepare_seed_corpus`. The pretraining target is a per-source *cap* of
+  ``n/6`` = 2,000 (:func:`allocate`), applied before any filtering; a source with fewer rows
+  within reach of the scan simply comes up short.
+* the **realized corpus** -- 9,663 pretraining documents and 966 instruction pairs, after arXiv
+  and GitHub exhaust below their cap and the 10:1 mix trims the instruction side
+  (:func:`weighted_mix`). This is :data:`SHIPPED_COMPOSITION`::
 
     pretraining (9,663 documents)        instruction (966 pairs)
       redpajama_stackexchange  2,000         dolly          203
@@ -28,12 +36,13 @@ documents):
       redpajama_arxiv          1,524         oasst2         224
       redpajama_github           147
 
-Those counts are the defaults of :func:`prepare_seed_corpus` and are recorded in
-:data:`SHIPPED_COMPOSITION`. GitHub is far short of its allocation because GitHub entries are
-sparse in the head of the RedPajama sample that the scan reaches (see
-:func:`download_pretraining`); arXiv falls short for the same reason. A rebuild will not
-reproduce the shipped corpus byte for byte -- the upstream datasets move, and the sampling RNG is
-this module's own -- but it reproduces its *composition*, which is what p(h) depends on.
+GitHub is far short of its 2,000 cap because GitHub entries are sparse in the head of the
+RedPajama sample the scan reaches (see :func:`download_pretraining`); arXiv falls short for the
+same reason. The instruction side is cut from ~20,000 available pairs to the 966 the 10:1 ratio
+allows, so its per-source counts are a uniform draw from the pool rather than a cap. A rebuild
+will not reproduce the shipped corpus byte for byte -- the upstream datasets move, and the
+sampling RNG is this module's own -- but it reproduces its *composition*, which is what p(h)
+depends on.
 """
 
 from __future__ import annotations
@@ -109,7 +118,9 @@ def is_stackexchange(example: dict) -> bool:
 
 
 def is_book(example: dict) -> bool:
-    """A book: RedPajama's book rows carry no URL, but do mention a book in their metadata."""
+    """Any row whose metadata mentions "book" anywhere -- book titles, but a ``facebook.com`` URL
+    too, which therefore matches :func:`is_web` as well. Kept exactly as the shipped corpus was
+    built: tightening it would change the mixture p(h) was estimated on."""
     return "book" in str(parse_meta(example)).lower()
 
 
@@ -429,8 +440,8 @@ def corpus_statistics(rows: Sequence[dict]) -> dict[str, Any]:
 def prepare_seed_corpus(
     out_path: str | Path,
     *,
-    n_pretraining: int = 9_663,
-    n_instruction: int = 966,
+    n_pretraining: int = 12_000,
+    n_instruction: int = 20_000,
     max_length: int = 2048,
     seed: int = 42,
     cache_dir: str | Path | None = None,
@@ -438,16 +449,19 @@ def prepare_seed_corpus(
 ) -> Path:
     """Download, mix at 10:1 and write the seed corpus; return the JSONL path.
 
-    The defaults are the composition of the corpus behind the shipped ``gmm1543k`` artifact
-    (:data:`SHIPPED_COMPOSITION`): 9,663 pretraining documents and 966 instruction pairs. A
-    ``.stats.json`` sidecar is written beside the corpus with the realized per-source counts --
-    check GitHub's and arXiv's there, since both come up short of their allocation by
-    construction.
+    The defaults are the **download targets** that realize the shipped ``gmm1543k`` corpus:
+    12,000 pretraining documents (a per-source cap of 2,000) and 20,000 instruction pairs. What
+    lands is smaller -- arXiv and GitHub exhaust below the cap, and the 10:1 mix then trims the
+    instruction side -- giving the shipped 9,663 + 966 of :data:`SHIPPED_COMPOSITION`. Read the
+    realized per-source counts off the ``.stats.json`` sidecar written beside the corpus, not off
+    the targets.
 
     Args:
         out_path: the JSONL to write. Its parent is created if absent.
-        n_pretraining: pretraining documents to download (before the 10:1 trim).
-        n_instruction: instruction pairs to download (before the trim).
+        n_pretraining: pretraining documents to *aim for*; ``n_pretraining/6`` caps each source,
+            and the 10:1 mix trims the result.
+        n_instruction: instruction pairs to *aim for*, split across the five sources in
+            proportion to their default sample counts; the 10:1 mix trims the result.
         max_length: truncate each document, prompt and response to this many characters.
         seed: seeds sampling and the shuffle; the same seed gives the same file.
         cache_dir: passed to the loader, for a non-default Hugging Face cache.
@@ -457,10 +471,10 @@ def prepare_seed_corpus(
     out_path = Path(out_path)
     loader = loader if loader is not None else _default_loader()
 
-    logger.info("Downloading %d pretraining documents ...", n_pretraining)
+    logger.info("Downloading up to %d pretraining documents ...", n_pretraining)
     pretraining_rows = download_pretraining(n_pretraining, max_length=max_length, seed=seed,
                                             loader=loader, cache_dir=cache_dir)
-    logger.info("Downloading %d instruction pairs ...", n_instruction)
+    logger.info("Downloading up to %d instruction pairs ...", n_instruction)
     instruction_rows = download_instruction(n_instruction, max_length=max_length, seed=seed,
                                             loader=loader, cache_dir=cache_dir)
 
