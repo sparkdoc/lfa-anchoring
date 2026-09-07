@@ -69,7 +69,7 @@ from .train import train as run_training
 
 logger = logging.getLogger("lfa.workspace")
 
-__all__ = ["Workspace", "StageOrderError", "WORKSPACE_FILE", "HISTORY_FILE",
+__all__ = ["Workspace", "StageOrderError", "WorkspaceNotReady", "WORKSPACE_FILE", "HISTORY_FILE",
            "LOADER_FRAME_NOTICE"]
 
 WORKSPACE_FILE = "workspace.json"
@@ -89,6 +89,18 @@ LOADER_FRAME_NOTICE = (
 
 class StageOrderError(RuntimeError):
     """Raised when a chain's steps are taken out of order (train/extend/train)."""
+
+
+class WorkspaceNotReady(RuntimeError):
+    """Raised when a workspace is asked for something it does not have yet.
+
+    Two cases, both of them ordinary first-session mistakes rather than bugs: a training call on a
+    workspace that carries no p(h) artifact, and a read (``evaluate``, ``fuse``) of a workspace
+    that has trained no stage. Both messages end in the command to run instead, so both are in
+    :data:`lfa.cli.USER_FACING_ERRORS` and reach the user as one line rather than as the last line
+    of a traceback -- which a bare ``RuntimeError`` cannot be, since torch raises those for real
+    faults (a CUDA OOM, for one) that must keep their traceback.
+    """
 
 
 def _lfa_version() -> str:
@@ -425,7 +437,7 @@ class Workspace:
         Raises:
             StageOrderError: a new corpus while a trained stage has not been extended.
             ValueError: no recipe anywhere, or an ``epochs`` the schedule cannot carry.
-            RuntimeError: the workspace has no artifact to anchor against.
+            WorkspaceNotReady: the workspace has no artifact to anchor against.
         """
         corpus_path = Path(corpus).expanduser().resolve()
         if not corpus_path.exists():
@@ -443,7 +455,7 @@ class Workspace:
 
         artifact = self.state["current_artifact"]
         if artifact is None:
-            raise RuntimeError(
+            raise WorkspaceNotReady(
                 "This workspace has no p(h) artifact. Fetch one with `lfa fetch-artifact "
                 f"{self.state['artifact_id'] or '<id>'} --dest {self.path / 'artifacts'}` "
                 "or re-initialise with a local artifact path."
@@ -880,8 +892,13 @@ class Workspace:
         return output_dir
 
     def _require_trained_stage(self) -> dict:
+        """The stage :meth:`evaluate` and :meth:`fuse` act on.
+
+        Raises:
+            WorkspaceNotReady: nothing has been trained here yet.
+        """
         if not self.history or self.state["last_stage_adapter"] is None:
-            raise RuntimeError(
+            raise WorkspaceNotReady(
                 "This workspace has no trained stage yet: run `lfa train --corpus ...` first."
             )
         return self.history[-1]

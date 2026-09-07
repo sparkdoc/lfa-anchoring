@@ -32,21 +32,26 @@ from .artifact.fetch import (ArtifactNotPublished, ChecksumMismatch, fetch_artif
                              list_artifacts)
 from .models import DEFAULT_DEVICE, NoTrainableParameters, ShardingRefused
 from .prepare_domain import prepare_domain
-from .seed_corpus import prepare_seed_corpus
+from .seed_corpus import SourceUnavailable, prepare_seed_corpus
 from .train import ResumeSourceHasNoAdapter
-from .workspace import StageOrderError, Workspace
+from .workspace import StageOrderError, Workspace, WorkspaceNotReady
 
 __all__ = ["main"]
 
 #: Every exception the library raises **at the user** rather than at a caller: a chain out of
-#: order, a workspace that is not there or is already there, a device map that would shard the
-#: model, an artifact that is unpublished or arrives corrupted, a resume with no adapter to
-#: continue, a student with nothing trainable, and any value a recipe or a flag fails validation
-#: on. Each carries a message written to be read, so each is reported as one line rather than as
-#: the last line of a traceback. Anything outside this tuple is a bug and keeps its traceback.
+#: order, a workspace that is not there or is already there or is not ready for what was asked, a
+#: device map that would shard the model, an artifact that is unpublished or arrives corrupted, a
+#: seed-corpus dataset that cannot be reached, a resume with no adapter to continue, a student with
+#: nothing trainable, and any value a recipe or a flag fails validation on. Each carries a message
+#: written to be read, so each is reported as one line rather than as the last line of a traceback.
+#: Anything outside this tuple is a bug and keeps its traceback.
+#:
+#: They are named classes rather than the bare ``RuntimeError`` they subclass, deliberately: torch
+#: raises ``RuntimeError`` for real faults -- a CUDA OOM, a shape mismatch -- and those must keep
+#: their traceback rather than be collapsed to a line.
 USER_FACING_ERRORS = (
-    StageOrderError, ShardingRefused, ArtifactNotPublished, ChecksumMismatch,
-    ResumeSourceHasNoAdapter, NoTrainableParameters,
+    StageOrderError, WorkspaceNotReady, ShardingRefused, ArtifactNotPublished, ChecksumMismatch,
+    SourceUnavailable, ResumeSourceHasNoAdapter, NoTrainableParameters,
     FileNotFoundError, FileExistsError, ValueError,
 )
 

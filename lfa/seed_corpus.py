@@ -64,6 +64,16 @@ logger = logging.getLogger(__name__)
 
 REDPAJAMA_PATH = "ZengXiangyu/RedPajama-Data-1T-Sample"
 
+
+class SourceUnavailable(RuntimeError):
+    """Raised when a seed-corpus dataset cannot be loaded.
+
+    The usual cause is the ordinary one -- no network, an offline cache that does not hold this
+    dataset, or an upstream id that has moved -- so the message names the dataset and the split and
+    reaches the user as one line (it is in :data:`lfa.cli.USER_FACING_ERRORS`) rather than as the
+    last line of a traceback.
+    """
+
 # The composition of the corpus behind the shipped gmm1543k artifact (documents per source).
 SHIPPED_COMPOSITION: dict[str, dict[str, int]] = {
     "pretraining": {
@@ -278,11 +288,12 @@ def allocate(defaults: dict[str, int], total: int) -> dict[str, int]:
 
 
 def _load(loader: Callable, path: str, split: str, cache_dir: str | Path | None, what: str):
-    """Call the injected loader, turning any failure into a clear :class:`RuntimeError`."""
+    """Call the injected loader, turning any failure into a clear :class:`SourceUnavailable`."""
     try:
         return loader(path, split=split, cache_dir=cache_dir)
     except Exception as exc:
-        raise RuntimeError(f"Could not load {what} from '{path}' (split '{split}'): {exc}") from exc
+        raise SourceUnavailable(
+            f"Could not load {what} from '{path}' (split '{split}'): {exc}") from exc
 
 
 def download_pretraining(n_total: int, *, max_length: int = 2048, seed: int = 42,

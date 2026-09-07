@@ -19,6 +19,8 @@ import yaml
 
 from conftest import tiny_recipe
 from lfa.cli import main
+from lfa.seed_corpus import prepare_seed_corpus
+from lfa.workspace import Workspace
 
 #: Every subcommand the CLI publishes; the help and the parse of each one is asserted below.
 SUBCOMMANDS = [
@@ -193,6 +195,61 @@ def test_an_unknown_artifact_id_exits_two_with_one_line(tmp_path, base_dir, caps
 
     assert code == 2
     assert len(error_lines(capsys)) == 1
+
+
+@pytest.mark.parametrize("subcommand", ["fuse", "evaluate"])
+def test_reading_a_workspace_with_no_trained_stage_exits_two_with_one_line(subcommand, tmp_path,
+                                                                          registry, base_dir,
+                                                                          capsys):
+    """`lfa fuse` (or `evaluate`) right after `init`: a first-session mistake, not an exotic one.
+
+    It used to raise a bare `RuntimeError`, which is not in `USER_FACING_ERRORS`, so the message --
+    which already ends in the command to run instead -- arrived as the last line of a traceback.
+    """
+    workspace = tmp_path / "ws"
+    assert main(["init", str(workspace), "--model", str(base_dir), "--artifact", "tiny"]) == 0
+    capsys.readouterr()
+
+    code = main([subcommand, "--workspace", str(workspace)])
+
+    assert code == 2
+    lines = error_lines(capsys)                  # asserts there is no traceback
+    assert len(lines) == 1
+    assert "lfa train" in lines[0]
+
+
+def test_a_workspace_with_no_artifact_exits_two_with_one_line(tmp_path, base_dir, corpus_a,
+                                                              recipe_path, capsys):
+    """`init --artifact` can be told not to fetch; training then has no p(h) to anchor against."""
+    workspace = tmp_path / "ws"
+    Workspace.init(workspace, str(base_dir), artifact="qwen3-0.6b-gmm1543k-int8", fetch=False)
+    capsys.readouterr()
+
+    code = main(["train", "--workspace", str(workspace), "--corpus", str(corpus_a),
+                 "--recipe", str(recipe_path), "--device", "cpu"])
+
+    assert code == 2
+    lines = error_lines(capsys)
+    assert len(lines) == 1
+    assert "fetch-artifact" in lines[0]
+
+
+def test_a_seed_corpus_source_that_cannot_be_loaded_exits_two_with_one_line(tmp_path, capsys,
+                                                                            monkeypatch):
+    """No network is the ordinary case for `prepare-seed-corpus`, and it is not a bug."""
+    def unreachable(path, *, split, cache_dir=None):
+        raise OSError("We couldn't connect to https://huggingface.co")
+
+    monkeypatch.setattr("lfa.cli.prepare_seed_corpus",
+                        lambda *args, **kwargs: prepare_seed_corpus(*args, **kwargs,
+                                                                    loader=unreachable))
+
+    code = main(["prepare-seed-corpus", "--out", str(tmp_path / "seed.jsonl")])
+
+    assert code == 2
+    lines = error_lines(capsys)
+    assert len(lines) == 1
+    assert "RedPajama" in lines[0]
 
 
 def test_a_directory_that_is_not_a_workspace_exits_two_with_one_line(tmp_path, corpus_a,
