@@ -145,8 +145,11 @@ components per site: the cost per round does not grow with the number of rounds.
 Two different things, kept apart on purpose.
 
 **The paper's result.** On Qwen3-0.6B at the shipped operating point (rank 32, λ = 100,000,
-μ = 0.05, 15 epochs) the LFA paper reports domain perplexity **8.76** at a seed-corpus perplexity
-cost of **−10.0 %**. That is the paper's measurement, on the paper's corpus and instruments; this
+μ = 0.05, 15 epochs) the LFA paper reports domain perplexity **8.76** at a seed ΔPPL of
+**−10.0 %** — seed-corpus perplexity 10 % *below* the base model's, which is the favourable end of
+that axis and the contrast the paper draws with methods that pay a positive drift. (A general
+perplexity below base is still not by itself evidence that anything was preserved; see
+[faq.md](faq.md).) That is the paper's measurement, on the paper's corpus and instruments; this
 repository does not reproduce it and does not claim to.
 
 **This package's own measured point.** The acceptance test trains the bundled recipe end to end

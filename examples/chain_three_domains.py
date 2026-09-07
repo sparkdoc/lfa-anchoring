@@ -30,6 +30,9 @@ Example::
         --model Qwen/Qwen3-0.6B \\
         --artifact qwen3-0.6b-gmm1543k-int8 \\
         --out runs/three_domains
+
+``--artifact`` also takes a path, which is what to pass while the published assets do not exist
+yet: fetching by id refuses until the registry's checksums are filled in (see ``RELEASING.md``).
 """
 
 from __future__ import annotations

@@ -115,8 +115,9 @@ hidden 1024, `pre_o` 2048) at the default 200,000-vector reservoir in fp16:
 | **`--layer-group-size 7`** | **~12 GB per group**, in four corpus passes |
 
 So `--layer-group-size` is normally set; 7 is the value for a 28-layer model on a 64 GB host. The
-float64 covariance accumulators add `D² × 8` bytes per site (~1.6 GB across all 84 sites of that
-model), which is small beside the reservoirs but not nothing.
+float64 covariance accumulators add `D² × 8` bytes per site (8.39 MB at width 1024 and 33.55 MB at
+2048, so 1.41 GB across all 84 sites of that model), which is small beside the reservoirs but not
+nothing.
 
 The GPU side is undemanding — the model is loaded in **float32**, deliberately: the artifact is a
 second-moment estimate and bf16's 8-bit mantissa is a large error on a covariance.

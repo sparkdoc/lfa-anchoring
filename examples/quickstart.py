@@ -4,7 +4,8 @@
 This is the single-domain flow of Layerwise Function Anchoring (LFA) written out as Python, so
 that the four things a run does are visible in one file:
 
-1. :meth:`lfa.Workspace.init` puts a model and a p(h) artifact in one directory.
+1. :meth:`lfa.Workspace.init` makes a workspace: it records which model to adapt and which
+   recipe to use, and copies the p(h) artifact in as ``artifacts/v1.pt``.
 2. :meth:`lfa.Workspace.train` adapts the model to a corpus with the anchor switched on.
 3. :meth:`lfa.Workspace.evaluate` reads the stage on both axes -- what it learned (held-out
    domain perplexity) and what it kept (WikiText-2) -- against the model it started from.
@@ -22,6 +23,9 @@ Example::
         --artifact qwen3-0.6b-gmm1543k-int8 \\
         --corpus data/my_domain \\
         --out runs/my_domain
+
+``--artifact`` also takes a path, which is what to pass while the published assets do not exist
+yet: fetching by id refuses until the registry's checksums are filled in (see ``RELEASING.md``).
 
 Add ``--compare-unanchored`` to train the control that says what the anchor bought: the same run
 with lambda = mu = 0. It costs a second training run.
@@ -81,8 +85,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
-    # 1. A workspace is a directory that carries the model, its p(h) artifact and its history.
-    #    It is what keeps the next domain from silently anchoring against the wrong p(h).
+    # 1. A workspace records which model it adapts (by id or path -- the checkpoint is not
+    #    copied in) and carries the p(h) artifact and the history. It is what keeps the next
+    #    domain from silently anchoring against the wrong p(h).
     workspace = Workspace.init(args.out, args.model, artifact=args.artifact,
                                artifact_id=args.artifact_id, recipe=args.recipe)
 

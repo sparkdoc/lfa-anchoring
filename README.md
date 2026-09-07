@@ -39,11 +39,13 @@ lfa evaluate --workspace runs/my_domain
 lfa fuse     --workspace runs/my_domain
 ```
 
-`init` makes a workspace — one directory holding the model, its `p(h)` artifact (fetched by id and
-checksum-verified, or copied from a path you pass), the recipe and the history of everything done to
-it. `train` adapts it with the anchor on, holding a tenth of the documents out so the domain number
-is a measurement rather than a fit. `evaluate` reads the stage on both axes, against the model it
-started from:
+`init` makes a workspace: a directory that *records* which model it adapts (a Hub id or a path —
+the model itself is not copied in, and is not even loaded until a stage starts) and which recipe it
+uses, and that *carries* the p(h) artifact, fetched by id and checksum-verified or copied from a
+path you pass, as `artifacts/v1.pt`. Every run, every extended artifact and every fused model then
+lands beside it, with a history entry per stage. `train` adapts the model with the anchor on,
+holding a tenth of the documents out so the domain number is a measurement rather than a fit.
+`evaluate` reads the stage on both axes, against the model it started from:
 
 ```
 | metric               | before | after |     Δ% |
@@ -55,6 +57,12 @@ started from:
 `fuse` writes a plain checkpoint that loads with `AutoModelForCausalLM.from_pretrained`. A second
 domain adds one step — `lfa extend` — which folds the finished stage into both the model and
 `p(h)`; `lfa chain domains.yaml` runs a whole sequence.
+
+> **Before the release assets exist**, fetching an artifact by id refuses rather than downloading
+> something it cannot verify (`ArtifactNotPublished` — the registry's checksums are still
+> placeholders), so that first command fails as written. Pass a local artifact file instead
+> (`--artifact /path/to/distribution_stats.pt`), or build one:
+> [docs/rebuilding-the-artifact.md](docs/rebuilding-the-artifact.md).
 
 Full walkthrough: [docs/quickstart.md](docs/quickstart.md). Same flow as Python:
 [`examples/quickstart.py`](examples/quickstart.py).
@@ -101,9 +109,9 @@ Two suites are opt-in, because they need a GPU and the research checkout this pa
 from:
 
 ```bash
-pytest tests/equivalence -m equivalence -q   # the sampler, the losses and the loader, against the research code
-pytest tests/acceptance -m acceptance -q -s  # one full training run, against a matched the research code run
-pytest tests/test_gpu_smoke.py -m gpu -q     # bf16 placement, one stage on the card, TorchGMM on CUDA
+pytest tests/equivalence -m equivalence -q   # sampler, losses and loader, against the research code
+pytest tests/acceptance -m acceptance -q -s  # one full run, against a matched the research code run
+pytest tests/test_gpu_smoke.py -m gpu -q     # bf16 placement, one stage on the card, TorchGMM
 ```
 
 The equivalence suite replays captured fixtures: the sampler's draws are asserted **bit-identical**,
@@ -133,8 +141,9 @@ of a sampled objective; they say the run produced a domain-adapted model on the 
 and a failure there is something to investigate with a second seed rather than a regression.
 
 None of this is a reproduction of a published number. The paper's own headline — domain perplexity
-8.76 at a −10.0 % seed cost on Qwen3-0.6B — is the paper's measurement on the paper's corpus and
-instruments, and is quoted here only as such. See
+8.76 on Qwen3-0.6B at a seed ΔPPL of −10.0 %, i.e. seed-corpus perplexity 10 % *below* the base
+model's — is the paper's measurement on the paper's corpus and instruments, and is quoted here only
+as such. See
 [`tests/acceptance/README.md`](tests/acceptance/README.md).
 
 ## Relationship to the research record

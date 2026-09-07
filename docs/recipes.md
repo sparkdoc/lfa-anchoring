@@ -65,7 +65,7 @@ two.
 | field | value |
 |---|---|
 | `learning_rate` | 3e-4 |
-| `lr_schedule` | `cosine` — 50 steps of linear warmup (0.1× → 1×), then cosine decay over every remaining step to `lr_floor`; `constant` holds the peak instead |
+| `lr_schedule` | `cosine` — 50 steps of linear warmup (0.1× → 1×), then cosine decay over every remaining step to zero (the floor is the trainer's `lr_floor`, which recipes do not expose and which defaults to 0); `constant` holds the peak instead |
 | `batch_size` × `gradient_accumulation_steps` | 6 × 1, at `sequence_length` 512 |
 | `warmup_steps` | 50 |
 | `weight_decay` | 0.01 |

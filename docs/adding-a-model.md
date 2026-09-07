@@ -97,7 +97,7 @@ A workable procedure:
 2. Train the **unanchored** control first (`lfa evaluate --compare-unanchored`, or a recipe with
    `lambda_qkv: 0`, `lambda_mlp: 0`, `mu: 0`). It sets both ends of the scale: how far the domain
    can move, and what that costs on the general axis when nothing is preserved.
-3. Sweep λ over roughly a decade, a factor of 2–3 apart, at a fixed rank and dose. Read the
+3. Sweep λ over roughly a decade, a factor of 2–3 apart, at a fixed rank and epoch count. Read the
    **frontier** — held-out domain perplexity against general perplexity — not a single point.
 4. Pick from the frontier, not from the general axis alone. Over-anchoring makes general perplexity
    look its best while domain quality collapses; that failure is invisible unless you are watching

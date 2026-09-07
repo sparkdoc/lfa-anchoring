@@ -59,10 +59,14 @@ lfa evaluate --workspace runs/my_domain
 lfa fuse     --workspace runs/my_domain
 ```
 
-1. **`init`** creates a workspace: one directory carrying the model, its p(h) artifact
-   (`artifacts/v1.pt`), the recipe, and the history of everything done to it. It picks up the
-   bundled recipe that names your model — `qwen3-0.6b` — automatically; pass `--recipe` for
-   another model or your own YAML.
+1. **`init`** creates a workspace. It *records* the model (a Hub id or a path: the checkpoint is
+   not copied in, and `init` does not load it — the artifact is checked against it when a stage
+   starts) and the recipe, and it *copies in* the p(h) artifact as `artifacts/v1.pt`, so the
+   workspace owns its own p(h) and later versions sit beside it. Runs, extended artifacts and
+   fused models land there too, with a history entry per stage. `init` picks up the bundled recipe
+   that names your model — `qwen3-0.6b` — automatically; pass `--recipe` for another model or your
+   own YAML. Move or delete the checkpoint (or a `--recipe` file you passed by path) and the
+   workspace will not find it again.
 2. **`train`** adapts the workspace's current model to the corpus with the anchor on. A tenth of
    the documents are held out and scored after every epoch, so the domain number is a measurement
    rather than a fit. Use `--epochs` to shorten a run (the learning-rate schedule is laid over
