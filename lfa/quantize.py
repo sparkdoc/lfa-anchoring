@@ -70,6 +70,11 @@ def quantize_params(params: dict, fields=QUANTIZABLE, block: int = DEFAULT_BLOCK
     """New params dict with `fields` blockwise-int8 quantized (entries copied shallowly)."""
     out = {}
     for key, entry in params.items():
+        if key == "__meta__":
+            # The meta block is provenance, not a site; passed through by identity so the read side
+            # (`dequantize_params`, which skips it) and the write side agree on what a site is.
+            out[key] = entry
+            continue
         if not isinstance(entry, dict):
             out[key] = entry
             continue

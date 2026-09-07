@@ -132,7 +132,8 @@ def merge_stats(base_stats: dict, domain_stats: dict, alpha: float | None = None
             # h = stored_mean + gmm_sample @ Vᵀ + residual, so we MUST keep stored_mean = base_mean
             # and base std/basis (off-basis residual ≈ unchanged) — overwriting the mean with the
             # n-weighted blend would double-shift every component. Marginal mean/cov come out correct
-            # from the mixture itself (verified end-to-end by the mixture-merge tests).
+            # from the mixture itself (verified upstream against the proportional concatenation of the two
+            # sample pools).
             merged.update(gmm)
         else:
             # pure-diagonal path: no mixture, so the marginal blend IS the update
