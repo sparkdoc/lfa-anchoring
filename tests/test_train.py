@@ -350,7 +350,8 @@ def test_resume_inside_the_warmup_replays_the_schedule(setup, tmp_path):
     teacher, fresh_student, dataset, sampler, adapter = setup
     # The warmup is set to two and a half epochs so that the epoch the comparison reads (the
     # second) is strictly inside it. That is where the bug lives: at the warmup's end SequentialLR
-    # re-derives the next phase's rate from `base_lrs`, which wipes a compounded value and hides it.
+    # re-derives the next phase's rate from `base_lrs`, which wipes a compounded value and hides
+    # it.
     dataset.rechunk(0, make_config().seed)
     steps_per_epoch = math.ceil(len(dataset) / 6)
     knobs = dict(warmup_steps=int(2.5 * steps_per_epoch), batch_size=6)
@@ -437,7 +438,7 @@ def test_the_cosine_schedule_matches_researchs_scheduler_step_for_step(
 
 
 def test_a_constant_schedule_holds_the_peak_after_the_warmup():
-    """``lr_schedule="constant"`` is the research code's ``cosine_fraction=0`` branch: warmup, then flat."""
+    """``lr_schedule="constant"``: the research code's no-cosine branch -- warmup, then flat."""
     config = make_config(learning_rate=3e-4, warmup_steps=5, lr_schedule="constant")
     param = torch.nn.Parameter(torch.zeros(1))
     optimizer = torch.optim.AdamW([param], lr=config.learning_rate)

@@ -60,8 +60,8 @@ def test_the_recipe_lands_where_the_research_code_lands(tmp_path):
     for check in results["checks"]:
         assert check["ok"], (
             f"{check['name']}: measured {check['measured']}, outside {check['tolerance']}. Do not "
-            f"widen the tolerance -- compare {out / 'workspace'}'s run config and per-epoch losses "
-            f"against {results['reference']['run']} before concluding anything."
+            f"widen the tolerance -- compare {out / 'workspace'}'s run config and per-epoch "
+            f"losses against {results['reference']['run']} before concluding anything."
         )
 
 

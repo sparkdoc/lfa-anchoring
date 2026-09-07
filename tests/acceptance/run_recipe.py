@@ -112,10 +112,6 @@ class MissingInput(RuntimeError):
     """A required read-only input is not on this machine (the test turns this into a skip)."""
 
 
-class FrameMismatch(RuntimeError):
-    """The reference run and the companion run are not the same configuration."""
-
-
 class ReusedRunDiffers(RuntimeError):
     """The run already in ``--out`` was made under a different frame than the one asked for."""
 
@@ -401,7 +397,8 @@ def check_equivalence(companion: dict, reference: dict, base_seed_ppl: float | N
         "measured": our_drift,
         "reference": their_drift,
         "deviation": gap,
-        "tolerance": f"within {drift_tol:.3g} pp of {'n/a' if their_drift is None else round(their_drift, 3)}",
+        "tolerance": f"within {drift_tol:.3g} pp of "
+                     f"{'n/a' if their_drift is None else round(their_drift, 3)}",
         "ok": gap is not None and gap <= drift_tol,
     })
 

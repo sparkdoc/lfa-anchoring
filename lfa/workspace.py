@@ -519,8 +519,9 @@ class Workspace:
         """The default run directory for this stage.
 
         The first run of a stage is ``stage{N}``. A repeat -- more epochs on the domain already
-        in progress -- is ``stage{N}_run{k}``, because two history entries pointing at one directory
-        would leave the first run's config, curve and checkpoint overwritten by the second's. A
+        in progress -- is ``stage{N}_run{k}``, because two history entries pointing at one
+        directory would leave the first run's config, curve and checkpoint overwritten by the
+        second's. A
         *resumed* repeat is the same run continuing, so it keeps its own directory.
         """
         if not repeat:
