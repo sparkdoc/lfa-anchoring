@@ -111,16 +111,15 @@ def compute_layer_weights(
         num_layers: number of transformer layers.
         end_ratio: last layer's weight relative to layer 0 (``1.0`` = uniform, no decay).
         schedule: interpolation shape, one of :data:`ANCHOR_SCHEDULES`.
-        normalize: rescale the weights to **average 1.0** (i.e. sum to ``num_layers``).
+        normalize: rescale the weights to **sum to 1.0**.
 
             .. note::
 
-               The reference implementation normalizes to sum ``1.0`` instead. Averaging to 1.0
-               keeps the schedule on the same scale as the uniform default
-               (``layer_weights=None``, all ones), so switching the schedule on no longer divides
-               the whole anchor by ``num_layers`` and lambda keeps its meaning. A lambda tuned
-               against a sum-to-1 implementation therefore corresponds to ``lambda / num_layers``
-               here.
+               This is the convention the published lambda is calibrated against, so do not change
+               it: with ``normalize=True`` a scheduled anchor is ``num_layers`` times smaller than
+               the same anchor under the uniform default (``layer_weights=None``, all ones), and
+               lambda absorbs that factor. ``compute_layer_weights(4, 0.1, "cosine")`` is
+               ``[0.3774, 0.3276, 0.2075, 0.0875]``.
 
     Returns:
         ``[w_0, ..., w_{L-1}]``.
@@ -128,8 +127,8 @@ def compute_layer_weights(
     weights = [schedule_weight(l / num_layers, end_ratio, schedule) for l in range(num_layers)]
 
     if normalize:
-        mean = sum(weights) / len(weights)
-        weights = [w / mean for w in weights]
+        total = sum(weights)
+        weights = [w / total for w in weights]
 
     return weights
 

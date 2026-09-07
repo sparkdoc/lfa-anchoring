@@ -19,7 +19,8 @@ def test_positive_after_perturbation(tiny_model, tiny_artifact):
 
 def test_layer_weights_schedule():
     w = compute_layer_weights(4, end_ratio=0.1, schedule="cosine")
-    assert len(w) == 4 and w[0] > w[-1] and abs(sum(w) - 4) < 1e-6
+    assert len(w) == 4 and w[0] > w[-1] and abs(sum(w) - 1) < 1e-6
+    assert [round(x, 4) for x in w] == [0.3774, 0.3276, 0.2075, 0.0875]
 
 def test_mu_fast_path_matches_general(tiny_model):
     from peft import LoraConfig, get_peft_model
