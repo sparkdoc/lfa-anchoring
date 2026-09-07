@@ -60,10 +60,12 @@ def test_the_recipe_lands_where_the_research_code_lands(tmp_path):
     print(run_recipe.format_checks(results["checks"]))
 
     for check in results["checks"]:
+        # The guidance differs by kind, and this is the one place most readers will meet it: a
+        # criterion miss is a regression, a sanity miss is a prompt to run a second seed.
         assert check["ok"], (
-            f"{check['name']}: measured {check['measured']}, outside {check['tolerance']}. Do not "
-            f"widen the tolerance -- compare {out / 'workspace'}'s run config and per-epoch "
-            f"losses against {results['reference']['run']} before concluding anything."
+            f"{check['name']}: measured {check['measured']}, outside {check['tolerance']}.\n"
+            f"{run_recipe.FAILURE_GUIDANCE[check['kind']]}\n"
+            f"The run is at {out / 'workspace'}; the reference is {results['reference']['run']}."
         )
 
 
@@ -320,3 +322,97 @@ def test_a_reused_run_under_a_different_frame_is_refused(tmp_path):
 def test_a_missing_input_is_named_rather_than_guessed(tmp_path):
     with pytest.raises(run_recipe.MissingInput, match="the research code checkout"):
         run_recipe.resolve_inputs(tmp_path / "nowhere")
+
+
+def test_a_reference_run_without_its_log_is_named_up_front(tmp_path):
+    """The corpus check reads the reference's chunk counts off its log, so the log is an input.
+
+    Not declaring it is how a two-hour run ends in a FileNotFoundError after the training and both
+    scorings are already spent.
+    """
+    research = tmp_path / "the research code"
+    reference = research / run_recipe.REFERENCE_REL
+    for path in (research / ".venv" / "bin", research / "scripts", reference / "final_model",
+                 research / run_recipe.CORPUS_REL,
+                 (research / run_recipe.ARTIFACT_REL).parent,
+                 (research / run_recipe.QA_REL).parent):
+        path.mkdir(parents=True, exist_ok=True)
+    for path in (research / ".venv" / "bin" / "python",
+                 research / "scripts" / "eval_domain_perplexity.py",
+                 research / "scripts" / "comparison_metrics.py",
+                 research / run_recipe.ARTIFACT_REL, research / run_recipe.QA_REL,
+                 reference / "config.json", reference / "training_history.json"):
+        path.write_text("{}")
+
+    with pytest.raises(run_recipe.MissingInput, match="reference run's log"):
+        run_recipe.resolve_inputs(research)
+
+    (reference / "training.log").write_text("Training examples: 3614\nEvaluation examples: 435\n")
+    assert run_recipe.resolve_inputs(research)["reference_log"].name == "training.log"
+
+
+def test_a_frame_mismatch_refuses_before_anything_is_trained(tmp_path, monkeypatch):
+    """`FrameMismatch` is raised by `main` ahead of `train_stage`, not reported after it."""
+    calls = []
+    monkeypatch.setattr(run_recipe, "train_stage",
+                        lambda *a, **k: calls.append(a) or (None, {}, 0.0))
+    monkeypatch.setattr(run_recipe, "frame_differences",
+                        lambda *a, **k: [{"field": "lora_rank", "reference": 32,
+                                          "companion": 16}])
+    monkeypatch.setattr(run_recipe, "resolve_inputs", _fake_inputs(tmp_path))
+
+    with pytest.raises(run_recipe.FrameMismatch, match="lora_rank"):
+        run_recipe.main(["--out", str(tmp_path / "out"), "--cuda-visible-devices", ""])
+
+    assert calls == [], "training started despite a frame mismatch"
+
+
+def _fake_inputs(tmp_path):
+    """Enough of `resolve_inputs`'s answer for `main` to reach the frame check."""
+    reference = tmp_path / "reference"
+    reference.mkdir(parents=True, exist_ok=True)
+    (reference / "config.json").write_text("{}")
+    (reference / "training_history.json").write_text("[]")
+    (reference / "training.log").write_text("")
+    return lambda *a, **k: {
+        "research": tmp_path, "python": tmp_path, "scorer": tmp_path, "metrics": tmp_path,
+        "corpus": tmp_path, "artifact": tmp_path / "artifact.pt", "qa_file": tmp_path,
+        "reference": reference, "reference_model": reference / "final_model",
+        "reference_config": reference / "config.json",
+        "reference_history": reference / "training_history.json",
+        "reference_log": reference / "training.log",
+    }
+
+
+def test_the_chunk_counts_can_be_rebuilt_for_a_run_that_did_not_record_them(tmp_path, tiny_model):
+    """The branch the 2026-09-07 run actually took: an entry from before the fields existed.
+
+    The rebuild is deterministic in the frame the entry itself records, so it reproduces the
+    counts the run used rather than guessing them -- which is why it can stand in for a recorded
+    value rather than skipping the check.
+    """
+    model, tokenizer = tiny_model
+    base = tmp_path / "base"
+    model.save_pretrained(base)
+    tokenizer.save_pretrained(base)
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    for i in range(10):
+        (corpus / f"doc_{i}.txt").write_text(("document %d about anchoring " % i) * 40)
+
+    entry = {
+        "corpus": str(corpus), "base_model": str(base), "val_fraction": 0.2,
+        "keep_short_whole": True,
+        "recipe": {"sequence_length": 64, "seed": 0, "keep_short_whole": True},
+    }
+    rebuilt = run_recipe.companion_chunk_counts(entry)
+
+    from lfa.corpus import load_corpus
+    train, held_out = load_corpus(corpus, tokenizer, max_length=64, val_fraction=0.2, seed=0,
+                                  keep_short_whole=True)
+    assert rebuilt == {"train_chunks": len(train), "val_chunks": len(held_out)}
+    assert rebuilt["train_chunks"] > 0 and rebuilt["val_chunks"] > 0
+
+    # ...and a recorded entry short-circuits it, which is what future runs will take.
+    recorded = {**entry, "n_train_chunks": 7, "n_val_chunks": 2}
+    assert run_recipe.companion_chunk_counts(recorded) == {"train_chunks": 7, "val_chunks": 2}

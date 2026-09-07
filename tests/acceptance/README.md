@@ -27,24 +27,51 @@ what is asserted is that two implementations of one objective land in the same p
 either lands on a number recorded elsewhere. The reference's measured values are written out to
 `reference.json` by the harness; they are not written down in this repository.
 
-Four things are checked, in this order:
+### The frame comes first, and it is fatal
 
-1. **The two runs are the same configuration.** Before anything is trained, the reference run's
-   own `config.json` is compared field by field against the `TrainConfig` the recipe produces
-   (`run_recipe.FRAME_FIELDS`: rank, α, both lambdas, μ, the anchor schedule, epochs, learning
-   rate, batch geometry, warmup, sequence length, seed, loader frame, held-out fraction). A
-   difference fails on its own — two runs of different configurations are not evidence about
-   either.
-2. **Domain perplexity**, `direct_perplexity.overall.mean_perplexity` over the held-out
-   chat-formatted Q&A set, from the research code's `scripts/eval_domain_perplexity.py` run in
-   the research code's own virtualenv. Held-out raw-prose perplexity is a different quantity and is never
-   comparable with it.
-3. **WikiText-2 drift**, the full test split at window 2048 / stride 512, each run's perplexity
-   read as drift against the base model's — measured in the same run, by the companion's
-   `wikitext2_perplexity(n_windows=0)`.
-4. **The content-loss curve** over the first epochs, per epoch.
+Before anything is trained, the reference run's own `config.json` is compared field by field
+against the `TrainConfig` the recipe produces (`run_recipe.FRAME_FIELDS`: rank, α, both lambdas, μ,
+the anchor schedule, epochs, learning rate, batch geometry, warmup, sequence length, seed, loader
+frame, held-out fraction). A difference **refuses the run** (`FrameMismatch`) rather than warning:
+two hours of GPU time spent comparing two different experiments produces numbers about nothing.
+`--allow-frame-mismatch` trains anyway and reports the difference as a failing check row, for when
+you deliberately want to see how far apart two configurations land.
 
-The tolerances for 2–4, and what each one covers, are described in one place: the `_comment` in
+### The criterion (deterministic)
+
+These four are what say the two implementations compute the same thing. None of them is a
+resampled quantity, and all four come out of the two runs' own `training_history.json`.
+
+1. **Optimizer steps per epoch** — `global_step` on both sides, **exact integer equality on every
+   epoch**. The step count is a function of the document set, the split, the chunker, that epoch's
+   offset, the batch size and the accumulation window, so any difference in those lands here; and
+   because the learning-rate schedule is a function of the step, matching steps also mean matching
+   learning rates.
+2. **Corpus** — training chunks, held-out chunks and held-out tokens, exact. the research code logs its
+   chunk counts, so they are read back off `training.log` (a required input); the companion's are
+   recorded in its history, or rebuilt deterministically from the frame the history records for a
+   run made before that field existed.
+3. **Content loss per epoch**, every epoch of the run, each within a relative tolerance.
+4. **Held-out loss per epoch**, every epoch — the research code's `eval.loss` against the companion's
+   `val_loss`, the same token-weighted cross-entropy over the same text.
+
+### The sanity checks (one draw each, *not* the criterion)
+
+5. **Domain perplexity**, `direct_perplexity.overall.mean_perplexity` over the held-out
+   chat-formatted Q&A set, from the research code's `scripts/eval_domain_perplexity.py` run in the research code's
+   own virtualenv. Held-out raw-prose perplexity is a different quantity and is never comparable
+   with it.
+6. **WikiText-2 drift**, the full test split at window 2048 / stride 512, each run's perplexity
+   read as drift against the base model's — measured in the same run.
+
+These two are coarse end-to-end checks that the run produced a domain-adapted model at all. They
+cannot be the criterion: the anchor is a Monte-Carlo term, and the two implementations draw it from
+independent RNG streams (the research code's sampler takes torch's global generator, the companion's a
+private one), so two full runs are two *draws* of a stochastic objective and their end perplexities
+differ by a seed-scale amount. A miss here means **investigate** — run a second seed on each side —
+not **regression**. A miss on rows 1–4 is the regression.
+
+The tolerances, and that reasoning, are described in one place: the `_comment` in
 [`expected.json`](expected.json). They are not to be widened to accommodate a run.
 
 The companion's own metrics are reported beside the research instrument's, un-banded:
@@ -66,7 +93,10 @@ Otherwise the run stops and says so (`ReusedRunDiffers`). Delete `--out` to star
 
 ## Output
 
-- `results.json` — both instruments, the checks and their verdicts, the companion's content /
-  validation / learning-rate curves, and the provenance of both repositories.
+- `results.json` — both instruments, the checks with their `kind` (`frame` / `criterion` /
+  `sanity`) and verdicts, the companion's per-epoch series (`content_curve`, `held_out_curve`,
+  `optimizer_steps`, `held_out_tokens`, `val_perplexity_curve`, `learning_rate_curve`), its
+  `chunk_counts`, and the provenance of both repositories.
 - `reference.json` — where the reference run is, the digest of its config, its two perplexities as
-  measured here, and its per-epoch content curve.
+  measured here, and its own `content_curve`, `held_out_curve`, `optimizer_steps`,
+  `held_out_tokens` and `chunk_counts`.

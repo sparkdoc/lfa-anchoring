@@ -222,13 +222,23 @@ def test_without_a_held_out_split_the_history_carries_no_validation_columns(setu
     assert "val_loss" not in record and "val_perplexity" not in record
 
 
-def test_the_held_out_pass_leaves_the_training_stream_untouched(setup, tiny_model, tiny_artifact,
-                                                                tmp_path, tiny_texts):
+@pytest.mark.parametrize("freeze_embed", [True, False])
+def test_the_held_out_pass_leaves_the_training_stream_untouched(freeze_embed, setup, tiny_model,
+                                                                tiny_artifact, tmp_path,
+                                                                tiny_texts):
     """The proof that validation is free: the same run with and without it trains identically.
 
     A held-out pass that drew from the training RNG, or left the model in `eval()`, or stepped
     anything, would move the losses -- so the two runs are compared as exact floats, not as
     approximations, and their adapters must come out byte for byte the same.
+
+    `freeze_embed=False` is the case that actually bites, and it is why this is parametrized.
+    Iterating a `DataLoader` draws a base seed from torch's global CPU RNG, and the embedding
+    anchor is the one block that used to draw from that same stream (`lfa.losses.embed_anchor_loss`
+    picks token ids by corpus frequency). With the term live, a validation pass therefore shifted
+    every later embed draw -- invisibly, because the shipped recipe freezes the embedding and
+    switches the term off. The draw now goes through the sampler's private generator, so the
+    claim holds in both configurations rather than only in the shipped one.
     """
     teacher, fresh_student, dataset, _, adapter = setup
     _, tokenizer = tiny_model
@@ -236,23 +246,28 @@ def test_the_held_out_pass_leaves_the_training_stream_untouched(setup, tiny_mode
     holdout = ChunkedCorpus(tiny_texts[8:], tokenizer, max_length=64)
 
     def run(directory, val_dataset):
-        config = make_config()
+        config = make_config(freeze_embed=freeze_embed)
         dataset.rechunk(0, config.seed)
         torch.manual_seed(0)
         # A FRESH sampler per run: it carries its own generator, so reusing one object would
         # make the second run differ for a reason that has nothing to do with validation.
         sampler = Sampler(artifact_path, device="cpu", seed=0)
+        if not freeze_embed:            # the term needs the layer-0 table to be live at all
+            sampler.build_embedding_lookup_from_model(teacher, adapter)
         student = apply_lora(fresh_student(), adapter, rank=config.lora_rank,
-                             alpha=config.lora_alpha)
+                             alpha=config.lora_alpha, freeze_embed=freeze_embed)
         return train(teacher, student, dataset, sampler, adapter, config, directory,
                      tokenizer=tokenizer, val_dataset=val_dataset)
 
     without = run(tmp_path / "without", None)
     with_val = run(tmp_path / "with", holdout)
 
+    # The embed term must actually be running in the unfrozen case, or this proves nothing there.
+    assert (without.history[-1]["loss_embed"] > 0) is (not freeze_embed)
+
     for a, b in zip(without.history, with_val.history):
-        for key in ("loss_total", "loss_content", "loss_anchor", "loss_mu", "grad_norm",
-                    "learning_rate", "global_step"):
+        for key in ("loss_total", "loss_content", "loss_anchor", "loss_embed", "loss_mu",
+                    "grad_norm", "learning_rate", "global_step"):
             assert a[key] == b[key], key
     plain = safetensors.torch.load_file(tmp_path / "without" / "final_model"
                                         / "adapter_model.safetensors")
@@ -260,6 +275,35 @@ def test_the_held_out_pass_leaves_the_training_stream_untouched(setup, tiny_mode
                                             / "adapter_model.safetensors")
     assert set(plain) == set(validated)
     assert all(torch.equal(plain[key], validated[key]) for key in plain)
+
+
+def test_the_embedding_anchor_draws_from_the_sampler_not_the_global_stream(setup, tiny_artifact,
+                                                                           tiny_model):
+    """The mechanism behind the test above, isolated: a seeded sampler owns the token draw.
+
+    Two calls with equally-seeded samplers agree even though the global RNG has been moved between
+    them, and an unseeded sampler still follows the global stream -- which is what keeps the
+    unseeded path call-for-call identical to the reference implementation.
+    """
+    from lfa.losses import embed_anchor_loss
+
+    teacher, fresh_student, _, _, adapter = setup
+    _, artifact_path = tiny_artifact
+    student = fresh_student()
+    with torch.no_grad():
+        student.get_input_embeddings().weight.add_(0.05)
+
+    def embed_loss(seed, disturb):
+        sampler = Sampler(artifact_path, device="cpu", seed=seed)
+        sampler.build_embedding_lookup_from_model(teacher, adapter)
+        torch.manual_seed(11)
+        if disturb:
+            torch.randint(0, 100, (1,))          # what iterating a DataLoader costs
+        loss = embed_anchor_loss(teacher, student, sampler, adapter, n_samples=8)
+        return float(loss.detach())
+
+    assert embed_loss(seed=0, disturb=False) == embed_loss(seed=0, disturb=True)
+    assert embed_loss(seed=None, disturb=False) != embed_loss(seed=None, disturb=True)
 
 
 # --- guards ----------------------------------------------------------------------------------

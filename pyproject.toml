@@ -30,4 +30,15 @@ lfa = ["recipes/*.yaml"]
 [tool.pytest.ini_options]
 markers = ["gpu: needs CUDA", "equivalence: needs the research code checkout", "acceptance: ~1 GPU-hour on the Chalmers corpus", "slow: downloads data from the Hugging Face Hub"]
 addopts = "-m 'not gpu and not equivalence and not acceptance and not slow'"
+# `error` first, so a warning this package starts emitting fails the suite instead of joining a
+# pile of noise. The two exemptions below are torch's own, not ours: `lfa.corpus.make_dataloader`
+# pins memory when CUDA is available (a real throughput feature), and torch 2.10's pin path calls
+# `Tensor.pin_memory(device)` / `Tensor.is_pinned(device)` with the device argument it has itself
+# deprecated -- three tensors per batch, ~18k lines over a GPU-machine suite run, and nothing this
+# package can do about it. They are matched by message so that any OTHER deprecation still errors.
+filterwarnings = [
+    "error",
+    "ignore:The argument 'device' of Tensor.pin_memory\\(\\) is deprecated:DeprecationWarning",
+    "ignore:The argument 'device' of Tensor.is_pinned\\(\\) is deprecated:DeprecationWarning",
+]
 testpaths = ["tests"]

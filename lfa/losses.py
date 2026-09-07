@@ -317,9 +317,13 @@ def embed_anchor_loss(
     initialization even when the shipped table was quantized.
 
     Token IDs are drawn by corpus frequency when the artifact carries frequencies, else uniformly
-    over the vocabulary. That draw uses the **global** RNG (as in the reference implementation),
-    not the sampler's private generator, so seeding the :class:`~lfa.sampler.Sampler` alone does
-    not make this term reproducible -- seed torch itself.
+    over the vocabulary. The draw goes through the **sampler's** generator: a seeded
+    :class:`~lfa.sampler.Sampler` makes this term reproducible along with every other block, and an
+    unseeded one (``seed=None``) passes ``generator=None``, which is the global RNG and is
+    call-for-call what the reference implementation does. That matters beyond reproducibility: the
+    embedding draw is the only part of the anchor that would otherwise read the global stream, and
+    anything else that touches it -- iterating a ``DataLoader`` draws a base seed from it, for one
+    -- would then perturb training. Seeding the sampler closes that.
 
     Raises:
         ValueError: if the sampler has no embedding lookup. Build one from the teacher with
@@ -338,11 +342,18 @@ def embed_anchor_loss(
         )
 
     lookup = sampler.params["embedding_lookup"]
+    # A generator draws only for its own device, so a seeded sampler draws on the sampler's device
+    # and an unseeded one on the teacher's -- which is where the reference implementation draws.
+    # `generator=None` is the global RNG, so the unseeded path is unchanged, call for call.
+    generator = sampler.generator
+    draw_device = device if generator is None else sampler.device
     if "token_frequencies" in lookup:
-        token_freqs = lookup["token_frequencies"].to(device)
-        token_ids = torch.multinomial(token_freqs, n_samples, replacement=True)
+        token_freqs = lookup["token_frequencies"].to(draw_device)
+        token_ids = torch.multinomial(token_freqs, n_samples, replacement=True,
+                                      generator=generator)
     else:
-        token_ids = torch.randint(0, lookup["vocab_size"], (n_samples,), device=device)
+        token_ids = torch.randint(0, lookup["vocab_size"], (n_samples,), device=draw_device,
+                                  generator=generator)
 
     t_embed, t_ln = adapter.embed_modules(teacher)
     s_embed, s_ln = adapter.embed_modules(student)

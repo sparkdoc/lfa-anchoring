@@ -156,6 +156,10 @@ def resolve_inputs(research: Path, corpus: str | Path | None = None,
         "reference_config": (reference_dir / "config.json", "the reference run's config"),
         "reference_history": (reference_dir / "training_history.json",
                               "the reference run's training curve"),
+        # Required because the corpus check reads its chunk counts back off it -- the research code logs
+        # those two numbers rather than recording them in JSON. Declared here so a reference run
+        # kept without its log is named in the first seconds, not two hours in.
+        "reference_log": (reference_dir / "training.log", "the reference run's log"),
     }
     resolved = {}
     for key, (path, what) in wanted.items():
@@ -361,11 +365,15 @@ def optimizer_steps(history: list[dict]) -> list[int]:
     """Per-epoch cumulative optimizer step, in epoch order. Both repos write ``global_step``.
 
     This is the deterministic backbone of the comparison. The number of optimizer steps an epoch
-    takes is a function of the document set, the split, the chunker, the epoch's chunk offset, the
-    batch size and the accumulation window -- so fifteen integers agreeing exactly say that all of
-    those agree, in one comparison that no amount of floating-point drift can blur. It is also
-    what turns the learning rate into an assertion rather than a hand check: the schedule is a
-    deterministic function of the step.
+    takes is a function of the document set, the split, the chunker, that epoch's chunk offset, the
+    batch size and the accumulation window, so any difference in those lands here -- as an integer,
+    which no amount of floating-point drift can blur. It is a very tight *necessary* condition, not
+    a proof of identity: at ``batch_size=6, ga=1`` the count is ``ceil(n_chunks / 6)``, so a
+    difference of up to five chunks in an epoch would hide inside the ceiling. What rules that out
+    is not this row but the source-level argument recorded in ``expected.json``: both loaders
+    enumerate the corpus with the same sorted ``rglob``, shuffle it with the same Mersenne Twister
+    under the same seed, and split it at the same index. This row is also what turns the learning
+    rate into an assertion rather than a hand check, the schedule being a function of the step.
     """
     return [int(record["global_step"]) for record in history]
 
@@ -390,8 +398,12 @@ def held_out_curve(history: list[dict]) -> list[float]:
 def held_out_tokens(history: list[dict]) -> list[int]:
     """Per-epoch held-out token count, from either repo's history.
 
-    Exact equality of this integer is the assertion that the two runs held out the *same text*,
-    chunked the same way -- not merely the same number of documents.
+    Exact equality of this integer says the two runs held out the same *quantity* of text under
+    the same chunker -- a much tighter condition than the same number of documents, and one that
+    catches a changed split, a changed offset rule or a changed sequence length. Like the step
+    counts it is necessary rather than sufficient: equal token counts are arithmetically
+    consistent with different text, and what excludes that is the source-level argument in
+    ``expected.json``.
     """
     counts = []
     for record in history:
@@ -611,6 +623,23 @@ def _drift(perplexity: float | None, base: float | None) -> float | None:
     return (perplexity - base) / base * 100
 
 
+#: What to do about a failing row, by kind. A criterion row failing is a regression: the two
+#: implementations stopped computing the same thing. A sanity row failing is not, because it is one
+#: draw of an instrument on a stochastic objective -- see `expected.json`.
+FAILURE_GUIDANCE = {
+    "frame": ("the two runs are not the same experiment, so nothing below them means anything. "
+              "Fix the recipe or point --reference at a matching run."),
+    "criterion": ("this is the equivalence criterion and it is deterministic: a failure here is a "
+                  "regression in what this package computes. Do not widen the tolerance -- find "
+                  "the change."),
+    "sanity": ("this is a coarse one-draw sanity check, NOT the criterion: the anchor is sampled "
+               "from independent RNG streams on the two sides, so a miss here means INVESTIGATE "
+               "(run a second seed on each side and compare) rather than REGRESSION. Read the "
+               "criterion rows first -- if they pass, the implementations agree. Do not widen the "
+               "tolerance either way."),
+}
+
+
 def format_checks(checks: list[dict]) -> str:
     """The checks as lines, with a failing frame row expanded field by field.
 
@@ -729,7 +758,7 @@ def main(argv: list[str] | None = None) -> int:
 
     counts = {
         "companion": companion_chunk_counts(entry),
-        "reference": reference_chunk_counts(inputs["reference"] / "training.log"),
+        "reference": reference_chunk_counts(inputs["reference_log"]),
         "documents": {"train": entry["n_train_docs"], "held_out": entry["n_val_docs"]},
     }
 

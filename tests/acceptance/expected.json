@@ -16,15 +16,27 @@
     "(which is the smaller, secondary term). It is a wash rather than a bias -- same distribution,",
     "same n, same lambda, same schedule -- so it points nowhere in particular.",
     "",
+    "WHAT THE CRITERION DOES AND DOES NOT PROVE. The step counts and the corpus counts are very",
+    "tight NECESSARY conditions, not proofs of identity: at batch_size=6, ga=1 a step count is",
+    "ceil(n_chunks/6), so a difference of up to five chunks in an epoch hides inside the ceiling,",
+    "and equal counts of chunks and tokens are arithmetically consistent with different text. What",
+    "rules that out is at the source level, and is recorded here because it is recorded nowhere",
+    "else: both loaders enumerate the corpus as a SORTED rglob over the same extensions with the",
+    "same skip-blank rule (lfa/corpus.py:232 vs the research code/src/data.py:390), both shuffle it with",
+    "the same Mersenne Twister under the same integer seed (lfa/corpus.py:265 vs",
+    "the research code/src/data.py:492), and both split at int(len(texts) * (1 - val_fraction))",
+    "(lfa/corpus.py:274 vs the research code/src/data.py:503). So the two runs see the same documents in",
+    "the same order, and the counts below are what would catch it if that ever stopped being true.",
+    "",
     "THE CRITERION (deterministic; these are what say the two implementations compute the same",
     "thing, and none of them is resampled):",
     "  optimizer steps  = per-epoch global_step, EXACT integer equality on every epoch. One",
     "                     comparison that covers the document set, the split, the chunker, every",
     "                     epoch's chunk offset, the batch size and the accumulation window -- and,",
     "                     since the schedule is a function of the step, the learning rate too.",
-    "  corpus           = training chunks, held-out chunks and held-out tokens, EXACT. The",
-    "                     assertion that the two runs held out the same TEXT, not merely the same",
-    "                     number of documents.",
+    "  corpus           = training chunks, held-out chunks and held-out tokens, EXACT. Where a",
+    "                     changed split, offset rule or sequence length would show -- a much",
+    "                     tighter condition than the same number of documents.",
     "  content_curve    = per-epoch training content loss, every epoch of the run, each within",
     "                     tol_rel. Not the first few: the measured run agrees to 0.19 % at its",
     "                     worst epoch and to 0.005 % at the last, so there is no window beyond",
@@ -48,10 +60,24 @@
     "None of these tolerances is to be widened to accommodate a run: a number outside them is a",
     "finding."
   ],
-  "optimizer_steps": {"exact": true},
-  "corpus_counts": {"exact": true},
-  "content_curve": {"epochs": 15, "tol_rel": 0.005},
-  "held_out_curve": {"epochs": 15, "tol_abs_nats": 0.03},
-  "domain_ppl": {"tol_rel": 0.02},
-  "seed_drift": {"tol_abs_pct": 1.0}
+  "optimizer_steps": {
+    "exact": true
+  },
+  "corpus_counts": {
+    "exact": true
+  },
+  "content_curve": {
+    "epochs": 15,
+    "tol_rel": 0.005
+  },
+  "held_out_curve": {
+    "epochs": 15,
+    "tol_abs_nats": 0.03
+  },
+  "domain_ppl": {
+    "tol_rel": 0.02
+  },
+  "seed_drift": {
+    "tol_abs_pct": 1.0
+  }
 }
