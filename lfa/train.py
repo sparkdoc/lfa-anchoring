@@ -53,6 +53,7 @@ __all__ = [
     "EpochMetrics",
     "TrainingState",
     "FULL_WEIGHT_NOTICE",
+    "EMBED_ANCHOR_DISABLED_NOTICE",
     "train_step",
     "train_epoch",
     "train",
@@ -63,6 +64,16 @@ FULL_WEIGHT_NOTICE = (
     "Full-weight anchoring is unvalidated on this model in the LFA paper (LoRA is the validated "
     "path); calibrate λ in 50,000–100,000 and check held-out domain perplexity, not only "
     "general-text perplexity."
+)
+
+#: Said once, at the start of a run whose sampler has no layer-0 embedding table. The embedding
+#: and the LM head are the two ends of one tied matrix, and L_embed is the only term that anchors
+#: the embedding end -- so losing it silently leaves that matrix anchored from one side only. The
+#: table is not shipped (it is ~300 MB and exactly reconstructible), so the omission is easy to
+#: make and invisible in the metrics: `loss_embed` is simply 0.0 rather than missing.
+EMBED_ANCHOR_DISABLED_NOTICE = (
+    "embedding anchor disabled: the artifact has no embedding lookup; call "
+    "Sampler.build_embedding_lookup_from_model(model, adapter) before training"
 )
 
 
@@ -632,6 +643,13 @@ def train(
 
     if config.full_weight:
         run_logger.warning(FULL_WEIGHT_NOTICE)
+
+    # Said here, once, rather than in `train_step`, which would repeat it every micro-batch. The
+    # conditions are exactly those under which `include_embed` there comes out False *because the
+    # table is missing* -- freeze_embed and lambda_qkv=0 switch the term off deliberately.
+    if (config.lambda_qkv > 0 and sampler is not None and not config.freeze_embed
+            and not sampler.has_embedding_lookup()):
+        run_logger.warning(EMBED_ANCHOR_DISABLED_NOTICE)
 
     num_layers = adapter.num_layers(teacher)
     layer_weights = None

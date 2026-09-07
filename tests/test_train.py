@@ -17,7 +17,13 @@ from lfa.adapters import get_adapter
 from lfa.corpus import ChunkedCorpus, make_dataloader
 from lfa.models import apply_lora
 from lfa.sampler import Sampler
-from lfa.train import TrainConfig, train, train_epoch, train_step
+from lfa.train import (
+    EMBED_ANCHOR_DISABLED_NOTICE,
+    TrainConfig,
+    train,
+    train_epoch,
+    train_step,
+)
 
 FULL_WEIGHT_NOTICE = (
     "Full-weight anchoring is unvalidated on this model in the LFA paper (LoRA is the validated "
@@ -303,3 +309,47 @@ def test_schedule_horizon_keeps_the_learning_rate_high_past_num_epochs(setup, tm
     assert long_horizon > 10 * short
     assert json.loads((tmp_path / "long" / "config.json").read_text())[
         "schedule_horizon_epochs"] == 20
+
+
+def test_a_missing_embedding_lookup_is_warned_about_once(setup, tmp_path, caplog):
+    """L_embed is off whenever the artifact ships no layer-0 table -- say so, once."""
+    teacher, fresh_student, dataset, sampler, adapter = setup
+    assert sampler.has_embedding_lookup() is False
+    config = make_config(num_epochs=1, freeze_embed=False)
+    student = apply_lora(fresh_student(), adapter, rank=config.lora_rank, alpha=config.lora_alpha)
+
+    with caplog.at_level("WARNING", logger="lfa.train"):
+        state = train(teacher, student, dataset, sampler, adapter, config, tmp_path)
+
+    assert sum(record.message == EMBED_ANCHOR_DISABLED_NOTICE
+               for record in caplog.records) == 1
+    assert state.history[-1]["loss_embed"] == 0.0        # the term really is absent
+
+
+def test_a_rebuilt_embedding_lookup_is_not_warned_about(setup, tmp_path, caplog):
+    """With the table rebuilt from the teacher, L_embed is live and prices a moved embedding."""
+    teacher, fresh_student, dataset, sampler, adapter = setup
+    sampler.build_embedding_lookup_from_model(teacher, adapter)
+    config = make_config(num_epochs=1, freeze_embed=False)
+    student = apply_lora(fresh_student(), adapter, rank=config.lora_rank, alpha=config.lora_alpha)
+    with torch.no_grad():
+        student.get_input_embeddings().weight.add_(0.05)
+
+    with caplog.at_level("WARNING", logger="lfa.train"):
+        state = train(teacher, student, dataset, sampler, adapter, config, tmp_path)
+
+    assert EMBED_ANCHOR_DISABLED_NOTICE not in [r.message for r in caplog.records]
+    assert state.history[-1]["loss_embed"] > 0
+
+
+def test_a_deliberately_frozen_embedding_is_not_warned_about(setup, tmp_path, caplog):
+    """freeze_embed switches L_embed off on purpose; that is not the missing-table case."""
+    teacher, fresh_student, dataset, sampler, adapter = setup
+    assert sampler.has_embedding_lookup() is False
+    config = make_config(num_epochs=1, freeze_embed=True)
+    student = apply_lora(fresh_student(), adapter, rank=config.lora_rank, alpha=config.lora_alpha)
+
+    with caplog.at_level("WARNING", logger="lfa.train"):
+        train(teacher, student, dataset, sampler, adapter, config, tmp_path)
+
+    assert EMBED_ANCHOR_DISABLED_NOTICE not in [r.message for r in caplog.records]
