@@ -79,7 +79,8 @@ def make_meta(
             collection stops on -- and this is the number a continual extension reads back as each
             block's count when the blocks carry none of their own
             (:func:`lfa.artifact.extend.extend_artifact`). The shipped qwen3-0.6b artifact is named
-            for it: ``gmm1543k`` is 1_543_000 vectors per site.
+            for it: ``gmm1543k`` is 1_543_040 vectors per site (the count the research chains
+            pass as ``--base-n``; the id rounds it).
     """
     return {
         "model_id": model_id,

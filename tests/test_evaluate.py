@@ -191,3 +191,47 @@ def test_wikitext2_perplexity_sliding_window(tiny_model):
                                device="cpu")
     assert math.isfinite(ppl)
     assert ppl > 1.0
+
+
+@pytest.mark.parametrize("stride, max_length, seq_len", [(512, 2048, 1000), (100, 250, 1000)])
+def test_the_sliding_window_scores_every_token_exactly_once(tiny_model, monkeypatch, stride,
+                                                            max_length, seq_len):
+    """The window loop's contract, on a fixed token stream and with no model in the way.
+
+    Each window feeds up to ``max_length`` tokens for context but is *responsible* for only the
+    tokens no earlier window scored, and its mean NLL is weighted by exactly that count. The two
+    ways that goes wrong are both silent: a token scored twice quietly over-weights whatever it
+    is, and a token never scored quietly drops out of the average. Neither changes the shape of
+    the answer, and the published seed-drift figures are this quantity -- so what is asserted
+    here is the partition itself, over two geometries (one window covering the whole stream, and
+    an overlapping walk).
+    """
+    import lfa.evaluate as evaluate_module
+
+    tokens = torch.arange(seq_len, dtype=torch.long)
+    monkeypatch.setattr(evaluate_module, "_wikitext2_tokens",
+                        lambda tokenizer, n_windows, stride: tokens)
+
+    scored: list[torch.Tensor] = []
+
+    def record(model, window, attention_mask, labels):
+        kept = window[labels != -100]
+        scored.append(kept)
+        return 1.0, kept.numel()
+
+    monkeypatch.setattr(evaluate_module, "_mean_nll", record)
+
+    model, tokenizer = tiny_model
+    perplexity = evaluate_module.wikitext2_perplexity(
+        model, tokenizer, n_windows=0, stride=stride, max_length=max_length, device="cpu")
+
+    counts = torch.zeros(seq_len, dtype=torch.long)
+    for kept in scored:
+        counts[kept] += 1
+    assert counts.tolist() == [1] * seq_len, (
+        f"{int((counts == 0).sum())} tokens scored never and {int((counts > 1).sum())} more than "
+        f"once over {len(scored)} windows (stride {stride}, window {max_length})")
+    assert sum(kept.numel() for kept in scored) == seq_len
+    # Every window reported an NLL of 1.0, so the stride-weighted mean is 1.0 whatever the
+    # partition -- unless the weights and the counts have come apart.
+    assert math.isclose(perplexity, math.e, rel_tol=1e-9)

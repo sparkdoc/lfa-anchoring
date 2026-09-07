@@ -56,7 +56,9 @@ def test_the_registry_carries_both_published_artifacts():
     recipe_artifact = ARTIFACTS["qwen3-0.6b-gmm1543k-int8"]
     assert recipe_artifact["model_id"] == "Qwen/Qwen3-0.6B"
     assert recipe_artifact["url"].endswith("/artifacts-v1/qwen3-0.6b-gmm1543k-int8.pt")
-    assert recipe_artifact["n_samples_total"] == 1_543_000        # per site, not a cross-site sum
+    # Per site, not a cross-site sum -- and the exact count the research chains passed as
+    # `--base-n`, which is what the domain's weight share was computed against.
+    assert recipe_artifact["n_samples_total"] == 1_543_040
     assert recipe_artifact["size_mb"] == 108
     assert "GMM" in recipe_artifact["kind"]
 

@@ -672,7 +672,7 @@ class Workspace:
         ``None`` means the artifact answers for itself -- it carries per-block counts, or a
         ``__meta__`` total -- and :func:`lfa.artifact.extend.extend_artifact` reads it there.
         Otherwise the registry entry the artifact came from supplies it (the shipped artifact
-        predates the field and is 1,543,000 vectors per site). With neither, the domain's weight
+        predates the field and is 1,543,040 vectors per site). With neither, the domain's weight
         share cannot be computed at all, and a guess would silently mis-weight the mixture.
 
         Loading the artifact for this costs one CPU read of a file that is about to be read
@@ -696,7 +696,7 @@ class Workspace:
             "__meta__.n_samples_total, and it did not come from the artifact registry, so the "
             "new domain cannot be weighted by its sample share. Pass base_n by calling "
             "lfa.artifact.extend.extend_artifact directly (the shipped qwen3-0.6b artifact was "
-            "collected over 1,543,000 vectors per site)."
+            "collected over 1,543,040 vectors per site)."
         )
 
     # ------------------------------------------------------------------------------- evaluate

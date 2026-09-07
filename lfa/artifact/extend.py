@@ -236,7 +236,7 @@ def _resolve_base_count(base: dict, gmm_keys: list[str], base_n: int | None) -> 
     raise ValueError(
         "The base artifact carries no per-site n_samples and no __meta__.n_samples_total, so the "
         "domain cannot be weighted by its sample share. Pass base_n (the shipped qwen3-0.6b "
-        "artifact was collected over 1_543_000 vectors per site)."
+        "artifact was collected over 1_543_040 vectors per site)."
     )
 
 
@@ -267,7 +267,7 @@ def extend_artifact(
         out_path: where to write the extended artifact.
         base_n: sample count to attribute to each base block, when the base carries none. Read
             from ``__meta__["n_samples_total"]`` when absent there (the shipped qwen3-0.6b
-            artifact: 1_543_000); passing it explicitly overrides both. It sets the domain's
+            artifact: 1_543_040); passing it explicitly overrides both. It sets the domain's
             weight share, ``need / (base_n + need)``, so a wrong value mis-weights the mixture
             without failing.
         k_domain: components to fit per site for the new domain, capped at one per 200 samples.

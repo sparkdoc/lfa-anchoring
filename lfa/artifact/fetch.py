@@ -57,7 +57,7 @@ ARTIFACTS: dict[str, dict] = {
         "model_id": "Qwen/Qwen3-0.6B",
         "url": f"{_RELEASE_BASE}/qwen3-0.6b-gmm1543k-int8.pt",
         "sha256": PLACEHOLDER_SHA256,
-        "n_samples_total": 1_543_000,
+        "n_samples_total": 1_543_040,
         "kind": "correlated-linear + GMM K=32 MLP (int8)",
         "size_mb": 108,
     },
