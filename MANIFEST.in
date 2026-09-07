@@ -1,0 +1,15 @@
+# What an sdist carries beyond the package itself. The wheel's data comes from
+# [tool.setuptools.package-data] in pyproject.toml; this is the source distribution.
+include LICENSE
+include README.md
+include RELEASING.md
+include constraints-tested.txt
+recursive-include lfa/recipes *.yaml
+recursive-include docs *.md
+recursive-include examples *.py *.yaml
+recursive-include tests *.py *.md *.json
+# The equivalence fixtures are ~12 MB of captured tensors: they are in git, and a source
+# distribution is not where they belong.
+prune tests/equivalence/fixtures
+prune tests/acceptance/_runs
+global-exclude __pycache__ *.py[cod]

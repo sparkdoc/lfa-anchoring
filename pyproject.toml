@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,7 +7,8 @@ name = "lfa-anchoring"
 version = "0.1.0"
 description = "Layerwise Function Anchoring: preserve sub-module functions on sampled hidden states while fine-tuning an LLM"
 readme = "README.md"
-license = {text = "Apache-2.0"}
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = ["torch>=2.2", "transformers>=4.45,<5", "peft>=0.18,<1", "numpy>=1.24", "pyyaml>=6", "tqdm>=4.65", "datasets>=2.18", "requests>=2.31"]
 
