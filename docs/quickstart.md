@@ -19,8 +19,13 @@ The anchor samples hidden states from a fitted artifact, so a run needs one befo
 
 ```bash
 lfa list-artifacts
-lfa fetch-artifact qwen3-0.6b-gmm1543k-int8 --dest artifacts/
 ```
+
+`lfa init --artifact <id>` (below) fetches the artifact it names into the workspace and verifies
+its checksum, so there is normally nothing to do here. Fetch one by hand — `lfa fetch-artifact <id>
+--dest artifacts/` — when you want it in advance, or want one copy shared by several workspaces;
+then point `init` at the file with `--artifact artifacts/<id>.pt --artifact-id <id>`, which tells
+the recipe that this file *is* the published artifact its λ was calibrated against.
 
 Two are published for Qwen3-0.6B: the recipe artifact (`qwen3-0.6b-gmm1543k-int8`, ~108 MB,
 correlated basis plus a K = 32 mixture per site) and a ~1 MB diagonal one kept as a budget floor.

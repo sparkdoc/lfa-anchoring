@@ -82,8 +82,8 @@ than the texts. The other two domains are a public dataset and a set of open-acc
 likewise not bundled.
 
 Nothing about the method depends on those particular corpora. `lfa prepare-domain` turns whatever
-documents you have into the shape the loader reads, and the recipe's couplings ([recipes.md](
-recipes.md)) are what to re-check when your corpus differs in kind from theirs.
+documents you have into the shape the loader reads, and the couplings in
+[recipes.md](recipes.md) are what to re-check when your corpus differs in kind from theirs.
 
 ## What is the "loader frame" the logs mention?
 
@@ -115,11 +115,12 @@ re-chunked to some other epoch's offset: the chunk count differs, so the schedul
 and the resumed run follows a slightly different curve from the one it is continuing. Hand the
 trainer a freshly built corpus, or call `dataset.rechunk(0, seed)` first.
 
-Two other resume facts worth knowing: only `checkpoint_mode` `rolling` or `all` writes the
-`training_state.pt` a resume needs, and a resumed LoRA run gets its adapter re-attached
-**trainable** — attaching one for inference instead is the classic silent no-op, where the loss
-still wiggles and nothing learns. If it ever happens, the run says so: a gradient norm of exactly
-0.0 at an optimizer step is announced loudly.
+Two other resume facts worth knowing. First, only `checkpoint_mode` `rolling` or `all` writes the
+`training_state.pt` a resume needs *during* a run; under `none` one is written when the run
+finishes, so an interrupted `none` run has nothing to resume from. Second, a resumed LoRA run gets
+its adapter re-attached **trainable** — attaching one for inference instead is the classic silent
+no-op, where the loss still wiggles and nothing learns. If it ever happens, the run says so: a
+gradient norm of exactly 0.0 at an optimizer step is announced loudly.
 
 ## Is there anything unchecked in the artifact build?
 

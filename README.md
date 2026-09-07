@@ -33,17 +33,17 @@ peft 0.18.1.
 ## Four commands
 
 ```bash
-lfa fetch-artifact qwen3-0.6b-gmm1543k-int8 --dest artifacts/
 lfa init runs/my_domain --model Qwen/Qwen3-0.6B --artifact qwen3-0.6b-gmm1543k-int8
 lfa train    --workspace runs/my_domain --corpus data/my_domain
 lfa evaluate --workspace runs/my_domain
 lfa fuse     --workspace runs/my_domain
 ```
 
-`init` makes a workspace — one directory holding the model, its `p(h)` artifact, the recipe and the
-history of everything done to it. `train` adapts it with the anchor on, holding a tenth of the
-documents out so the domain number is a measurement rather than a fit. `evaluate` reads the stage on
-both axes, against the model it started from:
+`init` makes a workspace — one directory holding the model, its `p(h)` artifact (fetched by id and
+checksum-verified, or copied from a path you pass), the recipe and the history of everything done to
+it. `train` adapts it with the anchor on, holding a tenth of the documents out so the domain number
+is a measurement rather than a fit. `evaluate` reads the stage on both axes, against the model it
+started from:
 
 ```
 | metric               | before | after |     Δ% |
