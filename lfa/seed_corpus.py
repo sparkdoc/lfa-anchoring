@@ -286,10 +286,11 @@ def download_pretraining(n_total: int, *, max_length: int = 2048, seed: int = 42
                          cache_dir: str | Path | None = None) -> list[dict[str, str]]:
     """``{"text", "source"}`` rows from RedPajama, allocated across the six sources.
 
-    Each source scans the split from the start until it has ``3 x`` its allocation of matching
-    rows, then samples its allocation from those candidates. The scan is a head scan, which is
-    why a sparse source (GitHub) ends up short of its allocation -- see the composition table in
-    the module docstring. Texts are truncated to ``max_length`` characters.
+    One pass over the split builds every source's shortlist at once: a source collects matching
+    rows until it has ``3 x`` its allocation, and then samples its allocation from those
+    candidates. The scan is a head scan, which is why a sparse source (GitHub) ends up short of
+    its allocation -- see the composition table in the module docstring. Texts are truncated to
+    ``max_length`` characters.
 
     Args:
         loader: ``datasets.load_dataset`` by default; anything with the signature
@@ -302,23 +303,29 @@ def download_pretraining(n_total: int, *, max_length: int = 2048, seed: int = 42
     logger.info("Loading %s ...", REDPAJAMA_PATH)
     dataset = _load(loader, REDPAJAMA_PATH, "train", cache_dir, "RedPajama pretraining text")
 
+    # ONE scan, not one per source. A RedPajama row is decoded on access and the six predicates
+    # are cheap beside that, so six passes cost about six times what one does. Each source still
+    # stops collecting at three times its allocation, and the shortlists are still built in
+    # ascending index order, so the candidate lists -- and therefore the sampled rows -- are
+    # exactly the ones six passes gave; only the reading changed. A row matching two sources is
+    # still taken by both, which is how `book` and `web` overlap.
+    wanted = {name: allocations[name] * 3 for name in PRETRAINING_SOURCES
+              if allocations[name] > 0}
+    candidates: dict[str, list[int]] = {name: [] for name in wanted}
+    for index in range(len(dataset)):
+        if all(len(found) >= wanted[name] for name, found in candidates.items()):
+            break
+        example = dataset[index]
+        for name, found in candidates.items():
+            if len(found) < wanted[name] and PRETRAINING_SOURCES[name]["predicate"](example):
+                found.append(index)
+
     rows: list[dict[str, str]] = []
-    for name, config in PRETRAINING_SOURCES.items():
+    for name, found in candidates.items():
         n_samples = allocations[name]
-        if n_samples <= 0:
-            continue
-        predicate = config["predicate"]
-
-        candidates: list[int] = []
-        for index in range(len(dataset)):
-            if predicate(dataset[index]):
-                candidates.append(index)
-                if len(candidates) >= n_samples * 3:
-                    break
-
         rng = random.Random(seed)
         n_before = len(rows)
-        for index in rng.sample(candidates, min(n_samples, len(candidates))):
+        for index in rng.sample(found, min(n_samples, len(found))):
             text = str(dataset[index].get("text", "")).strip()
             if len(text) > MIN_PRETRAINING_CHARS:
                 rows.append({"text": text[:max_length], "source": name})

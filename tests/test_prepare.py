@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import random
 from pathlib import Path
 
 import pytest
@@ -465,6 +466,69 @@ def _fake_loader() -> FakeLoader:
     tables = {REDPAJAMA_PATH: _redpajama_rows()}
     tables.update(_instruction_tables())
     return FakeLoader(tables)
+
+
+class CountingTable(list):
+    """A dataset table that records every ``table[i]`` -- how the scan reads is what is tested."""
+
+    def __init__(self, rows):
+        super().__init__(rows)
+        self.reads: list[int] = []
+
+    def __getitem__(self, index):
+        self.reads.append(index)
+        return super().__getitem__(index)
+
+
+def _per_source_scan(rows, n_total, max_length=2048, seed=42):
+    """The six-pass scan the single-pass one replaced, kept here as the reference.
+
+    One independent pass per source, each stopping once it has three times its allocation, then
+    a seeded sample from that shortlist. Restating it here is the only way to assert that the
+    optimization changed the *reading* and not the corpus.
+    """
+    allocations = allocate({name: cfg["default_samples"]
+                            for name, cfg in PRETRAINING_SOURCES.items()}, n_total)
+    expected = []
+    for name, config in PRETRAINING_SOURCES.items():
+        n_samples = allocations[name]
+        if n_samples <= 0:
+            continue
+        candidates = []
+        for index in range(len(rows)):
+            if config["predicate"](rows[index]):
+                candidates.append(index)
+                if len(candidates) >= n_samples * 3:
+                    break
+        rng = random.Random(seed)
+        for index in rng.sample(candidates, min(n_samples, len(candidates))):
+            text = str(rows[index].get("text", "")).strip()
+            if len(text) > 50:
+                expected.append({"text": text[:max_length], "source": name})
+    return expected
+
+
+def test_download_pretraining_scans_once_and_keeps_the_six_pass_result():
+    """One scan instead of six, with the corpus unchanged: the rows matter, the I/O is the win.
+
+    A RedPajama row is decoded on access, so the six per-source passes cost about six times what
+    one costs -- and the six predicates are cheap beside a decode. The shortlists are collected in
+    ascending index order either way and each source still stops at three times its allocation,
+    so the sampled rows are identical; this pins both halves of that claim.
+    """
+    rows = _redpajama_rows()
+    table = CountingTable(rows)
+
+    produced = download_pretraining(60, max_length=40, seed=42,
+                                    loader=FakeLoader({REDPAJAMA_PATH: table}))
+
+    assert produced == _per_source_scan(rows, 60, max_length=40, seed=42)
+    # One pass over the rows the scan reaches, plus one re-read of each row actually sampled.
+    assert len(table.reads) == len(set(table.reads)) + len(produced)
+
+    six_pass = CountingTable(rows)
+    _per_source_scan(six_pass, 60, max_length=40, seed=42)
+    assert len(table.reads) < len(six_pass.reads)
 
 
 def test_download_pretraining_allocates_across_sources_and_truncates():
