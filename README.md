@@ -110,20 +110,32 @@ The equivalence suite replays captured fixtures: the sampler's draws are asserte
 the anchor's blocks and the loader's batch to tolerance. See
 [`tests/equivalence/README.md`](tests/equivalence/README.md).
 
-The acceptance suite is an **equivalence run**: it trains the bundled recipe end to end and compares
-the result with a research run of the identical configuration, re-measured beside it on the same
-instrument. Measured 2026-09-07:
+The acceptance suite is an **equivalence run**: it trains the bundled recipe end to end and
+compares the result against a research-code run of the identical configuration. What it compares is
+the *deterministic* part of the run, because the objective itself is not deterministic: both
+implementations estimate the anchor from 16 hidden states drawn per site per step, out of
+independent RNG streams, so two full runs are two draws of a stochastic objective and
+bit-equivalence between them is impossible by construction.
 
-| quantity | this package | the reference run | tolerance |
-|---|---|---|---|
-| domain direct-QA perplexity | 10.6996 | 10.9122 | within 2 % |
-| WikiText-2 drift vs base | −8.202 % | −7.898 % | within 1 pp |
-| per-epoch content loss | \- | \- | ≤ 0.191 % apart, all 15 epochs |
+The criterion, measured 2026-09-07:
 
-That is a claim about *agreement between two implementations of one objective*, not a reproduction
-of a published number. The paper's own headline — domain perplexity 8.76 at a −10.0 % seed cost on
-Qwen3-0.6B — is the paper's measurement on the paper's corpus and instruments, and is quoted here
-only as such. See [`tests/acceptance/README.md`](tests/acceptance/README.md).
+| quantity | result | tolerance |
+|---|---|---|
+| optimizer steps, every epoch | **exact** (603 … 8,969) | integer equality |
+| corpus: training chunks / held-out chunks / held-out tokens | **exact** (3,614 / 435 / 157,366) | integer equality |
+| per-epoch content loss, all 15 epochs | worst 0.191 % | 0.5 % |
+| per-epoch held-out loss, all 15 epochs | worst 0.0104 nats | 0.03 nats |
+
+Two end-of-run perplexities are recorded beside those as **sanity checks**, not as the criterion:
+domain direct-QA perplexity 10.6996 against the reference's 10.9122 (−1.95 %, tolerance 2 %) and
+WikiText-2 drift −8.202 % against −7.898 % (0.304 points, tolerance 1 point). Each is a single draw
+of a sampled objective; they say the run produced a domain-adapted model on the same instrument,
+and a failure there is something to investigate with a second seed rather than a regression.
+
+None of this is a reproduction of a published number. The paper's own headline — domain perplexity
+8.76 at a −10.0 % seed cost on Qwen3-0.6B — is the paper's measurement on the paper's corpus and
+instruments, and is quoted here only as such. See
+[`tests/acceptance/README.md`](tests/acceptance/README.md).
 
 ## Relationship to the research record
 

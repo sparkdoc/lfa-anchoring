@@ -149,18 +149,23 @@ Two different things, kept apart on purpose.
 cost of **−10.0 %**. That is the paper's measurement, on the paper's corpus and instruments; this
 repository does not reproduce it and does not claim to.
 
-**This package's own measured point.** The acceptance test trains the bundled recipe end to end and
-compares it against a research-code run of the *identical* configuration, re-measured beside it on
-the same instrument. Measured 2026-09-07 (`tests/acceptance/_runs/…/results.json`):
+**This package's own measured point.** The acceptance test trains the bundled recipe end to end
+and compares it against a research-code run of the *identical* configuration. The anchor is a
+Monte-Carlo term — 16 hidden states drawn per site per step — and the two implementations draw from
+independent RNG streams, so two full runs are two draws of a stochastic objective. What is compared
+is therefore the deterministic part of the run, which is not resampled. Measured 2026-09-07, from
+the run's own artifacts under `tests/acceptance/_runs/`:
 
-| quantity | companion | reference run | tolerance |
-|---|---|---|---|
-| domain direct-QA perplexity | 10.6996 | 10.9122 | within 2 % |
-| WikiText-2 drift vs base | −8.202 % | −7.898 % | within 1 pp |
-| per-epoch content loss | — | — | ≤ 0.191 % apart over all 15 epochs |
+| quantity | result | tolerance |
+|---|---|---|
+| optimizer steps, every epoch | exact (603 … 8,969) | integer equality |
+| corpus: training / held-out chunks, held-out tokens | exact (3,614 / 435 / 157,366) | integer equality |
+| per-epoch content loss, all 15 epochs | worst 0.191 % | 0.5 % |
+| per-epoch held-out loss, all 15 epochs | worst 0.0104 nats | 0.03 nats |
 
-That is an *equivalence* claim: two implementations of one objective land in the same place. See
-`tests/acceptance/README.md`.
+Two end-of-run perplexities sit beside those as sanity checks rather than as the criterion — domain
+direct-QA 10.6996 against 10.9122, WikiText-2 drift −8.202 % against −7.898 % — each being one draw
+of a sampled objective. See `tests/acceptance/README.md`.
 
 **After a third domain.** The paper reports that in a three-domain chain perplexity on the earlier
 domains keeps accumulating — it does not degrade — while *judged answering* on those earlier
