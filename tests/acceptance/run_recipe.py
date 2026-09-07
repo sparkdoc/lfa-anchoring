@@ -219,13 +219,15 @@ def frame_differences(reference_config: dict, config) -> list[dict]:
 # ==============================================================================================
 
 def train_stage(out: Path, recipe, corpus: Path, artifact: Path, *, device: str,
-                keep_short_whole: bool) -> tuple[object, dict, float]:
+                keep_short_whole: bool,
+                allow_code_change: bool = False) -> tuple[object, dict, float]:
     """Train stage 1 of a fresh workspace on ``corpus``, or reuse the one already at ``out``.
 
-    A reused run is checked against what was asked for -- corpus, loader frame, held-out fraction
-    and the recipe itself -- and refused if any of them moved (:class:`ReusedRunDiffers`). Silently
-    re-scoring a run made under a different configuration is exactly the mistake this script is
-    supposed to catch in others.
+    A reused run is checked against what was asked for -- corpus, loader frame, held-out fraction,
+    the recipe itself, **and the implementation that produced it** -- and refused if any of them
+    moved (:class:`ReusedRunDiffers`). Silently re-scoring a run made under a different
+    configuration, or by different code, is exactly the mistake this script is supposed to catch
+    in others: the criterion would then certify an objective that never ran.
 
     Returns ``(workspace, history_entry, wall_clock_seconds)``; the wall clock is ``0.0`` for a
     reused run, which is what tells the caller not to quote it as a timing.
@@ -237,7 +239,8 @@ def train_stage(out: Path, recipe, corpus: Path, artifact: Path, *, device: str,
         workspace = Workspace.open(workspace_dir)
         if workspace.history:
             entry = workspace.history[-1]
-            _refuse_a_different_run(entry, recipe, corpus, keep_short_whole)
+            _refuse_a_different_run(entry, recipe, corpus, keep_short_whole,
+                                    allow_code_change=allow_code_change)
             print(f"[reuse] stage already trained at {entry['output_dir']}")
             return workspace, entry, 0.0
     else:
@@ -253,8 +256,36 @@ def train_stage(out: Path, recipe, corpus: Path, artifact: Path, *, device: str,
     return workspace, entry, time.time() - started
 
 
-def _refuse_a_different_run(entry: dict, recipe, corpus: Path, keep_short_whole: bool) -> None:
-    """Raise unless the run already on disk is the run being asked for."""
+def _refuse_a_different_run(entry: dict, recipe, corpus: Path, keep_short_whole: bool, *,
+                            allow_code_change: bool = False) -> None:
+    """Raise unless the run already on disk is the run being asked for, by this code.
+
+    The frame fields say the run trained the same experiment; ``implementation.code_digest``
+    (:func:`lfa.workspace.code_identity`) says it was trained by the code now being certified.
+    Without the second, a kept run plus an edited ``lfa/losses.py`` gives a green criterion for an
+    objective that never executed -- which is what the criterion exists to make impossible.
+
+    ``allow_code_change`` downgrades only the implementation difference to a warning, for
+    re-scoring a kept run on purpose after a change known to be inert. It is never silent: the
+    difference is printed and the caller records it in ``results.json``.
+    """
+    from lfa.workspace import code_identity
+
+    trained_by = (entry.get("implementation") or {}).get("code_digest")
+    now = code_identity()["code_digest"]
+    if trained_by != now:
+        made_by = ("code that recorded no identity (it predates the field)" if not trained_by
+                   else f"lfa code {trained_by}")
+        detail = (f"the run in this output directory was trained by {made_by}, and this is lfa "
+                  f"code {now}")
+        if not allow_code_change:
+            raise ReusedRunDiffers(
+                f"{detail}. Re-scoring it would report a criterion for an implementation that "
+                "never ran. Retrain into a fresh --out, or pass --allow-code-change if you have "
+                "established that the difference cannot touch this run."
+            )
+        print(f"[warn] --allow-code-change: {detail}", file=sys.stderr)
+
     asked = {
         "corpus": str(corpus),
         "keep_short_whole": keep_short_whole,
@@ -471,16 +502,20 @@ def check_equivalence(companion: dict, reference: dict, base_seed_ppl: float | N
         The deterministic evidence: optimizer steps per epoch, the corpus counts, the training
         curve and the held-out curve. These are what says the two implementations compute the same
         thing. They are exact or near-exact because they are not resampled quantities.
-    ``sanity``
-        One draw each of an instrument, at the end. They are coarse end-to-end checks that the run
-        produced a domain-adapted model at all -- NOT the equivalence criterion. The anchor is a
-        Monte-Carlo term drawn from independent RNG streams on the two sides (the research code's sampler
-        uses torch's global generator, the companion's a private one), so two full runs are two
-        draws of a stochastic objective and their end perplexities differ by a seed-scale amount.
-        A failure here means *investigate* -- a second seed on each side -- not *regression*.
+    ``report``
+        One draw each of an instrument, at the end. They are printed with their deviations and
+        carry **no verdict** (``ok`` is ``None``), because there is no measured band to hold them
+        to: the anchor is a Monte-Carlo term drawn from independent RNG streams on the two sides
+        (the research code's sampler uses torch's global generator, the companion's a private one), so two
+        full runs are two draws of a stochastic objective whose spread nobody has measured. A band
+        asserted on an unmeasured spread is a guess, and asserting one is the same mistake as
+        asserting a difference smaller than the noise of the thing being measured. A large gap
+        here means *investigate* -- a second seed on each side, which is also what would let a
+        band be derived -- not *regression*.
 
-    Returns one row per axis: what was measured, what it had to be within, and whether it was. A
-    missing measurement is a failure, not a skip -- it means an instrument produced no number.
+    Returns one row per axis. A criterion row's missing measurement is a failure, not a skip -- it
+    means an instrument produced no number for something that had to be compared; a report row
+    with no number prints ``n/a`` and still decides nothing.
 
     Args:
         base_seed_ppl: the base model's WikiText-2 perplexity, which both drifts are read
@@ -564,35 +599,35 @@ def check_equivalence(companion: dict, reference: dict, base_seed_ppl: float | N
         "ok": len(pairs) == epochs and worst is not None and worst <= tol_nats,
     })
 
-    # -- sanity 1: the domain instrument, one draw
-    domain_tol = expected["domain_ppl"]["tol_rel"]
+    # -- report 1: the domain instrument, one draw, no verdict. `expected.json` carries no band
+    # for either instrument row (`reported_not_asserted`), so there is nothing to read from it.
     ours, theirs = companion["domain_direct_ppl"], reference["domain_direct_ppl"]
     relative = None if ours is None or not theirs else abs(ours - theirs) / theirs
     checks.append({
-        "kind": "sanity",
-        "name": "SANITY (one draw, not the criterion): domain direct-QA perplexity",
+        "kind": "report",
+        "name": "REPORTED (one draw, not asserted): domain direct-QA perplexity",
         "measured": ours,
         "reference": theirs,
         "deviation": None if relative is None else relative * 100,
-        "tolerance": f"within {domain_tol * 100:.3g}% of {theirs}",
-        "ok": relative is not None and relative <= domain_tol,
+        "tolerance": "reported against %s; no band -- the spread of this quantity is unmeasured"
+                     % ("n/a" if theirs is None else round(theirs, 4)),
+        "ok": None,
     })
 
-    # -- sanity 2: the preservation instrument, one draw
-    drift_tol = expected["seed_drift"]["tol_abs_pct"]
+    # -- report 2: the preservation instrument, one draw, no verdict
     our_drift = _drift(companion["seed_ppl"], base_seed_ppl)
     their_drift = _drift(reference["seed_ppl"], base_seed_ppl)
     gap = None if our_drift is None or their_drift is None else abs(our_drift - their_drift)
     checks.append({
-        "kind": "sanity",
-        "name": "SANITY (one draw, not the criterion): WikiText-2 drift vs base %s" % (
+        "kind": "report",
+        "name": "REPORTED (one draw, not asserted): WikiText-2 drift vs base %s" % (
             "n/a" if base_seed_ppl is None else f"{base_seed_ppl:.2f}"),
         "measured": our_drift,
         "reference": their_drift,
         "deviation": gap,
-        "tolerance": f"within {drift_tol:.3g} pp of "
-                     f"{'n/a' if their_drift is None else round(their_drift, 3)}",
-        "ok": gap is not None and gap <= drift_tol,
+        "tolerance": "reported against %s pp; no band -- the spread of this quantity is "
+                     "unmeasured" % ("n/a" if their_drift is None else round(their_drift, 3)),
+        "ok": None,
     })
     return checks
 
@@ -623,25 +658,29 @@ def _drift(perplexity: float | None, base: float | None) -> float | None:
     return (perplexity - base) / base * 100
 
 
-#: What to do about a failing row, by kind. A criterion row failing is a regression: the two
-#: implementations stopped computing the same thing. A sanity row failing is not, because it is one
-#: draw of an instrument on a stochastic objective -- see `expected.json`.
+#: What to do about a row, by kind. A criterion row failing is a regression: the two
+#: implementations stopped computing the same thing. A `report` row cannot fail -- it carries no
+#: verdict, because the spread of what it measures has never been measured -- see `expected.json`.
 FAILURE_GUIDANCE = {
     "frame": ("the two runs are not the same experiment, so nothing below them means anything. "
               "Fix the recipe or point --reference at a matching run."),
     "criterion": ("this is the equivalence criterion and it is deterministic: a failure here is a "
                   "regression in what this package computes. Do not widen the tolerance -- find "
                   "the change."),
-    "sanity": ("this is a coarse one-draw sanity check, NOT the criterion: the anchor is sampled "
-               "from independent RNG streams on the two sides, so a miss here means INVESTIGATE "
-               "(run a second seed on each side and compare) rather than REGRESSION. Read the "
-               "criterion rows first -- if they pass, the implementations agree. Do not widen the "
-               "tolerance either way."),
+    "report": ("this row is REPORTED, not asserted, and decides nothing: it is one draw of an "
+               "instrument on an objective sampled from independent RNG streams on the two "
+               "sides, and the spread of that quantity has never been measured. A large gap "
+               "means INVESTIGATE (a second seed on each side, which is also what would let a "
+               "band be derived) rather than REGRESSION. Read the criterion rows for the "
+               "verdict."),
 }
 
 
 def format_checks(checks: list[dict]) -> str:
     """The checks as lines, with a failing frame row expanded field by field.
+
+    A row whose ``ok`` is ``None`` is a ``report`` row: it prints ``[----]`` and its deviation
+    rather than a verdict, so that nobody reads a printed PASS off a number nothing asserted.
 
     The expansion is selected on the row's ``kind``, not on its display name: renaming a check
     should not silently drop the detail that makes its failure diagnosable.
@@ -651,7 +690,11 @@ def format_checks(checks: list[dict]) -> str:
         measured = check["measured"]
         shown = "n/a" if measured is None else (f"{measured:.4f}"
                                                 if isinstance(measured, float) else str(measured))
-        lines.append(f"  [{'PASS' if check['ok'] else 'FAIL'}] {check['name']}: {shown} "
+        verdict = "----" if check["ok"] is None else ("PASS" if check["ok"] else "FAIL")
+        deviation = check.get("deviation")
+        if check["ok"] is None and deviation is not None:
+            shown = f"{shown} (deviation {deviation:.4g})"
+        lines.append(f"  [{verdict}] {check['name']}: {shown} "
                      f"({check['tolerance']})")
         if check.get("kind") == "frame":
             for difference in check["detail"]:
@@ -690,8 +733,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--allow-frame-mismatch", action="store_true",
                         help="train and score even though the reference run is a different "
                              "configuration; the difference is reported as a failing check")
+    parser.add_argument("--allow-code-change", action="store_true",
+                        help="re-score a kept run that was trained by different code; the "
+                             "difference is printed and recorded in results.json instead of "
+                             "refusing the reuse")
     parser.add_argument("--strict", action="store_true",
-                        help="exit non-zero when a measured number falls outside its tolerance")
+                        help="exit non-zero when a checked number falls outside its tolerance "
+                             "(the two instrument rows are reported, not checked, and cannot "
+                             "decide this either way)")
     return parser
 
 
@@ -743,7 +792,7 @@ def main(argv: list[str] | None = None) -> int:
 
     workspace, entry, wall_clock = train_stage(
         out, recipe, inputs["corpus"], inputs["artifact"], device=args.device,
-        keep_short_whole=recipe.keep_short_whole,
+        keep_short_whole=recipe.keep_short_whole, allow_code_change=args.allow_code_change,
     )
     companion_history = json.loads(
         (Path(entry["output_dir"]) / "training_history.json").read_text())
@@ -791,10 +840,19 @@ def main(argv: list[str] | None = None) -> int:
 
     from lfa import __version__ as lfa_version
 
+    # Provenance of the TRAINING, not of this process: a kept run re-scored later is scored by a
+    # newer HEAD, and stamping the record with that HEAD is how a curve came to carry a commit it
+    # was not trained under. `implementation` is written by `Workspace.train` at train time.
+    implementation = entry.get("implementation") or {}
     results = {
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "lfa_version": lfa_version,
-        "companion_commit": _git_revision(Path(__file__).resolve().parents[2]),
+        "companion_commit": implementation.get("git_revision"),
+        "companion_code_digest": implementation.get("code_digest"),
+        "companion_commit_is": ("the revision the stage was trained under" if implementation
+                                else "unknown: the run recorded no implementation identity"),
+        "scoring_process_commit": _git_revision(Path(__file__).resolve().parents[2]),
+        "reused_run_code_change_allowed": bool(args.allow_code_change),
         "research": str(inputs["research"]),
         "research_revision": _git_revision(inputs["research"]),
         "device": args.device,
@@ -820,7 +878,8 @@ def main(argv: list[str] | None = None) -> int:
         "reference": reference_record,
         "companion_instrument": companion,
         "checks": checks,
-        "passed": all(check["ok"] for check in checks),
+        # `is not False`, not truthiness: a `report` row's `ok` is None and decides nothing.
+        "passed": all(check["ok"] is not False for check in checks),
     }
     (out / "results.json").write_text(json.dumps(results, indent=2))
 

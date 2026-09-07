@@ -26,6 +26,10 @@ Example::
 
 ``--artifact`` also takes a path, which is what to pass while the published assets do not exist
 yet: fetching by id refuses until the registry's checksums are filled in (see ``RELEASING.md``).
+Pass ``--artifact-id`` with it -- ``--artifact /path/to/distribution_stats.pt --artifact-id
+qwen3-0.6b-gmm1543k-int8`` -- so the workspace knows which published artifact the file is: that
+is what the recipe's lambda is read against, and what supplies the base sample count a later
+``extend`` needs, the shipped artifact carrying none of its own.
 
 Add ``--compare-unanchored`` to train the control that says what the anchor bought: the same run
 with lambda = mu = 0. It costs a second training run.

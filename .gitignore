@@ -7,4 +7,11 @@ dist/
 workspaces/
 *.pt
 !tests/equivalence/fixtures/*.pt
-tests/acceptance/_runs/
+# The acceptance run's own output: workspaces, checkpoints and scoring directories, none of
+# which belongs in git -- except the two small JSON records of the 2026-09-07 equivalence run,
+# which are the only provenance a reader off this machine has for the numbers the docs quote.
+tests/acceptance/_runs/**
+!tests/acceptance/_runs/
+!tests/acceptance/_runs/2026-09-07-equiv/
+!tests/acceptance/_runs/2026-09-07-equiv/results.json
+!tests/acceptance/_runs/2026-09-07-equiv/reference.json

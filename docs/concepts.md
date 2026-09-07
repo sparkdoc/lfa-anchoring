@@ -157,7 +157,8 @@ and compares it against a research-code run of the *identical* configuration. Th
 Monte-Carlo term — 16 hidden states drawn per site per step — and the two implementations draw from
 independent RNG streams, so two full runs are two draws of a stochastic objective. What is compared
 is therefore the deterministic part of the run, which is not resampled. Measured 2026-09-07, from
-the run's own artifacts under `tests/acceptance/_runs/`:
+the run's own artifacts, which are committed at
+`tests/acceptance/_runs/2026-09-07-equiv/results.json` and `reference.json`:
 
 | quantity | result | tolerance |
 |---|---|---|
@@ -166,14 +167,17 @@ the run's own artifacts under `tests/acceptance/_runs/`:
 | per-epoch content loss, all 15 epochs | worst 0.191 % | 0.5 % |
 | per-epoch held-out loss, all 15 epochs | worst 0.0104 nats | 0.03 nats |
 
-Two end-of-run perplexities sit beside those as sanity checks rather than as the criterion — domain
+Two end-of-run perplexities sit beside those as *reported* numbers rather than as checks — domain
 direct-QA 10.6996 against 10.9122, WikiText-2 drift −8.202 % against −7.898 % — each being one draw
-of a sampled objective. See `tests/acceptance/README.md`.
+of a sampled objective, and nothing asserts them: the spread of that draw has never been measured,
+so any band on it would be a guess. See `tests/acceptance/README.md`.
 
 **After a third domain.** The paper reports that in a three-domain chain perplexity on the earlier
 domains keeps accumulating — it does not degrade — while *judged answering* on those earlier
-domains falls after the third stage, and that the drop is carried by the stage's generated
-question-and-answer supplement rather than by the anchor. This companion has no QA supplement: its
+domains falls after the third stage, and that the drop is carried by the question-and-answer
+*pairs* in the stage's generated supplement rather than by the anchor. The paper records that
+finding as double-edged, and half of it is easy to lose: removing the supplement altogether makes
+judged retention on the earlier domain **worse**, not better. This companion has no QA supplement: its
 loader mixes nothing into the corpus you give it, and it computes no judged score at all. Every
 number it reports is a perplexity computed locally.
 

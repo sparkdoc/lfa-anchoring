@@ -117,6 +117,31 @@ def test_prepare_domain_combine_writes_one_file(tmp_path):
     assert combined.count("=" * 80) == 1                  # one separator between two documents
 
 
+def test_a_second_combine_run_does_not_replace_the_first_corpus(tmp_path):
+    """`prepare_domain` promises that existing files are never overwritten. The combine branch
+    wrote `combined_domain_data.txt` unconditionally, so a second `--combine` over different
+    inputs replaced a whole prepared corpus with no message -- the one file where an overwrite
+    costs everything rather than one document.
+    """
+    first_src, second_src, out = tmp_path / "one", tmp_path / "two", tmp_path / "out"
+    first_src.mkdir()
+    second_src.mkdir()
+    _write(first_src / "a.txt", PARAGRAPH * 20)
+    _write(second_src / "b.txt", (PARAGRAPH + "quite another corpus ") * 20)
+
+    [first] = prepare_domain([first_src], out, combine=True)
+    kept = first.read_text(encoding="utf-8")
+
+    [second] = prepare_domain([second_src], out, combine=True)
+
+    assert second != first
+    assert second.name == "combined_domain_data_1.txt"
+    assert first.read_text(encoding="utf-8") == kept
+    assert "# Source: b.txt" in second.read_text(encoding="utf-8")
+    assert sorted(p.name for p in out.iterdir()) == ["combined_domain_data.txt",
+                                                     "combined_domain_data_1.txt"]
+
+
 def test_prepare_domain_recursive_flag(tmp_path):
     src, out = tmp_path / "src", tmp_path / "out"
     (src / "nested").mkdir(parents=True)

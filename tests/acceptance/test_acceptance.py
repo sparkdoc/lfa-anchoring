@@ -10,10 +10,12 @@ comparison accepts a matching run and rejects a drifting one, and that a missing
 What the GPU test asserts comes in three kinds, and the distinction is the point. The frame is
 checked first (the two runs must be the same experiment at all). Then the CRITERION, which is
 deterministic: per-epoch optimizer steps as exact integers, the corpus counts, and the two
-fifteen-point curves. Then two SANITY checks -- the research instrument's domain and WikiText-2
-numbers, one draw each -- which say the run produced a domain-adapted model but cannot be the
-criterion, because the anchor is drawn from independent RNG streams on the two sides and two full
-runs are two draws of a stochastic objective.
+fifteen-point curves. Then two REPORTED rows -- the research instrument's domain and WikiText-2
+numbers, one draw each -- which are printed with their deviations and asserted on by nothing,
+because the anchor is drawn from independent RNG streams on the two sides, two full runs are two
+draws of a stochastic objective, and the spread of those draws has never been measured. A band on
+an unmeasured spread would be a guess; the way to get one back is a second seed, not a wider
+number.
 
 The tolerances, and that reasoning, live in ``expected.json`` beside this file, which is the one
 place they are described. They are not to be widened to accommodate a run: a number outside them
@@ -44,8 +46,16 @@ import run_recipe  # noqa: E402  (needs the path entry above)
 
 
 @pytest.mark.acceptance
-@pytest.mark.gpu
 def test_the_recipe_lands_where_the_research_code_lands(tmp_path):
+    # NOT marked `gpu`, deliberately: `-m gpu` is how a maintainer runs the fast GPU tests, and a
+    # marker that also selects an hour of training is a footgun. `-m acceptance` is the only way
+    # to select this one. The marker's other job -- skipping on a CUDA-less machine
+    # (`tests/conftest.py`) -- is two lines, and they are here instead.
+    import torch
+
+    if not torch.cuda.is_available():
+        pytest.skip("needs CUDA (this run trains for about an hour on one card)")
+
     research = os.environ.get("LFA_RESEARCH_ROOT") or str(run_recipe.DEFAULT_RESEARCH_ROOT)
     try:
         run_recipe.resolve_inputs(research)
@@ -60,8 +70,12 @@ def test_the_recipe_lands_where_the_research_code_lands(tmp_path):
     print(run_recipe.format_checks(results["checks"]))
 
     for check in results["checks"]:
+        if check["ok"] is None:
+            # A `report` row: printed above with its deviation, asserted on by nothing. See
+            # `expected.json` for why there is no band to assert.
+            continue
         # The guidance differs by kind, and this is the one place most readers will meet it: a
-        # criterion miss is a regression, a sanity miss is a prompt to run a second seed.
+        # criterion miss is a regression; a report row cannot get here at all.
         assert check["ok"], (
             f"{check['name']}: measured {check['measured']}, outside {check['tolerance']}.\n"
             f"{run_recipe.FAILURE_GUIDANCE[check['kind']]}\n"
@@ -81,8 +95,10 @@ def test_the_tolerance_file_carries_exactly_the_agreed_tolerances():
     assert expected["corpus_counts"] == {"exact": True}
     assert expected["content_curve"] == {"epochs": 15, "tol_rel": 0.005}
     assert expected["held_out_curve"] == {"epochs": 15, "tol_abs_nats": 0.03}
-    assert expected["domain_ppl"] == {"tol_rel": 0.02}
-    assert expected["seed_drift"] == {"tol_abs_pct": 1.0}
+    # The instrument rows carry no band at all -- not a wide one. Restoring a number here
+    # without the seed measurement that would justify it is the change this line exists to catch.
+    assert expected["domain_ppl"] == {"reported_not_asserted": True}
+    assert expected["seed_drift"] == {"reported_not_asserted": True}
     assert set(expected) == {"_comment", "optimizer_steps", "corpus_counts", "content_curve",
                              "held_out_curve", "domain_ppl", "seed_drift"}
 
@@ -91,7 +107,8 @@ def test_the_tolerance_file_says_which_check_is_the_criterion():
     """The reasoning is the durable part: the next reader must not repeat it from scratch."""
     comment = " ".join(json.loads(run_recipe.EXPECTED_FILE.read_text())["_comment"]).lower()
     assert "independent rng streams" in comment          # the real dominant divergence term
-    assert "not the criterion" in comment                # what the perplexities are for
+    assert "reported, not asserted" in comment           # what the perplexities are now
+    assert "second seed" in comment                      # what would give them a band back
     assert "exact integer equality" in comment           # what the criterion is
     assert "widened" in comment
 
@@ -142,21 +159,36 @@ def _verdicts(checks):
 
 
 def _failed(checks):
-    return [check["name"] for check in checks if not check["ok"]]
+    """The rows that carry a FAILING verdict. A `report` row (`ok is None`) carries none."""
+    return [check["name"] for check in checks if check["ok"] is False]
+
+
+def _reported(checks):
+    return [check for check in checks if check["kind"] == "report"]
 
 
 def test_a_run_that_matches_the_reference_passes_every_check():
     assert _failed(_checks()) == []
     assert [check["kind"] for check in _checks()] == [
-        "frame", "criterion", "criterion", "criterion", "criterion", "sanity", "sanity"]
+        "frame", "criterion", "criterion", "criterion", "criterion", "report", "report"]
 
 
-def test_the_two_instrument_checks_are_labelled_as_sanity_checks_not_the_criterion():
-    """Whoever reads the output must not mistake the coarse check for the evidence."""
-    sanity = [check["name"] for check in _checks() if check["kind"] == "sanity"]
-    assert len(sanity) == 2
-    assert all(name.startswith("SANITY (one draw, not the criterion)") for name in sanity)
-    assert "SANITY" in run_recipe.format_checks(_checks())
+def test_the_two_instrument_rows_are_reported_and_assert_nothing():
+    """The one recorded ruling this file has to keep honest.
+
+    They were coarse *sanity checks* with a 2 % / 1.0 pp band, and the 2026-09-07 run consumed
+    1.95 % of the 2 %. Since the spread of these quantities across seeds has never been measured,
+    that band was never calibrated -- so the rows now carry no verdict at all rather than a
+    tighter or a wider guess. Restoring a band needs a second seed, not a decision.
+    """
+    reported = _reported(_checks())
+    assert len(reported) == 2
+    assert all(check["ok"] is None for check in reported)
+    assert all(check["name"].startswith("REPORTED (one draw, not asserted)") for check in reported)
+    assert all("no band" in check["tolerance"] for check in reported)
+    # And they are printed without a verdict, so nobody reads a PASS off an unasserted number.
+    printed = run_recipe.format_checks(_checks())
+    assert "REPORTED" in printed and "[----]" in printed
 
 
 # --- the criterion bites ----------------------------------------------------------------------
@@ -240,14 +272,25 @@ def test_the_measured_agreement_of_the_real_run_clears_the_curve_tolerances():
 
 # --- the sanity checks ------------------------------------------------------------------------
 
-@pytest.mark.parametrize("domain, seed, failing", [
-    # 3 % over the reference's domain perplexity: outside the 2 % tolerance.
-    (9.17, 16.61, "SANITY (one draw, not the criterion): domain direct-QA perplexity"),
-    # +1.5 pp of WikiText-2 drift (16.61 -> 16.88 against base 18.18): outside 1.0 pp.
-    (8.90, 16.88, "SANITY (one draw, not the criterion): WikiText-2 drift vs base 18.18"),
+@pytest.mark.parametrize("domain, seed, deviations", [
+    # 3 % over the reference's domain perplexity, and no WikiText-2 gap.
+    (9.17, 16.61, (3.034, 0.0)),
+    # +1.5 pp of WikiText-2 drift (16.61 -> 16.88 against base 18.18), and no domain gap.
+    (8.90, 16.88, (0.0, 1.485)),
 ])
-def test_a_run_that_drifts_on_an_instrument_fails_that_instrument_only(domain, seed, failing):
-    assert _failed(_checks(domain=domain, seed=seed)) == [failing]
+def test_a_run_that_drifts_on_an_instrument_reports_the_gap_and_fails_nothing(domain, seed,
+                                                                             deviations):
+    """A drift on either instrument is printed as a number to investigate, not as a verdict.
+
+    Both of these would have failed under the old 2 % / 1.0 pp bands. Nothing about the run has
+    changed; what changed is that a band nobody measured no longer decides whether it passed.
+    """
+    checks = _checks(domain=domain, seed=seed)
+    assert _failed(checks) == []
+    reported = _reported(checks)
+    assert [check["deviation"] for check in reported] == [pytest.approx(deviations[0], abs=0.01),
+                                                          pytest.approx(deviations[1], abs=0.01)]
+    assert all(check["ok"] is None for check in reported)
 
 
 def test_two_runs_of_different_configurations_are_not_evidence_about_either():
@@ -259,10 +302,17 @@ def test_two_runs_of_different_configurations_are_not_evidence_about_either():
     assert "lora_rank" in run_recipe.format_checks(checks)
 
 
-def test_a_missing_measurement_fails_rather_than_passing_quietly():
-    failed = _failed(_checks(domain=None, seed=None))
-    assert failed == ["SANITY (one draw, not the criterion): domain direct-QA perplexity",
-                      "SANITY (one draw, not the criterion): WikiText-2 drift vs base 18.18"]
+def test_a_missing_instrument_number_is_reported_as_absent_rather_than_as_agreement():
+    """No number is not the same as a matching number -- but it is not a failure either.
+
+    A criterion row missing its measurement fails (the corpus row does exactly that above); an
+    instrument row prints `n/a` and decides nothing, which is all an unasserted row can do.
+    """
+    checks = _checks(domain=None, seed=None)
+    assert _failed(checks) == []
+    assert [check["measured"] for check in _reported(checks)] == [None, None]
+    assert [check["deviation"] for check in _reported(checks)] == [None, None]
+    assert "n/a" in run_recipe.format_checks(checks)
 
 
 def test_the_reference_chunk_counts_are_read_off_its_log(tmp_path):
@@ -296,17 +346,25 @@ def test_a_frame_difference_is_found_field_by_field(tmp_path):
     assert run_recipe.frame_differences({**reference, "learning_rate": 3e-4}, config) == []
 
 
+def _reusable_entry(tmp_path, recipe):
+    """A history entry as `Workspace.train` writes one, for the run the harness would reuse."""
+    from lfa.workspace import code_identity
+
+    return {
+        "corpus": str(tmp_path / "corpus"),
+        "keep_short_whole": True,
+        "val_fraction": 0.1,
+        "recipe": dataclasses.asdict(recipe),
+        "implementation": code_identity(),
+    }
+
+
 def test_a_reused_run_under_a_different_frame_is_refused(tmp_path):
     """The reuse path re-scores an existing run; it must first check it is the same run."""
     from lfa import Recipe
 
     recipe = dataclasses.replace(Recipe.load("qwen3-0.6b"), val_fraction=0.1)
-    entry = {
-        "corpus": str(tmp_path / "corpus"),
-        "keep_short_whole": True,
-        "val_fraction": 0.1,
-        "recipe": dataclasses.asdict(recipe),
-    }
+    entry = _reusable_entry(tmp_path, recipe)
 
     run_recipe._refuse_a_different_run(entry, recipe, tmp_path / "corpus", True)
 
@@ -317,6 +375,36 @@ def test_a_reused_run_under_a_different_frame_is_refused(tmp_path):
     with pytest.raises(run_recipe.ReusedRunDiffers, match="recipe_digest"):
         run_recipe._refuse_a_different_run(
             entry, dataclasses.replace(recipe, lambda_qkv=20000.0), tmp_path / "corpus", True)
+
+
+def test_a_reused_run_made_by_different_code_is_refused(tmp_path, capsys):
+    """The hole this closes: a kept run plus an edited objective is a criterion for code that
+    never executed.
+
+    The frame fields say the run trained the same *experiment*; only the implementation digest
+    says it was trained by the code being certified. The 2026-09-07 equivalence run was exactly
+    this case -- scored at 17:57 from a stage trained at 16:13, with nine modules changed in
+    between -- and nothing in the harness noticed.
+    """
+    from lfa import Recipe
+
+    recipe = dataclasses.replace(Recipe.load("qwen3-0.6b"), val_fraction=0.1)
+    corpus = tmp_path / "corpus"
+    entry = _reusable_entry(tmp_path, recipe)
+
+    other_code = {**entry, "implementation": {"code_digest": "0123456789abcdef",
+                                              "git_revision": None}}
+    with pytest.raises(run_recipe.ReusedRunDiffers, match="0123456789abcdef"):
+        run_recipe._refuse_a_different_run(other_code, recipe, corpus, True)
+
+    # A run made before the field existed cannot vouch for itself either.
+    no_identity = {key: value for key, value in entry.items() if key != "implementation"}
+    with pytest.raises(run_recipe.ReusedRunDiffers, match="recorded no identity"):
+        run_recipe._refuse_a_different_run(no_identity, recipe, corpus, True)
+
+    # ...and the deliberate override is loud rather than silent.
+    run_recipe._refuse_a_different_run(other_code, recipe, corpus, True, allow_code_change=True)
+    assert "--allow-code-change" in capsys.readouterr().err
 
 
 def test_a_missing_input_is_named_rather_than_guessed(tmp_path):

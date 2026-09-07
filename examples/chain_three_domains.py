@@ -33,6 +33,10 @@ Example::
 
 ``--artifact`` also takes a path, which is what to pass while the published assets do not exist
 yet: fetching by id refuses until the registry's checksums are filled in (see ``RELEASING.md``).
+A chain needs ``--artifact-id`` beside it -- ``--artifact /path/to/distribution_stats.pt
+--artifact-id qwen3-0.6b-gmm1543k-int8`` -- because the step between two domains reads the base
+sample count from the registry entry when the artifact carries none, as the shipped one does;
+without it the first ``extend`` refuses after the first stage has already trained.
 """
 
 from __future__ import annotations

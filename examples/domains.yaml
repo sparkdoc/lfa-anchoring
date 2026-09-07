@@ -6,7 +6,9 @@
 # domain's starting model and anchor against a p(h) that does not describe what it is anchoring.
 #
 # Fields:
-#   name    the run directory under runs/ (optional; the corpus path is used when it is absent)
+#   name    the run directory under runs/ (optional; `stage{N}` is used when it is absent, and
+#           the corpus path only appears in the log line). Two domains may not share a name:
+#           the name IS the directory, so the second stage would write over the first.
 #   corpus  a file or directory of documents, resolved RELATIVE TO THIS FILE
 #   epochs  optional override of the recipe's epoch count for this stage
 #

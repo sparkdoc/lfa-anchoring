@@ -134,6 +134,21 @@ doubles the file). Quantization is a storage format: it is applied to a shallow 
 reconstructed on load, so nothing downstream knows whether the file was quantized. The shipped
 Qwen3-0.6B artifact is ~108 MB int8 against ~226 MB in fp16.
 
+## What a locally-built artifact does not share with the shipped one
+
+The shipped `qwen3-0.6b-gmm1543k-int8` file carries **no `embedding_lookup` entry**: 84 keys, all
+of them site statistics. `Sampler.build_embedding_lookup_from_model` reconstructs the table from
+the teacher at training time (layer-0 `pre_qkv` is `input_layernorm(embed_tokens(id))`, exact in
+the model's own weights), but the *token frequencies* are not reconstructible from a model, so
+layer 0 is sampled **uniformly over the vocabulary**. An artifact built here stores the
+frequencies it counted while collecting, and samples layer 0 frequency-weighted.
+
+So p(h) differs at that one site between a rebuilt artifact and the shipped one, and it is the
+larger of the two differences on this page. Neither is wrong; the shipped behaviour must not be
+"corrected" either, because changing which stream layer 0 draws from moves every sample after it
+and would break the bit-identity check in `RELEASING.md` step 2 — which is the right outcome for a
+change of that size, and the reason it is written down here instead.
+
 ## One known difference from the research code
 
 `the research code` accumulates its running variance with `old_mean` computed **after** the batch has

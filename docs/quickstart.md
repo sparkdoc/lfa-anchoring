@@ -11,7 +11,10 @@ pip install -e '.[dev]'          # add ,html or ,pdf if your documents are HTML 
 
 Python ≥ 3.11 and a CUDA card. The versions this was built and tested against are pinned in
 [`constraints-tested.txt`](../constraints-tested.txt) (torch 2.10.0+cu128, transformers 4.57.6,
-peft 0.18.1); the package itself accepts `transformers<5` and `peft>=0.18,<1`.
+accelerate 1.14.0, peft 0.18.1) — nothing here has been run below them. The package itself accepts
+`transformers>=4.56,<5` and `peft>=0.18,<1`; the transformers floor is where `from_pretrained`
+learned the `dtype=` spelling this package loads with, and below it a model would load in the
+checkpoint's own dtype without saying so.
 
 ## Get a p(h) artifact
 
@@ -35,7 +38,12 @@ its own λ, not a cheaper equivalent.
 > **Before the release assets exist**, `fetch-artifact` refuses rather than downloading something
 > it cannot verify (`ArtifactNotPublished`: the registry's checksums are still placeholders). Until
 > then, either build one — [rebuilding-the-artifact.md](rebuilding-the-artifact.md) — or pass a
-> local file to `lfa init --artifact /path/to/distribution_stats.pt`.
+> local file *with the id it is a copy of*:
+> `lfa init --artifact /path/to/distribution_stats.pt --artifact-id qwen3-0.6b-gmm1543k-int8`.
+> Without the id the workspace knows the file only by its path: every stage warns that λ was
+> calibrated against a different artifact (it was not), and `lfa extend` refuses — after the stage
+> has trained — because the shipped file carries no sample count of its own and the registry entry
+> is where that number lives.
 
 ## Prepare the domain
 

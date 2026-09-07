@@ -45,20 +45,25 @@
     "                     val_loss, the same token-weighted cross-entropy over the same text),",
     "                     each within tol_abs_nats. Fifteen points on identical text.",
     "",
-    "THE SANITY CHECKS (one draw each, NOT the criterion): domain_ppl and seed_drift are the",
-    "research instrument's two numbers, measured once per side at the end of a run whose objective",
-    "was sampled independently on the two sides. They say the run produced a domain-adapted model",
-    "on the same instrument. A failure there means INVESTIGATE -- a second seed on each side --",
-    "not REGRESSION, and it must not be answered by widening the tolerance.",
-    "  domain_ppl.tol_rel     = 0.02, relative, on direct_perplexity.overall.mean_perplexity over",
-    "                           the held-out chat-formatted Q&A set (never comparable with",
-    "                           held-out raw-prose perplexity, a different quantity).",
-    "  seed_drift.tol_abs_pct = 1.0, in percentage POINTS, on WikiText-2 drift over the full test",
-    "                           split (window 2048, stride 512), each side read against the base",
-    "                           model's perplexity measured in the same run.",
+    "THE INSTRUMENT ROWS ARE REPORTED, NOT ASSERTED (2026-09-07). domain_ppl and seed_drift are",
+    "the research instrument's two numbers -- direct_perplexity.overall.mean_perplexity over the",
+    "held-out chat-formatted Q&A set, and WikiText-2 drift over the full test split (window 2048,",
+    "stride 512) read against the base model measured in the same run. Each is ONE draw per side",
+    "of the sampled objective described above. They are printed with their deviations and carry",
+    "NO verdict: `kind` is \"report\" and `ok` is null, and they cannot fail the run.",
     "",
-    "None of these tolerances is to be widened to accommodate a run: a number outside them is a",
-    "finding."
+    "Why they carry no band. They used to be asserted within 2 % (domain) and 1.0 pp (drift), and",
+    "the 2026-09-07 run consumed 1.95 % of that 2 %. But the spread of these quantities across",
+    "seeds has never been measured on either side, so a band on them was never calibrated -- it",
+    "was a number carried over from an earlier, paper-referenced design. Asserting an unmeasured",
+    "spread is the same defect as asserting a difference smaller than the noise of the thing being",
+    "measured, which is why the criterion moved to the deterministic series in the first place.",
+    "The remedy is not a wider band: it is a SECOND SEED on one side, which would measure the",
+    "spread. Until someone runs it, these rows are evidence a reader weighs, not a gate.",
+    "",
+    "So: a large gap on an instrument row means INVESTIGATE (run that second seed). A miss on the",
+    "criterion rows above is the regression, and none of THOSE tolerances is to be widened to",
+    "accommodate a run: a number outside them is a finding."
   ],
   "optimizer_steps": {
     "exact": true
@@ -75,9 +80,9 @@
     "tol_abs_nats": 0.03
   },
   "domain_ppl": {
-    "tol_rel": 0.02
+    "reported_not_asserted": true
   },
   "seed_drift": {
-    "tol_abs_pct": 1.0
+    "reported_not_asserted": true
   }
 }

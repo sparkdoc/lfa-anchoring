@@ -33,9 +33,11 @@ from __future__ import annotations
 import dataclasses
 import datetime as _datetime
 import gc
+import hashlib
 import json
 import logging
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -70,7 +72,7 @@ from .train import train as run_training
 logger = logging.getLogger("lfa.workspace")
 
 __all__ = ["Workspace", "StageOrderError", "WorkspaceNotReady", "WORKSPACE_FILE", "HISTORY_FILE",
-           "LOADER_FRAME_NOTICE"]
+           "LOADER_FRAME_NOTICE", "code_identity", "source_digest"]
 
 WORKSPACE_FILE = "workspace.json"
 HISTORY_FILE = "history.json"
@@ -113,6 +115,58 @@ def _lfa_version() -> str:
 def _now() -> str:
     """An ISO-8601 timestamp, to the second, in local time."""
     return _datetime.datetime.now().replace(microsecond=0).isoformat()
+
+
+#: Files whose contents define "the implementation that trained this stage".
+_CODE_GLOBS = ("*.py", "*.yaml")
+
+
+def code_identity() -> dict:
+    """Which implementation produced a training run: a digest, and a revision if there is one.
+
+    ``code_digest`` is sha256 over this package's own sources (every ``.py`` and every bundled
+    recipe, each hashed together with its relative path), truncated to 16 hex characters. It is
+    the load-bearing field: it is available whether the package was installed from a wheel or
+    imported from a checkout, and unlike a commit id it moves when the working tree moves, so an
+    uncommitted edit to the objective does not share an identity with the code before it.
+
+    ``git_revision`` is the HEAD of the checkout this package lives in, or ``None`` (installed
+    package, no ``git`` on PATH, a detached export). It is for a human reading a record, not for
+    a comparison.
+
+    Recorded in every history entry so that a later reader -- in particular the acceptance
+    harness, which may re-score a run it kept from an earlier session -- can say whether the
+    numbers it is about to quote were produced by the code in front of it. Without it, a kept run
+    and a changed objective look exactly alike.
+    """
+    root = Path(__file__).resolve().parent
+    return {"code_digest": source_digest(root), "git_revision": _git_revision(root)}
+
+
+def source_digest(root: Path) -> str:
+    """sha256 over every ``.py`` and ``.yaml`` under ``root``, truncated to 16 hex characters.
+
+    Path-then-contents, in sorted order, with a separator between the two, so that moving a file
+    or renaming it changes the digest as surely as editing it does.
+    """
+    digest = hashlib.sha256()
+    for path in sorted({p for pattern in _CODE_GLOBS for p in Path(root).rglob(pattern)}):
+        digest.update(path.relative_to(root).as_posix().encode())
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+    return digest.hexdigest()[:16]
+
+
+def _git_revision(inside: Path) -> str | None:
+    """``git rev-parse HEAD`` for the checkout ``inside`` belongs to, or ``None``."""
+    try:
+        finished = subprocess.run(["git", "-C", str(inside), "rev-parse", "HEAD"],
+                                  capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if finished.returncode != 0:
+        return None
+    return finished.stdout.strip() or None
 
 
 def _primary_device(device: str | dict) -> str:
@@ -165,7 +219,14 @@ def _table(before: dict, after: dict, unanchored: dict | None) -> str:
     one; an ``inf`` or a ``nan`` in its place would read as a measurement rather than as its
     absence, so the general row is replaced by a line that says what happened instead.
     """
-    if before.get("general") is not None:
+    columns = [("before", before), ("after", after)]
+    if unanchored is not None:
+        columns.append(("unanchored", unanchored))
+    # Every column, not just `before`: the axis can be measured for one model and fail for
+    # another (an intermittent Hub), and rendering the row then asks `perplexity_table` to
+    # format a None as a number.
+    unmeasured = [name for name, values in columns if values.get("general") is None]
+    if not unmeasured:
         return perplexity_table(before, after, unanchored)
 
     header = ["metric", "before", "after", "Δ%"]
@@ -184,7 +245,7 @@ def _table(before: dict, after: dict, unanchored: dict | None) -> str:
         return "| " + " | ".join(padded) + " |"
 
     return "\n".join([line(header), line(rule), line(row),
-                      "", f"{GENERAL_ROW}: not measured"])
+                      "", f"{GENERAL_ROW}: not measured ({', '.join(unmeasured)})"])
 
 
 def _bundled_recipe_for(model_id: str) -> str | None:
@@ -422,7 +483,9 @@ class Workspace:
                 over whatever this says, so it changes the whole curve, not only where it stops.
             output_name: run directory name under ``runs/``. The default is ``stage{N}``, and
                 ``stage{N}_run{k}`` for a repeat of a stage already trained -- a repeat is a
-                second run, not an overwrite of the first, and both stay readable.
+                second run, not an overwrite of the first, and both stay readable. A name that
+                already holds a run is refused (``FileExistsError``) unless ``resume`` is set,
+                since writing over it would discard that run's config, curve and checkpoint.
             keep_short_whole: override the recipe's corpus-chunking *frame*. Under ``False`` a
                 document shorter than the epoch's random chunk offset drops out of that epoch.
             full_weight: override the recipe's training mode. Full weight is outside the LFA
@@ -438,6 +501,7 @@ class Workspace:
             StageOrderError: a new corpus while a trained stage has not been extended.
             ValueError: no recipe anywhere, or an ``epochs`` the schedule cannot carry.
             WorkspaceNotReady: the workspace has no artifact to anchor against.
+            FileExistsError: the run directory already holds a run and this is not a resume.
         """
         corpus_path = Path(corpus).expanduser().resolve()
         if not corpus_path.exists():
@@ -482,6 +546,10 @@ class Workspace:
 
         base_model = self.state["current_model"]
         output_dir = self.path / "runs" / (output_name or self._run_name(stage, repeat, resume))
+        self._refuse_to_overwrite(output_dir, resume)
+        # Read before the run rather than after it: it is meant to name the code that trained the
+        # stage, and an edit landing on disk while the run is in flight is not that code.
+        implementation = code_identity()
         placement = resolve_device(device, allow_sharding)
         dtype = _dtype_for(placement)
         logger.info("Stage %d: %s on %s (artifact v%d, λ_qkv=%s, %d epochs)", stage, base_model,
@@ -523,6 +591,10 @@ class Workspace:
             "dtype": str(dtype).removeprefix("torch."),
             "timestamp": _now(),
             "lfa_version": _lfa_version(),
+            # WHICH CODE trained this, not merely which release: a version string does not move
+            # between two commits of the same version, and a kept run re-scored after the
+            # objective changed is otherwise indistinguishable from one that was retrained.
+            "implementation": implementation,
         }
         self.history.append(entry)
         self._save_history()
@@ -537,6 +609,37 @@ class Workspace:
         )
         self._save_state()
         return entry
+
+    @staticmethod
+    def _refuse_to_overwrite(output_dir: Path, resume: bool) -> None:
+        """Stop a run that would write over a run already in ``output_dir``.
+
+        :meth:`_run_name` keeps the *default* names apart (a repeat of a stage becomes
+        ``stage{N}_run{k}``), but an explicit ``output_name`` -- a chain spec's ``name``, or the
+        same name passed twice -- goes through as given, and the trainer writes with
+        ``exist_ok=True``. Two history entries then point at one directory: the first stage's
+        config, curve and checkpoint are gone, and every later read of that entry (``evaluate``,
+        ``extend``, ``fuse``) silently resolves to the second stage's model.
+
+        A resume is the one case where writing into an existing run is the intent, and it is
+        allowed: the trainer restores that run's epoch counter, history and optimizer moments and
+        continues it rather than starting over.
+
+        Raises:
+            FileExistsError: the directory already holds a run and this is not a resume of it.
+        """
+        if resume:
+            return
+        existing = [name for name in ("config.json", "training_history.json", "final_model",
+                                      "training_state.pt")
+                    if (output_dir / name).exists()]
+        if existing:
+            raise FileExistsError(
+                f"{output_dir} already holds a training run ({', '.join(existing)}), and this "
+                "call would write over it -- its config, its curve and its checkpoint. Name the "
+                "run differently (`output_name=`, or the chain spec's `name:`), or pass "
+                "resume=True to continue the run that is there."
+            )
 
     def _run_name(self, stage: int, repeat: bool, resume: bool) -> str:
         """The default run directory for this stage.
@@ -970,8 +1073,8 @@ class Workspace:
 
         Raises:
             ValueError: the spec is not valid YAML, is not a mapping, has no non-empty
-                ``domains`` list, has a domain without a ``corpus``, or asks not to extend
-                between domains. Each names the spec file.
+                ``domains`` list, has a domain without a ``corpus``, gives two domains the same
+                ``name``, or asks not to extend between domains. Each names the spec file.
         """
         spec_path = Path(spec_path)
         try:
@@ -992,6 +1095,19 @@ class Workspace:
                 "the second domain would adapt the first domain's base model and anchor against "
                 "a p(h) that does not describe it. To train several domains from the same "
                 "starting point instead, run them as separate workspaces."
+            )
+
+        # Checked before the first stage trains, because the symptom otherwise arrives hours in:
+        # the run directory IS the name, so two domains sharing one would have the second stage
+        # write over the first (`Workspace.train` refuses, but only once it gets there).
+        named = [domain.get("name") for domain in domains
+                 if isinstance(domain, dict) and domain.get("name")]
+        repeated = sorted({name for name in named if named.count(name) > 1})
+        if repeated:
+            raise ValueError(
+                f"{spec_path}: {', '.join(repr(name) for name in repeated)} names more than one "
+                "domain, and a name is the run directory -- the later stage would write over the "
+                "earlier one's config, curve and checkpoint. Give each domain its own name."
             )
 
         entries = []

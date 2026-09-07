@@ -228,7 +228,9 @@ def prepare_domain(
             overwritten -- a name collision gets a ``_1``, ``_2``, ... suffix.
         min_length: drop a document shorter than this many characters *after cleaning*.
         combine: write one ``combined_domain_data.txt`` (documents separated by a rule and headed
-            by ``# Source: <filename>``) instead of one file per input.
+            by ``# Source: <filename>``) instead of one file per input. It is suffixed like any
+            other output when that name is taken, so a second ``--combine`` run over different
+            inputs writes ``combined_domain_data_1.txt`` rather than replacing the first corpus.
         recursive: search directories' subdirectories.
 
     Raises:
@@ -271,7 +273,10 @@ def prepare_domain(
             written.append(out_path)
 
     if combine and documents:
-        out_path = out_dir / COMBINED_NAME
+        # Through `_unique_output` like every per-file write: under `combine` this one file IS
+        # the corpus, so an overwrite costs the whole of a previous preparation rather than one
+        # document of it -- and the docstring above promises it does not happen.
+        out_path = _unique_output(out_dir, Path(COMBINED_NAME).stem)
         out_path.write_text(_SEPARATOR.join(documents), encoding="utf-8")
         written.append(out_path)
 

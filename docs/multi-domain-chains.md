@@ -115,8 +115,10 @@ directly.
 
 Stated as the paper states it: in a three-domain chain, **perplexity** on the earlier domains keeps
 accumulating rather than degrading, while **judged answering** on those earlier domains falls after
-the third stage — and that fall is carried by the stage's generated question-and-answer supplement
-rather than by the anchor.
+the third stage — and that fall is carried by the question-and-answer **pairs** in the stage's
+generated supplement rather than by the anchor. The paper calls that supplement double-edged: the
+pairs are the interference, but a stage trained *without* the supplement retains the earlier domain
+**worse** on the same judge, so "drop the Q&A" is not the reading.
 
 This package has no QA supplement: the loader mixes nothing into the corpus you hand it, and
 nothing here computes a judged score. Every number it reports is a perplexity computed locally.

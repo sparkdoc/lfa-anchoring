@@ -28,7 +28,7 @@ pip install -e '.[dev]'          # add ,html or ,pdf if your documents are HTML 
 
 Python ≥ 3.11 and a CUDA card. Tested with the versions in
 [`constraints-tested.txt`](constraints-tested.txt) — torch 2.10.0+cu128, transformers 4.57.6,
-peft 0.18.1.
+accelerate 1.14.0, peft 0.18.1. Nothing here has been run below those.
 
 ## Four commands
 
@@ -60,9 +60,12 @@ domain adds one step — `lfa extend` — which folds the finished stage into bo
 
 > **Before the release assets exist**, fetching an artifact by id refuses rather than downloading
 > something it cannot verify (`ArtifactNotPublished` — the registry's checksums are still
-> placeholders), so that first command fails as written. Pass a local artifact file instead
-> (`--artifact /path/to/distribution_stats.pt`), or build one:
-> [docs/rebuilding-the-artifact.md](docs/rebuilding-the-artifact.md).
+> placeholders), so that first command fails as written. Pass a local artifact file instead —
+> `--artifact /path/to/distribution_stats.pt --artifact-id qwen3-0.6b-gmm1543k-int8` — or build
+> one: [docs/rebuilding-the-artifact.md](docs/rebuilding-the-artifact.md). Pass **both**: the id
+> says which published artifact that file is, which is what the recipe's λ is read against (a
+> bare path warns on every stage that λ was calibrated elsewhere) and what supplies the base
+> sample count `lfa extend` needs, since the shipped file carries none of its own.
 
 Full walkthrough: [docs/quickstart.md](docs/quickstart.md). Same flow as Python:
 [`examples/quickstart.py`](examples/quickstart.py).
@@ -125,7 +128,8 @@ implementations estimate the anchor from 16 hidden states drawn per site per ste
 independent RNG streams, so two full runs are two draws of a stochastic objective and
 bit-equivalence between them is impossible by construction.
 
-The criterion, measured 2026-09-07:
+The criterion, measured 2026-09-07 (the run's own records are committed at
+[`tests/acceptance/_runs/2026-09-07-equiv/`](tests/acceptance/_runs/2026-09-07-equiv/)):
 
 | quantity | result | tolerance |
 |---|---|---|
@@ -134,11 +138,11 @@ The criterion, measured 2026-09-07:
 | per-epoch content loss, all 15 epochs | worst 0.191 % | 0.5 % |
 | per-epoch held-out loss, all 15 epochs | worst 0.0104 nats | 0.03 nats |
 
-Two end-of-run perplexities are recorded beside those as **sanity checks**, not as the criterion:
-domain direct-QA perplexity 10.6996 against the reference's 10.9122 (−1.95 %, tolerance 2 %) and
-WikiText-2 drift −8.202 % against −7.898 % (0.304 points, tolerance 1 point). Each is a single draw
-of a sampled objective; they say the run produced a domain-adapted model on the same instrument,
-and a failure there is something to investigate with a second seed rather than a regression.
+Two end-of-run perplexities are **reported** beside those and asserted by nothing: domain direct-QA
+perplexity 10.6996 against the reference's 10.9122 (−1.95 %) and WikiText-2 drift −8.202 % against
+−7.898 % (0.304 points). Each is a single draw of a sampled objective whose spread across seeds has
+never been measured, so there is no calibrated band to hold them to — a gap there is something to
+investigate with a second seed, which is also what would earn them a band back.
 
 None of this is a reproduction of a published number. The paper's own headline — domain perplexity
 8.76 on Qwen3-0.6B at a seed ΔPPL of −10.0 %, i.e. seed-corpus perplexity 10 % *below* the base

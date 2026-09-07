@@ -151,13 +151,17 @@ interrupted fetch never leaves something that looks like an artifact.
 
 ```bash
 git tag -a v0.1.0 -m "lfa-anchoring 0.1.0"
+pip install -e ".[dev]"    # `build` is in the dev extra; `python -m build` needs it installed
 python -m build            # sdist + wheel
 ```
 
 Check what the sdist carries (`MANIFEST.in` governs it): `lfa/`, `docs/`, `examples/`, `tests/`,
 `LICENSE`, `README.md`, `RELEASING.md`, `constraints-tested.txt` — and **not**
 `tests/equivalence/fixtures/` (~12 MB of captured tensors, which belong in git, not in a source
-distribution) nor `tests/acceptance/_runs/`. Rehearsed: 87 files, 236 KB. The wheel's metadata
+distribution) nor `tests/acceptance/_runs/` — which is why the two committed equivalence records
+travel in git only. Rehearsed 2026-09-07 from a pristine copy: **77 files, 260 KiB**
+(`tar -tzf dist/*.tar.gz | grep -v '/$' | wc -l`; the same listing is 88 lines with the directory
+entries counted). Re-measure rather than trusting the figure — the docs move. The wheel's metadata
 should read `License-Expression: Apache-2.0` with `dist-info/licenses/LICENSE` present, and should
 carry `lfa/recipes/qwen3-0.6b.yaml`.
 

@@ -1,0 +1,541 @@
+{
+  "timestamp": "2026-09-07T17:57:05",
+  "lfa_version": "0.1.0",
+  "companion_commit": "8e7ef3cee958f81a3ffb2a33d7d60c13958b3664",
+  "research": "/path/to/research-repo",
+  "research_revision": "99a4423a79db7d3d977569a0d7b8fbaecb62e855",
+  "device": "cuda:0",
+  "cuda_visible_devices": "0",
+  "wall_clock_seconds": 0.0,
+  "corpus": "/path/to/research-repo/data/domain/chalmers_qa0.15",
+  "artifact": "/path/to/research-repo/data/distributions/qwen3-0.6b-gmm1543k-int8/distribution_stats.pt",
+  "recipe": "qwen3-0.6b",
+  "keep_short_whole": true,
+  "val_fraction": 0.1,
+  "n_train_docs": 1505,
+  "n_val_docs": 168,
+  "epochs": 15,
+  "checkpoint": "/path/to/research-repo/lfa-anchoring/tests/acceptance/_runs/2026-09-07-equiv/workspace/runs/stage1/final_model",
+  "content_curve": [
+    2.6201160740891893,
+    2.5176349094143737,
+    2.4744920319802053,
+    2.432348487757835,
+    2.3967640213482393,
+    2.3653867322989184,
+    2.330545569467945,
+    2.2980756932209414,
+    2.262939214706421,
+    2.231030715769859,
+    2.174760611665329,
+    2.1389191701783608,
+    2.1093205398321153,
+    2.08064128515526,
+    2.071536193241923
+  ],
+  "held_out_curve": [
+    2.626047361426274,
+    2.5890861808660546,
+    2.5678323257157776,
+    2.542094051634146,
+    2.536412843073693,
+    2.524323203166654,
+    2.5168913933232777,
+    2.508491142737902,
+    2.506254082995208,
+    2.502374876482262,
+    2.506545964618847,
+    2.5194271767586227,
+    2.5321798739650183,
+    2.543046677824505,
+    2.547991650798995
+  ],
+  "optimizer_steps": [
+    603,
+    1205,
+    1797,
+    2392,
+    2993,
+    3587,
+    4182,
+    4783,
+    5375,
+    5972,
+    6568,
+    7165,
+    7765,
+    8366,
+    8969
+  ],
+  "held_out_tokens": [
+    157366,
+    157366,
+    157366,
+    157366,
+    157366,
+    157366,
+    157366,
+    157366,
+    157366,
+    157366,
+    157366,
+    157366,
+    157366,
+    157366,
+    157366
+  ],
+  "chunk_counts": {
+    "train_chunks": 3614,
+    "val_chunks": 435
+  },
+  "val_perplexity_curve": [
+    13.819040298461914,
+    13.317597389221191,
+    13.037531852722168,
+    12.706250190734863,
+    12.634269714355469,
+    12.482444763183594,
+    12.390022277832031,
+    12.286375999450684,
+    12.25892448425293,
+    12.21146011352539,
+    12.262502670288086,
+    12.421478271484375,
+    12.580900192260742,
+    12.718360900878906,
+    12.781410217285156
+  ],
+  "learning_rate_curve": [
+    0.0002972109361071585,
+    0.00028796003222553585,
+    0.00027293370869179443,
+    0.00025255597096483226,
+    0.00022749632238181617,
+    0.00019938111787814618,
+    0.00016909621009953668,
+    0.00013767630092093204,
+    0.00010724911927292726,
+    7.841275790158152e-05,
+    5.271730991797902e-05,
+    3.11899469488813e-05,
+    1.4741222301171965e-05,
+    4.1981882899804085e-06,
+    5.283970186671384e-08
+  ],
+  "research_instrument": {
+    "checkpoint": "/path/to/research-repo/lfa-anchoring/tests/acceptance/_runs/2026-09-07-equiv/workspace/runs/stage1/final_model",
+    "domain_direct_ppl": 10.699590604263083,
+    "seed_ppl": 16.686321258544922,
+    "results_file": "/path/to/research-repo/lfa-anchoring/tests/acceptance/_runs/2026-09-07-equiv/scoring_companion/domain_perplexity_results_final_model_20260907_161437.json",
+    "qa_file": "/path/to/research-repo/data/domain_perplexity_questions/chalmers/domain_perplexity_qa_direct_20260310_123856.jsonl"
+  },
+  "reference": {
+    "run": "/path/to/research-repo/outputs/lra/qwen3-0.6b/chalmers/judge_search/gmm_r32_lam100000_e15cos_keepshort",
+    "checkpoint": "/path/to/research-repo/outputs/lra/qwen3-0.6b/chalmers/judge_search/gmm_r32_lam100000_e15cos_keepshort/final_model",
+    "config_digest": "8f8d29b0cf0af9b76afcc4b1dc38d474a5d0f748763b85f27a01dabe88e0e110",
+    "config": {
+      "lora_rank": 32,
+      "lora_alpha": 64,
+      "freeze_embed": true,
+      "lambda_qkv": 100000.0,
+      "lambda_mlp": 100000.0,
+      "mu": 0.05,
+      "anchor_end_ratio": 0.1,
+      "anchor_schedule": "cosine",
+      "n_anchor_samples": 16,
+      "num_epochs": 15,
+      "learning_rate": 0.0003,
+      "batch_size": 6,
+      "gradient_accumulation_steps": 1,
+      "warmup_steps": 50,
+      "weight_decay": 0.01,
+      "sequence_length": 512,
+      "seed": 42,
+      "keep_short_whole": true,
+      "val_fraction": 0.1
+    },
+    "domain_direct_ppl": 10.9122073073658,
+    "seed_ppl": 16.741626739501953,
+    "content_curve": [
+      2.6188402347896824,
+      2.5172918844856693,
+      2.4711804259065033,
+      2.4322272631300597,
+      2.3946568438296705,
+      2.3660238088180723,
+      2.3269628256308934,
+      2.295655764279865,
+      2.259562964374955,
+      2.2299628275722716,
+      2.17601023504398,
+      2.1348481867181595,
+      2.110350983540217,
+      2.0778561642086646,
+      2.07163998578516
+    ],
+    "held_out_curve": [
+      2.636475854807019,
+      2.5953333710666024,
+      2.570128838871697,
+      2.5475970481093917,
+      2.5317310798577704,
+      2.520828269564375,
+      2.510866289186791,
+      2.504662862415878,
+      2.502641532692701,
+      2.498045423279232,
+      2.510318870117672,
+      2.5220002050118464,
+      2.5341299461190916,
+      2.54272914620182,
+      2.548601374938201
+    ],
+    "optimizer_steps": [
+      603,
+      1205,
+      1797,
+      2392,
+      2993,
+      3587,
+      4182,
+      4783,
+      5375,
+      5972,
+      6568,
+      7165,
+      7765,
+      8366,
+      8969
+    ],
+    "held_out_tokens": [
+      157366,
+      157366,
+      157366,
+      157366,
+      157366,
+      157366,
+      157366,
+      157366,
+      157366,
+      157366,
+      157366,
+      157366,
+      157366,
+      157366,
+      157366
+    ],
+    "chunk_counts": {
+      "train_chunks": 3614,
+      "val_chunks": 435
+    },
+    "measured_at": "2026-09-07T17:57:05",
+    "instrument": "/path/to/research-repo/lfa-anchoring/tests/acceptance/_runs/2026-09-07-equiv/scoring_reference/domain_perplexity_results_final_model_20260907_161602.json"
+  },
+  "companion_instrument": {
+    "domain_ppl_heldout_docs": 12.78345549016726,
+    "base_domain_ppl_heldout_docs": 23.298680297387904,
+    "wikitext2_ppl": 16.686319432343016,
+    "base_wikitext2_ppl": 18.17722772190395,
+    "table": "| metric               | before | after |     \u0394% |\n| -------------------- | -----: | ----: | -----: |\n| general (WikiText-2) |  18.18 | 16.69 |  -8.2% |\n| domain               |  23.30 | 12.78 | -45.1% |"
+  },
+  "checks": [
+    {
+      "kind": "frame",
+      "name": "the two runs are the same configuration",
+      "measured": 0,
+      "detail": [],
+      "tolerance": "0 differing frame fields",
+      "ok": true
+    },
+    {
+      "kind": "criterion",
+      "name": "optimizer steps per epoch",
+      "measured": 0,
+      "detail": {
+        "companion": [
+          603,
+          1205,
+          1797,
+          2392,
+          2993,
+          3587,
+          4182,
+          4783,
+          5375,
+          5972,
+          6568,
+          7165,
+          7765,
+          8366,
+          8969
+        ],
+        "reference": [
+          603,
+          1205,
+          1797,
+          2392,
+          2993,
+          3587,
+          4182,
+          4783,
+          5375,
+          5972,
+          6568,
+          7165,
+          7765,
+          8366,
+          8969
+        ],
+        "mismatched": []
+      },
+      "tolerance": "exact equality on all 15 epochs",
+      "ok": true
+    },
+    {
+      "kind": "criterion",
+      "name": "corpus: training chunks, held-out chunks, held-out tokens",
+      "measured": 0,
+      "detail": {
+        "companion": {
+          "train_chunks": 3614,
+          "val_chunks": 435
+        },
+        "reference": {
+          "train_chunks": 3614,
+          "val_chunks": 435
+        },
+        "documents": {
+          "train": 1505,
+          "held_out": 168
+        },
+        "held_out_tokens": {
+          "companion": [
+            157366
+          ],
+          "reference": [
+            157366
+          ]
+        }
+      },
+      "tolerance": "exact equality on all three",
+      "ok": true
+    },
+    {
+      "kind": "criterion",
+      "name": "content loss per epoch, 1-15",
+      "measured": 0.19069194172816098,
+      "detail": [
+        {
+          "epoch": 1,
+          "companion": 2.6201160740891893,
+          "reference": 2.6188402347896824,
+          "deviation_pct": 0.04871772178226756
+        },
+        {
+          "epoch": 2,
+          "companion": 2.5176349094143737,
+          "reference": 2.5172918844856693,
+          "deviation_pct": 0.013626744312747935
+        },
+        {
+          "epoch": 3,
+          "companion": 2.4744920319802053,
+          "reference": 2.4711804259065033,
+          "deviation_pct": 0.13400907675477233
+        },
+        {
+          "epoch": 4,
+          "companion": 2.432348487757835,
+          "reference": 2.4322272631300597,
+          "deviation_pct": 0.004984099537619845
+        },
+        {
+          "epoch": 5,
+          "companion": 2.3967640213482393,
+          "reference": 2.3946568438296705,
+          "deviation_pct": 0.08799496779667593
+        },
+        {
+          "epoch": 6,
+          "companion": 2.3653867322989184,
+          "reference": 2.3660238088180723,
+          "deviation_pct": 0.026926040083770208
+        },
+        {
+          "epoch": 7,
+          "companion": 2.330545569467945,
+          "reference": 2.3269628256308934,
+          "deviation_pct": 0.15396652656366955
+        },
+        {
+          "epoch": 8,
+          "companion": 2.2980756932209414,
+          "reference": 2.295655764279865,
+          "deviation_pct": 0.10541340643183718
+        },
+        {
+          "epoch": 9,
+          "companion": 2.262939214706421,
+          "reference": 2.259562964374955,
+          "deviation_pct": 0.14942050231381768
+        },
+        {
+          "epoch": 10,
+          "companion": 2.231030715769859,
+          "reference": 2.2299628275722716,
+          "deviation_pct": 0.047888161380250545
+        },
+        {
+          "epoch": 11,
+          "companion": 2.174760611665329,
+          "reference": 2.17601023504398,
+          "deviation_pct": 0.05742727485956518
+        },
+        {
+          "epoch": 12,
+          "companion": 2.1389191701783608,
+          "reference": 2.1348481867181595,
+          "deviation_pct": 0.19069194172816098
+        },
+        {
+          "epoch": 13,
+          "companion": 2.1093205398321153,
+          "reference": 2.110350983540217,
+          "deviation_pct": 0.048828072493101726
+        },
+        {
+          "epoch": 14,
+          "companion": 2.08064128515526,
+          "reference": 2.0778561642086646,
+          "deviation_pct": 0.13403819737714678
+        },
+        {
+          "epoch": 15,
+          "companion": 2.071536193241923,
+          "reference": 2.07163998578516,
+          "deviation_pct": 0.005010163153307962
+        }
+      ],
+      "tolerance": "every epoch within 0.5% (all 15 epochs present)",
+      "ok": true
+    },
+    {
+      "kind": "criterion",
+      "name": "held-out loss per epoch, 1-15",
+      "measured": 0.010428493380744808,
+      "detail": [
+        {
+          "epoch": 1,
+          "companion": 2.626047361426274,
+          "reference": 2.636475854807019,
+          "deviation_nats": 0.010428493380744808
+        },
+        {
+          "epoch": 2,
+          "companion": 2.5890861808660546,
+          "reference": 2.5953333710666024,
+          "deviation_nats": 0.00624719020054787
+        },
+        {
+          "epoch": 3,
+          "companion": 2.5678323257157776,
+          "reference": 2.570128838871697,
+          "deviation_nats": 0.0022965131559193885
+        },
+        {
+          "epoch": 4,
+          "companion": 2.542094051634146,
+          "reference": 2.5475970481093917,
+          "deviation_nats": 0.005502996475245769
+        },
+        {
+          "epoch": 5,
+          "companion": 2.536412843073693,
+          "reference": 2.5317310798577704,
+          "deviation_nats": 0.004681763215922619
+        },
+        {
+          "epoch": 6,
+          "companion": 2.524323203166654,
+          "reference": 2.520828269564375,
+          "deviation_nats": 0.003494933602278927
+        },
+        {
+          "epoch": 7,
+          "companion": 2.5168913933232777,
+          "reference": 2.510866289186791,
+          "deviation_nats": 0.006025104136486714
+        },
+        {
+          "epoch": 8,
+          "companion": 2.508491142737902,
+          "reference": 2.504662862415878,
+          "deviation_nats": 0.0038282803220242023
+        },
+        {
+          "epoch": 9,
+          "companion": 2.506254082995208,
+          "reference": 2.502641532692701,
+          "deviation_nats": 0.003612550302506623
+        },
+        {
+          "epoch": 10,
+          "companion": 2.502374876482262,
+          "reference": 2.498045423279232,
+          "deviation_nats": 0.00432945320303002
+        },
+        {
+          "epoch": 11,
+          "companion": 2.506545964618847,
+          "reference": 2.510318870117672,
+          "deviation_nats": 0.003772905498824919
+        },
+        {
+          "epoch": 12,
+          "companion": 2.5194271767586227,
+          "reference": 2.5220002050118464,
+          "deviation_nats": 0.002573028253223697
+        },
+        {
+          "epoch": 13,
+          "companion": 2.5321798739650183,
+          "reference": 2.5341299461190916,
+          "deviation_nats": 0.001950072154073279
+        },
+        {
+          "epoch": 14,
+          "companion": 2.543046677824505,
+          "reference": 2.54272914620182,
+          "deviation_nats": 0.00031753162268488566
+        },
+        {
+          "epoch": 15,
+          "companion": 2.547991650798995,
+          "reference": 2.548601374938201,
+          "deviation_nats": 0.0006097241392062358
+        }
+      ],
+      "tolerance": "every epoch within 0.03 nats (all 15 epochs present)",
+      "ok": true
+    },
+    {
+      "kind": "sanity",
+      "name": "SANITY (one draw, not the criterion): domain direct-QA perplexity",
+      "measured": 10.699590604263083,
+      "reference": 10.9122073073658,
+      "deviation": 1.9484298374646942,
+      "tolerance": "within 2% of 10.9122073073658",
+      "ok": true
+    },
+    {
+      "kind": "sanity",
+      "name": "SANITY (one draw, not the criterion): WikiText-2 drift vs base 18.18",
+      "measured": -8.202056365077354,
+      "reference": -7.8977994024472,
+      "deviation": 0.3042569626301539,
+      "tolerance": "within 1 pp of -7.898",
+      "ok": true
+    }
+  ],
+  "passed": true
+}

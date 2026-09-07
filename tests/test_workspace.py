@@ -179,6 +179,69 @@ def test_init_adopts_a_bundled_recipe_that_names_the_same_model(tmp_path, tiny_a
     assert ws.state["recipe"] == "qwen3-0.6b"
 
 
+def _as_shipped(params: dict) -> dict:
+    """The fixture artifact reshaped like the published `qwen3-0.6b-gmm1543k-int8` file.
+
+    Verified against that file on 2026-09-07: 84 keys, all of them sites, **no `n_samples` on any
+    block and no `__meta__` block at all**. Every other artifact in this suite carries both, so
+    without this the shipped shape is exercised only in pieces and never end to end -- which is
+    how the documented route came to be one that trains for an hour and then cannot `extend`.
+    """
+    stripped = copy.deepcopy(params)
+    stripped.pop("__meta__", None)
+    for key in list(stripped):
+        stripped[key].pop("n_samples", None)
+    return stripped
+
+
+def test_the_documented_local_artifact_route_trains_extends_and_warns_about_nothing(
+        tmp_path, registry, base_dir, corpus_a, tiny_artifact, caplog):
+    """`--artifact <file> --artifact-id <published id>`: what README, quickstart and both
+    examples tell a reader to do while the release assets do not exist yet.
+
+    Both halves are load-bearing, and only the second is visible before an hour of GPU time has
+    been spent: the id is what `Recipe.warnings` reads the calibration against (without it every
+    stage warns that lambda was calibrated elsewhere, against the very file it was calibrated
+    on), and it is what supplies the base sample count that `extend` needs, since the shipped
+    artifact carries none.
+    """
+    base, _ = tiny_artifact
+    shipped = tmp_path / "distribution_stats.pt"
+    torch.save(_as_shipped(base), shipped)
+
+    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact=str(shipped),
+                        artifact_id="tiny", fetch=False)
+    with caplog.at_level("WARNING", logger="lfa.workspace"):
+        ws.train(corpus_a, recipe=tiny_recipe(base_dir), device="cpu")
+
+    assert [r.message for r in caplog.records if r.name == "lfa.workspace"
+            and r.levelname == "WARNING"] == []
+    extended = ws.extend(need=NEED, k_domain=K_DOMAIN, device="cpu")
+    assert load_artifact(extended)["1_pre_mlp"]["n_samples"] == registry["n_samples_total"] + NEED
+
+
+def test_the_same_route_without_the_artifact_id_warns_falsely_and_then_cannot_extend(
+        tmp_path, registry, base_dir, corpus_a, tiny_artifact, caplog):
+    """Why the id is in the documentation and not only in `docs/recipes.md`.
+
+    This is the workspace a reader got from the four documented lines before 2026-09-07: a false
+    calibration warning on every stage, and a refusal at the first `extend` -- after the stage has
+    already trained.
+    """
+    base, _ = tiny_artifact
+    shipped = tmp_path / "distribution_stats.pt"
+    torch.save(_as_shipped(base), shipped)
+
+    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact=str(shipped), fetch=False)
+    with caplog.at_level("WARNING", logger="lfa.workspace"):
+        ws.train(corpus_a, recipe=tiny_recipe(base_dir), device="cpu")
+
+    assert any("calibrated against" in r.message for r in caplog.records
+               if r.name == "lfa.workspace")
+    with pytest.raises(ValueError, match="base_n"):
+        ws.extend(need=NEED, k_domain=K_DOMAIN, device="cpu")
+
+
 # --------------------------------------------------------------------------------------- train
 
 def test_the_first_stage_records_its_recipe_and_the_lambda_it_applied(flow, corpus_a, base_dir):
@@ -405,6 +468,89 @@ def _adapter_weights(adapter_dir):
     return safetensors.torch.load_file(Path(adapter_dir) / "adapter_model.safetensors")
 
 
+def test_an_explicit_run_name_will_not_write_over_the_run_already_there(tmp_path, registry,
+                                                                        base_dir, corpus_a):
+    """The only silent data-loss path the workspace had.
+
+    `_run_name` keeps the DEFAULT names apart (a repeat becomes `stage1_run2`), but an explicit
+    name -- a chain spec's `name:`, or the same `output_name` twice -- went through as given and
+    the trainer writes with `exist_ok=True`. Two history entries then pointed at one directory:
+    the first run's config, curve and checkpoint gone, and `evaluate`/`extend`/`fuse` silently
+    resolving the first entry to the second run's model.
+    """
+    ws = new_workspace(tmp_path, base_dir)
+    first = ws.train(corpus_a, recipe=tiny_recipe(base_dir), output_name="dup", device="cpu")
+    curve = (Path(first["output_dir"]) / "training_history.json").read_text()
+
+    with pytest.raises(FileExistsError, match="dup"):
+        ws.train(corpus_a, recipe=tiny_recipe(base_dir), output_name="dup", device="cpu")
+
+    assert len(ws.history) == 1                              # nothing was appended
+    assert (Path(first["output_dir"]) / "training_history.json").read_text() == curve
+    assert [p.name for p in (ws.path / "runs").iterdir()] == ["dup"]
+
+    # ...and a resume of that same run is still allowed: it continues the run rather than
+    # discarding it, which is the one case where writing into an occupied directory is the point.
+    resumed = ws.train(corpus_a, recipe=tiny_recipe(base_dir), output_name="dup", epochs=2,
+                       resume=True, device="cpu")
+    assert resumed["output_dir"] == first["output_dir"] and len(ws.history) == 2
+
+
+def test_a_chain_spec_that_names_two_domains_alike_is_refused_before_anything_trains(
+        tmp_path, registry, base_dir, corpus_a, corpus_b):
+    """The same collision, caught where it costs nothing rather than one stage in."""
+    recipe_path = tiny_recipe(base_dir).save(tmp_path / "tiny_recipe.yaml")
+    ws = new_workspace(tmp_path / "ws", base_dir, recipe=str(recipe_path))
+    spec = tmp_path / "domains.yaml"
+    spec.write_text(yaml.safe_dump({"domains": [{"name": "dup", "corpus": str(corpus_a)},
+                                                {"name": "dup", "corpus": str(corpus_b)}]}))
+
+    with pytest.raises(ValueError, match="dup"):
+        ws.chain(spec, device="cpu", need=NEED, k_domain=K_DOMAIN)
+
+    assert ws.history == [] and not (ws.path / "runs").exists()
+
+
+def test_a_stage_records_which_implementation_trained_it(flow):
+    """Which CODE produced a run, not merely which release.
+
+    The acceptance harness may re-score a run it kept from an earlier session; without this field
+    a kept run and a changed objective look exactly alike, and the equivalence criterion then
+    certifies an implementation that never executed. A version string cannot do it: two commits
+    of one version share it.
+    """
+    _, first, _, second = flow
+    identity = workspace_module.code_identity()
+
+    for entry in (first, second):
+        assert entry["implementation"]["code_digest"] == identity["code_digest"]
+        assert len(entry["implementation"]["code_digest"]) == 16
+    # The revision is provenance for a human and may legitimately be absent (an installed wheel).
+    assert set(first["implementation"]) == {"code_digest", "git_revision"}
+
+
+def test_the_code_digest_moves_when_the_package_source_moves(tmp_path):
+    """It is a fingerprint of the sources, not of the version: any edit has to change it."""
+    import shutil
+
+    from lfa.workspace import source_digest
+
+    package = Path(workspace_module.__file__).resolve().parent
+    copied = tmp_path / "lfa"
+    shutil.copytree(package, copied, ignore=shutil.ignore_patterns("__pycache__"))
+
+    assert source_digest(copied) == source_digest(package)
+
+    (copied / "losses.py").write_text((copied / "losses.py").read_text() + "\n# an edit\n")
+    assert source_digest(copied) != source_digest(package)
+
+    # A recipe is part of the implementation too: it is what the run is an instance of.
+    shutil.copytree(package, tmp_path / "lfa2", ignore=shutil.ignore_patterns("__pycache__"))
+    recipe = tmp_path / "lfa2" / "recipes" / "qwen3-0.6b.yaml"
+    recipe.write_text(recipe.read_text().replace("lora_rank: 32", "lora_rank: 16"))
+    assert source_digest(tmp_path / "lfa2") != source_digest(package)
+
+
 def test_extending_with_nothing_to_extend_says_so(tmp_path, registry, base_dir):
     ws = new_workspace(tmp_path, base_dir)
     with pytest.raises(StageOrderError, match="train"):
@@ -563,6 +709,30 @@ def test_evaluate_says_so_when_the_general_split_cannot_be_fetched(flow, monkeyp
 
     assert result["before"]["general"] is None and result["after"]["general"] is None
     assert any("wikitext" in r.message.lower() for r in caplog.records)
+
+
+def test_the_table_survives_the_general_axis_failing_for_one_model_only(flow, monkeypatch):
+    """WikiText-2 can be scored for one model and fail for the next -- an intermittent Hub.
+
+    The table used to be selected on `before` alone, so the successful first column sent a `None`
+    second column into `perplexity_table`, which formatted it as a number: `TypeError`, from a
+    package whose quickstart says a traceback is a bug in it.
+    """
+    ws, _, _, _ = flow
+    answers = [42.0, OSError("offline: wikitext could not be downloaded")]
+
+    def flaky(*args, **kwargs):
+        answer = answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(workspace_module, "wikitext2_perplexity", flaky)
+    result = ws.evaluate(n_windows=8, device="cpu")
+
+    assert result["before"]["general"] == 42.0 and result["after"]["general"] is None
+    assert "not measured (after)" in result["table"]
+    assert "domain" in result["table"]
 
 
 def test_evaluate_can_rerun_the_stage_with_the_anchor_switched_off(tmp_path, registry, base_dir,
