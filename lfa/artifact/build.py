@@ -150,12 +150,19 @@ def build_artifact(
         gc.collect()
 
     site_keys = [k for k in params if parse_site_key(k) is not None]
+    # A PER-SITE count, not a cross-site sum: every site sees the same token stream, and this is
+    # what a later extension reads back as each block's own count. Collection stops between
+    # batches, so the counts can differ by up to one batch; the largest is the one to record.
+    site_counts = [params[k]["n_samples"] for k in site_keys]
+    if len(set(site_counts)) > 1:
+        logger.info("Site sample counts differ (%d-%d, one batch of slack); recording %d",
+                    min(site_counts), max(site_counts), max(site_counts))
     params[META_KEY] = make_meta(
         model_id=model_id,
         hidden_size=model.config.hidden_size,
         num_layers=num_layers,
         sites=list(SITES) + [LM_HEAD_SITE],
-        n_samples_total=sum(params[k]["n_samples"] for k in site_keys),
+        n_samples_total=max(site_counts),
     )
     if token_counts is not None:
         frequencies = token_counts.float()

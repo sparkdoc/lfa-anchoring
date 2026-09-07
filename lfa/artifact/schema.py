@@ -71,7 +71,16 @@ def make_meta(
     sites: list[str],
     n_samples_total: int | None,
 ) -> dict:
-    """The ``__meta__`` block: what the statistics describe, and what built them."""
+    """The ``__meta__`` block: what the statistics describe, and what built them.
+
+    Args:
+        n_samples_total: hidden vectors collected **per site**, not summed across them. Every site
+            sees the same token stream, so the per-site counts are equal up to the batch the
+            collection stops on -- and this is the number a continual extension reads back as each
+            block's count when the blocks carry none of their own
+            (:func:`lfa.artifact.extend.extend_artifact`). The shipped qwen3-0.6b artifact is named
+            for it: ``gmm1543k`` is 1_543_000 vectors per site.
+    """
     return {
         "model_id": model_id,
         "hidden_size": int(hidden_size),

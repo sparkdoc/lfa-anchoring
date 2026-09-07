@@ -91,7 +91,8 @@ def test_extend_records_its_provenance_in_the_meta(extended, tiny_artifact):
     assert meta["version"] == 2                      # absent counts as 1, so the first bump is 2
     assert meta["extended_with"] == ["domain_b.jsonl"]
     assert meta["num_layers"] == 2 and meta["hidden_size"] == 32     # carried forward
-    assert meta["n_samples_total"] == sum(params[k]["n_samples"] for k in SITE_KEYS)
+    assert meta["n_samples_total"] == 1000 + NEED           # per site, not a cross-site sum
+    assert all(params[k]["n_samples"] == meta["n_samples_total"] for k in SITE_KEYS)
 
 
 def test_the_extended_artifact_still_samples(extended):
@@ -151,11 +152,17 @@ def test_meta_n_samples_total_supplies_the_base_count(tmp_path, tiny_artifact, f
     assert load_artifact(out)["1_pre_mlp"]["n_samples"] == 777 + NEED
 
 
-def test_per_entry_counts_win_over_the_meta_total(extended, tiny_artifact):
-    """The tiny artifact's meta says 6000 across six sites; each site's own count is 1000."""
+def test_per_entry_counts_win_over_the_meta_total(tmp_path, tiny_artifact, fused_dir,
+                                                  corpus_file):
+    """A block that carries its own count is believed over the meta, however the meta reads."""
     base, _ = tiny_artifact
-    assert base["__meta__"]["n_samples_total"] == 6000
-    assert load_artifact(extended)["1_pre_mlp"]["n_samples"] == 1000 + NEED
+    params = copy.deepcopy(base)
+    params["__meta__"] = dict(params["__meta__"], n_samples_total=999_999)
+    path = tmp_path / "stale_meta.pt"
+    torch.save(params, path)
+
+    out = _extend(tmp_path / "out.pt", path, fused_dir, corpus_file)
+    assert load_artifact(out)["1_pre_mlp"]["n_samples"] == 1000 + NEED
 
 
 # --------------------------------------------------------------------------- fit_domain_gmm
@@ -202,9 +209,15 @@ def test_fit_domain_gmm_returns_the_bases_unwhitened_convention(base_entry):
     # that must be the projection of the domain's own mean. A whitened head fails this by a
     # factor of sqrt(eigenvalue) per coordinate.
     basis = base_entry["pca_components"].float()
-    projected = ((activations - base_entry["mean"].float()) @ basis).mean(0)
+    projected = (activations - base_entry["mean"].float()) @ basis
     mixture_mean = (block["gmm_weights"].unsqueeze(1) * block["gmm_means"]).sum(0)
-    assert torch.allclose(mixture_mean, projected, atol=1e-3)
+    assert torch.allclose(mixture_mean, projected.mean(0), atol=1e-3)
+
+    # ... and its second moment must be the domain's too, which is what pins the covariance's
+    # un-whitening factor at `eig` rather than the means' `sqrt(eig)`.
+    mixture_var = (block["gmm_weights"].unsqueeze(1)
+                   * (block["gmm_covariances"] + block["gmm_means"] ** 2)).sum(0) - mixture_mean ** 2
+    assert torch.allclose(mixture_var, projected.var(0, unbiased=False), rtol=0.05, atol=1e-3)
 
 
 def test_fit_domain_gmm_recovers_the_domains_modes(base_entry):
@@ -238,6 +251,9 @@ def test_fit_domain_gmm_follows_a_whitened_top_m_base_entry(base_entry):
     z = ((activations - whitened["mean"].float()) @ basis) / eig.sqrt()
     mixture_mean = (block["gmm_weights"].unsqueeze(1) * block["gmm_means"]).sum(0)
     assert torch.allclose(mixture_mean, z.mean(0), atol=1e-3)
+    mixture_var = (block["gmm_weights"].unsqueeze(1)
+                   * (block["gmm_covariances"] + block["gmm_means"] ** 2)).sum(0) - mixture_mean ** 2
+    assert torch.allclose(mixture_var, z.var(0, unbiased=False), rtol=0.05, atol=1e-3)
 
 
 def test_the_union_places_the_domain_where_the_domain_is(base_entry):
@@ -325,3 +341,13 @@ def test_a_corpus_shorter_than_need_yields_what_there_is(tmp_path, tiny_artifact
     assert 0 < entry["n_samples"] - 1000 < 10_000
     assert entry["gmm_n_components"] == 3 + 1                    # one component per 200 samples
     assert any("Corpus exhausted" in record.message for record in caplog.records)
+
+
+def test_a_corpus_that_chunks_to_nothing_says_so(tmp_path, tiny_artifact, fused_dir):
+    """Documents below the minimum chunk length leave no training stream to collect from."""
+    _, base_path = tiny_artifact
+    corpus = tmp_path / "too_short.jsonl"
+    corpus.write_text(json.dumps({"text": "hi"}) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="No training chunks"):
+        _extend(tmp_path / "never.pt", base_path, fused_dir, corpus)

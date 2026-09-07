@@ -61,7 +61,9 @@ def tiny_artifact(tmp_path_factory):
             "gmm_covariance_type": "diag",
             "n_samples": 1000,
         }
-    params["__meta__"] = make_meta("tiny", hidden, 2, list(SITES) + [LM_HEAD_SITE], 6000)
+    # `n_samples_total` is a PER-SITE count (every site sees the same token stream), so it
+    # agrees with each entry's own `n_samples` rather than summing them.
+    params["__meta__"] = make_meta("tiny", hidden, 2, list(SITES) + [LM_HEAD_SITE], 1000)
 
     path = tmp_path_factory.mktemp("art") / "distribution_stats.pt"
     torch.save(params, path)

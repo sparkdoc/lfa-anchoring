@@ -201,7 +201,9 @@ def test_build_artifact_round_trips(built, tiny_model):
     meta = params["__meta__"]
     assert meta["num_layers"] == 2 and meta["hidden_size"] == 32
     assert meta["sites"] == ["pre_qkv", "pre_o", "pre_mlp", "pre_lm_head"]
-    assert meta["n_samples_total"] == sum(params[k]["n_samples"] for k in EXPECTED_KEYS)
+    site_counts = [params[k]["n_samples"] for k in EXPECTED_KEYS]
+    assert meta["n_samples_total"] == max(site_counts)      # per site, not a cross-site sum
+    assert meta["n_samples_total"] < sum(site_counts)        # ... and six sites saw it each
 
     lookup = params["embedding_lookup"]
     assert set(lookup) == {"token_frequencies"}               # the table is rebuilt at load

@@ -199,6 +199,8 @@ def _resolve_base_count(base: dict, gmm_keys: list[str], base_n: int | None) -> 
         return base_n
     if all("n_samples" in base[key] for key in gmm_keys):
         return None
+    # `n_samples_total` is a per-site count (see `make_meta`), which is exactly what a block
+    # needs -- not a cross-site sum, which would over-weight the base by the number of sites.
     meta_total = (base.get(META_KEY) or {}).get("n_samples_total")
     if meta_total is not None:
         return int(meta_total)
@@ -276,6 +278,12 @@ def extend_artifact(
     if device.startswith("cuda"):
         torch.cuda.empty_cache()
 
+    if not activations:
+        raise ValueError(
+            "no activations collected -- is the corpus empty or every chunk shorter than 10 "
+            f"tokens? ({corpus_path})"
+        )
+
     domain_stats = {key: fit_domain_gmm(H, base[key], k_domain, seed=seed, device=device)
                     for key, H in activations.items()}
 
@@ -286,17 +294,19 @@ def extend_artifact(
     meta = dict(base.get(META_KEY) or {})
     meta["version"] = int(meta.get("version", 1)) + 1
     meta["extended_with"] = list(meta.get("extended_with", [])) + [Path(corpus_path).name]
-    # Recomputed rather than carried: a stale total is what the next extension would read as its
-    # base count if that round's blocks were ever stripped of their own.
-    meta["n_samples_total"] = sum(
-        entry["n_samples"] for key, entry in merged.items()
-        if parse_site_key(key) is not None and isinstance(entry, dict) and "n_samples" in entry
-    )
+    # Recomputed rather than carried, and per-site (the base count plus this round's `need`),
+    # because a stale or summed total is what the next extension would read as each block's own
+    # count if that round's blocks were ever stripped of theirs.
+    site_counts = [entry["n_samples"] for key, entry in merged.items()
+                   if parse_site_key(key) is not None and isinstance(entry, dict)
+                   and "n_samples" in entry]
+    meta["n_samples_total"] = max(site_counts)
     merged[META_KEY] = meta
 
+    components = [block["gmm_n_components"] for block in domain_stats.values()]
     n_domain = next(iter(domain_stats.values()))["n_samples"]
-    logger.info("Extended %d sites with %d components each from %d activations "
+    logger.info("Extended %d sites with K %d-%d new components from %d activations "
                 "(domain weight share %.4f); wrote version %d",
-                len(domain_stats), next(iter(domain_stats.values()))["gmm_n_components"],
-                n_domain, n_domain / (merged[gmm_keys[0]]["n_samples"]), meta["version"])
+                len(domain_stats), min(components), max(components),
+                n_domain, n_domain / merged[gmm_keys[0]]["n_samples"], meta["version"])
     return save_artifact(merged, out_path, quantize=quantize)
