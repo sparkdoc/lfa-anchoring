@@ -29,6 +29,10 @@ What is captured, and why each is the right reference:
     *held-out* activations (collected past the ones the fit saw) for scoring the fitted domain
     mixture. The two GMM fitters are not bit-identical, so this one is compared by likelihood.
 
+Every fixture records the research checkout's git revision and stores its paths RELATIVE to the
+the research code root, so a fixture says which revision produced it and works on a checkout that lives
+somewhere else (`test_equivalence.py` re-roots through `LFA_RESEARCH_ROOT`).
+
 Note on dtypes: draws are stored as float32. The layer-0 draw comes off a bfloat16 lookup table,
 and bfloat16 -> float32 is exact and injective, so equality in float32 is equality in bfloat16 --
 the zero-tolerance claim survives the conversion.
@@ -123,6 +127,34 @@ def link_txt_corpus(corpus_dir, dest_dir, names: list[str] | None = None) -> Pat
     return dest_dir
 
 
+def relative_to_root(path, root) -> str:
+    """``path`` as a POSIX string relative to the the research code root, for the fixture payload.
+
+    Fixtures record where a checkpoint or corpus sits *inside the research checkout*, never an
+    absolute path: a fixture carrying one is a fixture that only works on the machine it was
+    captured on. `test_equivalence.py` re-roots these through `LFA_RESEARCH_ROOT` or the checkout it
+    finds itself in.
+    """
+    return Path(path).resolve().relative_to(Path(root).resolve()).as_posix()
+
+
+def research_revision(root) -> str:
+    """The research checkout's git revision at capture time, with a ``-dirty`` marker.
+
+    Recorded in every fixture: the numbers in these files are the output of one revision of the
+    research code, and without that the fixtures say what the research code computed but not *when*.
+    Returns ``"unknown"`` rather than failing a capture over a missing git.
+    """
+    try:
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(root), check=True,
+                              capture_output=True, text=True).stdout.strip()
+        dirty = subprocess.run(["git", "status", "--porcelain"], cwd=str(root), check=True,
+                               capture_output=True, text=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+    return head + ("-dirty" if dirty else "")
+
+
 def gaussian_mixture_log_likelihood(
     z: torch.Tensor, weights: torch.Tensor, means: torch.Tensor, variances: torch.Tensor
 ) -> float:
@@ -196,8 +228,9 @@ def capture_sampler_draws(paths: dict, device: str, out: Path) -> Path:
         "num_layers": num_layers,
         "calls": calls,
         "draws": draws,
-        "artifact": str(paths["artifact"]),
-        "base_model": str(paths["base_model"]),
+        "artifact": relative_to_root(paths["artifact"], paths["research"]),
+        "base_model": relative_to_root(paths["base_model"], paths["research"]),
+        "research_revision": research_revision(paths["research"]),
     }
     torch.save(payload, out)
     shapes = {tuple(d.shape) for d in draws if d is not None}
@@ -268,10 +301,11 @@ def capture_losses(paths: dict, device: str, work: Path, out: Path) -> Path:
         "batch": batch,
         "n_chunks": len(dataset),
         "documents": names,
-        "corpus": str(paths["corpus"]),
-        "adapter": str(paths["adapter"]),
-        "base_model": str(paths["base_model"]),
-        "artifact": str(paths["artifact"]),
+        "corpus": relative_to_root(paths["corpus"], paths["research"]),
+        "adapter": relative_to_root(paths["adapter"], paths["research"]),
+        "base_model": relative_to_root(paths["base_model"], paths["research"]),
+        "artifact": relative_to_root(paths["artifact"], paths["research"]),
+        "research_revision": research_revision(paths["research"]),
         "sequence_length": SEQUENCE_LENGTH,
         "corpus_seed": CORPUS_SEED,
         "keep_short_whole": KEEP_SHORT_WHOLE,
@@ -402,9 +436,10 @@ def capture_extend(paths: dict, device: str, work: Path, out: Path) -> Path:
         "keep_short_whole": KEEP_SHORT_WHOLE,
         "device": device,
         "documents": documents,
-        "corpus": str(paths["corpus"]),
-        "fused_model": str(paths["fused_model"]),
-        "artifact": str(paths["artifact"]),
+        "corpus": relative_to_root(paths["corpus"], paths["research"]),
+        "fused_model": relative_to_root(paths["fused_model"], paths["research"]),
+        "artifact": relative_to_root(paths["artifact"], paths["research"]),
+        "research_revision": research_revision(paths["research"]),
         "sites": sites,
         "heldout": heldout,
         "heldout_offset": EXTEND_NEED,

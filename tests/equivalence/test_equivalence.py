@@ -29,7 +29,9 @@ Run them with the marker, which the default ``addopts`` deselects::
 
 from __future__ import annotations
 
+import copy
 import math
+import os
 import sys
 from pathlib import Path
 
@@ -40,7 +42,7 @@ from lfa.adapters import get_adapter
 from lfa.artifact.extend import extend_artifact
 from lfa.artifact.schema import load_artifact
 from lfa.corpus import load_corpus, make_dataloader
-from lfa.losses import anchor_loss, weight_loss
+from lfa.losses import ANCHOR_SCHEDULES, anchor_loss, compute_layer_weights, weight_loss
 from lfa.models import load_adapter_for_training, load_teacher, load_tokenizer
 from lfa.quantize import dequantize_blockwise, quantize_blockwise
 from lfa.sampler import Sampler
@@ -66,13 +68,6 @@ LOSS_RTOL = 1e-4
 #: lands on the exact value instead -- and the arbiter is the research code's OWN factored path, which
 #: the companion matches bit for bit.
 MU_GENERAL_RTOL = 1e-2
-#: How far apart two domain mixtures fitted from DIFFERENT k-means++ initializations may sit, as
-#: a fraction of the held-out mean log-likelihood. Measured over five initializations of the
-#: reference fitter on the captured activations: 3.7% at 1_pre_mlp (-624.2 to -647.2 nats) and
-#: 0.6% at 12_pre_mlp. It is the tolerance for the end-to-end call only -- at a MATCHED
-#: initialization the two fitters agree exactly, which is what
-#: `test_the_domain_mixture_is_the_reference_fit_at_a_matched_initialization` asserts.
-LL_BAND = 0.05
 
 
 # ------------------------------------------------------------------------------------ helpers
@@ -86,15 +81,31 @@ def load_reference(name: str) -> dict:
     return torch.load(path, map_location="cpu", weights_only=False)
 
 
+def research_root() -> Path:
+    """The research checkout to resolve fixture paths against.
+
+    ``LFA_RESEARCH_ROOT`` wins, so a checkout that lives somewhere else than the one the fixtures were
+    captured on can still run these; otherwise the companion's own grandparent, which is where it
+    sits inside the research repository.
+    """
+    override = os.environ.get("LFA_RESEARCH_ROOT")
+    return Path(override).expanduser().resolve() if override else DEFAULT_RESEARCH_ROOT
+
+
 def require(path: str | Path, what: str) -> Path:
-    """A path the fixture recorded, or a skip naming what is missing.
+    """A fixture-recorded path, re-rooted at this machine's checkout -- or a skip naming it.
+
+    Fixtures store paths RELATIVE to the the research code root, so they are not tied to the machine they
+    were captured on; an absolute one (from an older capture) passes through unchanged, which is
+    what ``Path.__truediv__`` does with an absolute right operand.
 
     The fixtures are checked in; the checkpoints, artifacts and corpora they were captured from
     are not (gigabytes), so a checkout without them skips rather than fails.
     """
-    resolved = Path(path)
+    resolved = research_root() / Path(path)
     if not resolved.exists():
-        pytest.skip(f"{what} not present at {resolved} (the research code checkout required)")
+        pytest.skip(f"{what} not present at {resolved} (the research code checkout required; set "
+                    "LFA_RESEARCH_ROOT if yours is elsewhere)")
     return resolved
 
 
@@ -103,12 +114,16 @@ def import_from_research(module: str):
 
     Used only by the tests that compare two implementations *in the same process*; the rest work
     from the captured fixtures and never import ``src``.
+
+    Appended to ``sys.path`` rather than prepended: the research root holds packages with common
+    names, and putting it first would let it shadow this package's own imports for the rest of
+    the session.
     """
-    root = DEFAULT_RESEARCH_ROOT
+    root = research_root()
     if not (root / "src").is_dir():
         pytest.skip(f"no the research code checkout at {root}")
     if str(root) not in sys.path:
-        sys.path.insert(0, str(root))
+        sys.path.append(str(root))
     try:
         __import__(module)
     except ImportError as error:                 # e.g. scipy, which src.lra_distribution imports
@@ -225,7 +240,9 @@ def test_the_anchor_components_match_the_reference(losses_reference):
     The LM-head and embedding terms are structurally zero here and are asserted to *stay* zero:
     the archived adapter targets only the seven projections and froze the embedding, so those two
     sub-modules are the teacher's own. That is a real property of the run, and a non-zero value
-    would mean the student had been perturbed somewhere it should not have been.
+    would mean the student had been perturbed somewhere it should not have been -- but it means
+    this fixture can only prove two of the four blocks, so the other two are proved in process by
+    ``test_all_four_anchor_blocks_match_in_process``, against a student that differs everywhere.
     """
     reference = losses_reference
     artifact = require(reference["artifact"], "the shipped p(h) artifact")
@@ -439,9 +456,10 @@ def test_the_extension_merges_the_domain_into_the_artifact(extend_reference, tmp
 
     The merge is exact arithmetic and is checked term by term -- component count, accumulated
     sample count, weights summing to one, and the new components carrying exactly the domain's
-    sample share. The mixture itself is checked only to the width of the fitter's initialization
-    band, because this call's fits start from a different k-means++ draw than the reference's
-    (see the test above); the tight comparison of the fits lives there, not here.
+    sample share. The mixture itself is not compared: this call's fits start from a different
+    k-means++ draw than the reference's, so the only available comparison would be to the width
+    of the initialization band, and the fits themselves are already pinned exactly by the test
+    above.
     """
     reference = extend_reference
     artifact, fused, corpus = _extension_inputs(reference, tmp_path)
@@ -454,7 +472,6 @@ def test_the_extension_merges_the_domain_into_the_artifact(extend_reference, tmp
         quantize=False, keep_short_whole=reference["keep_short_whole"],
     )
     merged = load_artifact(out)
-    base = load_artifact(artifact)
     share = reference["need"] / (reference["base_n"] + reference["need"])
 
     for key, expected in reference["sites"].items():
@@ -468,17 +485,12 @@ def test_the_extension_merges_the_domain_into_the_artifact(extend_reference, tmp
             f"{key}: the new components carry {float(entry['gmm_weights'][-k:].sum()):.6f} of the "
             f"mixture, but the domain's sample share is {share:.6f}")
 
-        z = _held_out_coordinates(reference, base, key)
-        weights = entry["gmm_weights"][-k:].double()
-        ours = gaussian_mixture_log_likelihood(
-            z, weights / weights.sum(), entry["gmm_means"][-k:], entry["gmm_covariances"][-k:])
-        theirs = gaussian_mixture_log_likelihood(
-            z, expected["domain_weights"], expected["domain_means"],
-            expected["domain_covariances"])
-        assert abs(ours - theirs) <= LL_BAND * abs(theirs), (
-            f"{key}: held-out mean log-likelihood {ours:.4f} vs reference {theirs:.4f} "
-            f"({abs(ours - theirs) / abs(theirs):.3%} apart, initialization band {LL_BAND:.0%})"
-        )
+        # The mixture itself is NOT compared here. This call's fits start from a different
+        # k-means++ draw than the reference's (the research code's script leaves every site at
+        # `fit_domain_gmm`'s default seed), so any comparison would be to the width of the
+        # initialization band -- 3.7% at 1_pre_mlp over five draws, against a measured 3.69% gap,
+        # i.e. a tolerance with no room in it and no failure it could catch that the exact
+        # matched-initialization test above does not catch first.
 
 
 # Two implementations in one process: the storage format and the synthetic-artifact ladder
@@ -513,7 +525,9 @@ def _synthetic_artifact(hidden: int, path: Path) -> Path:
 
     The shipped artifact is diagonal, full-width and unwhitened at every site, so replaying it
     leaves three branches of ``sample_gmm`` untested. This one carries a full-covariance head, a
-    whitened top-m head with a Gaussian tail, a PCA-only site and a moments-only site.
+    whitened top-m head with a Gaussian tail, a plain diagonal head, a PCA-only site and a
+    moments-only site -- every site the anchor reads, so it also serves the four-block loss
+    comparison, whose reference raises rather than skipping on a site it cannot sample.
     """
     generator = torch.Generator().manual_seed(7)
     n_comp, top_m, k = 8, 3, 4
@@ -548,6 +562,12 @@ def _synthetic_artifact(hidden: int, path: Path) -> Path:
                            gmm_means=torch.randn(k, top_m, generator=generator),
                            gmm_covariances=torch.rand(k, top_m, generator=generator) + 0.1,
                            gmm_n_components=k, gmm_covariance_type="diag", gmm_whitened=True),
+        # plain diagonal head, full width, unwhitened -- the shipped artifact's own shape
+        "1_pre_o": block(pca_components=basis(), pca_eigenvalues=eigenvalues,
+                         pca_n_components=n_comp, gmm_weights=weights / weights.sum(),
+                         gmm_means=torch.randn(k, n_comp, generator=generator),
+                         gmm_covariances=torch.rand(k, n_comp, generator=generator) + 0.1,
+                         gmm_n_components=k, gmm_covariance_type="diag"),
         # PCA only, and moments only: the two lower rungs of the ladder
         "1_pre_qkv": block(pca_components=basis(), pca_eigenvalues=eigenvalues,
                            pca_n_components=n_comp),
@@ -557,6 +577,87 @@ def _synthetic_artifact(hidden: int, path: Path) -> Path:
     }
     torch.save(params, path)
     return path
+
+
+def test_the_layer_schedule_matches_the_reference():
+    """``compute_layer_weights`` over every schedule, decay and normalization the recipe can ask for.
+
+    The schedule multiplies every layer's contribution to the anchor, and lambda is calibrated
+    against the normalized convention -- a scheduled anchor is ``num_layers`` times smaller than
+    the uniform one, and lambda absorbs that factor. So a schedule that had drifted would not
+    fail anywhere: it would quietly re-price depth and make the published lambda mean something
+    else. Bit-identical, since both are the same closed form over Python floats.
+    """
+    reference_losses = import_from_research("src.lra_losses")
+
+    checked = 0
+    for num_layers in (2, 28):
+        for end_ratio in (0.1, 0.5, 1.0):
+            for schedule in ANCHOR_SCHEDULES:
+                for normalize in (True, False):
+                    ours = compute_layer_weights(num_layers, end_ratio, schedule, normalize)
+                    theirs = reference_losses.compute_layer_weights(
+                        num_layers, end_ratio, schedule, normalize)
+                    assert ours == theirs, (
+                        f"{schedule} schedule, end_ratio {end_ratio}, normalize {normalize}, "
+                        f"{num_layers} layers: {ours} vs {theirs}")
+                    checked += 1
+    assert checked == 2 * 3 * len(ANCHOR_SCHEDULES) * 2
+    assert set(ANCHOR_SCHEDULES) == set(reference_losses.ANCHOR_SCHEDULES)
+
+
+def test_all_four_anchor_blocks_match_in_process(tiny_model, tmp_path):
+    """``anchor_loss`` against ``compute_anchor_loss`` with every block carrying a real number.
+
+    The fixture-backed loss test can only assert that ``L_lm_head`` and ``L_embed`` stay zero:
+    the archived recipe adapter froze the embedding and targets the seven projections, so those
+    two sub-modules ARE the teacher's. That leaves half the anchor unproved, and the embedding
+    block is the one with its own sampling path (token ids drawn by corpus frequency from the
+    global RNG, not the sampler's generator) -- the easiest of the four to port wrongly.
+
+    So: perturb every parameter of a copy of the teacher, which makes all four blocks non-zero,
+    and run both implementations over the synthetic artifact with its embedding lookup built.
+    Bit-identical is the right bar here and is what happens -- same sub-modules called on the same
+    float32 inputs, accumulated in the same order, with no bf16 anywhere.
+    """
+    reference_losses = import_from_research("src.lra_losses")
+    reference_distribution = import_from_research("src.lra_distribution")
+
+    teacher, _ = tiny_model
+    adapter = get_adapter(teacher)
+    path = _synthetic_artifact(teacher.config.hidden_size, tmp_path / "synthetic.pt")
+    frequencies = torch.rand(teacher.config.vocab_size,
+                             generator=torch.Generator().manual_seed(3))
+
+    # A student that differs everywhere: q/k/v/o and the MLPs make L_qkv and L_mlp non-zero, and
+    # embed_tokens (tied to lm_head here) makes L_embed and L_lm_head non-zero.
+    student = copy.deepcopy(teacher)
+    perturb = torch.Generator().manual_seed(5)
+    with torch.no_grad():
+        for parameter in student.parameters():
+            parameter.add_(torch.randn(parameter.shape, generator=perturb) * 0.02)
+    # Nothing here is training; frozen so both implementations return plain scalars.
+    student.requires_grad_(False)
+
+    torch.manual_seed(777)
+    theirs_sampler = reference_distribution.LayerDistributionSampler(str(path), device="cpu")
+    theirs_sampler.build_embedding_lookup_from_model(teacher, token_frequencies=frequencies)
+    theirs = {name: float(value) for name, value in reference_losses.compute_anchor_loss(
+        teacher, student, theirs_sampler, n_samples_per_layer=N_ANCHOR_SAMPLES).items()}
+
+    torch.manual_seed(777)
+    our_sampler = Sampler(str(path), device="cpu", seed=None)
+    our_sampler.build_embedding_lookup_from_model(teacher, adapter, frequencies)
+    ours = {name: float(value) for name, value in anchor_loss(
+        teacher, student, our_sampler, adapter, n_samples=N_ANCHOR_SAMPLES).items()}
+
+    assert set(ours) == set(theirs) == {"qkv", "mlp", "lm_head", "embed", "total"}
+    for name in ("qkv", "mlp", "lm_head", "embed"):
+        assert theirs[name] > 0.0, f"L_{name} is zero: this test proves nothing about that block"
+        assert ours[name] == theirs[name], (
+            f"L_{name}: {ours[name]!r} vs {theirs[name]!r} "
+            f"({abs(ours[name] - theirs[name]) / theirs[name]:.2e} relative)")
+    assert ours["total"] == theirs["total"]
 
 
 def test_the_whole_fidelity_ladder_replays_bit_for_bit_on_a_synthetic_artifact(
@@ -596,6 +697,36 @@ def test_the_whole_fidelity_ladder_replays_bit_for_bit_on_a_synthetic_artifact(
     # The layer-0 draw came off the exact lookup table, so it must be a table row verbatim.
     table = ours.params["embedding_lookup"]["pre_qkv_table"]
     assert ((our_draws[0].unsqueeze(1) == table.unsqueeze(0)).all(-1).any(-1)).all()
+
+
+def test_a_bumped_seed_changes_every_draw(tiny_model, tmp_path):
+    """The negative control for the zero-tolerance claims: the replay can fail.
+
+    A comparison of two sample streams says nothing unless a stream that *should* differ does. On
+    the shipped artifact, seeding 1235 instead of 1234 moves all 85 draws; here, on the synthetic
+    ladder, the same one-off in the seed must move every draw of every rung -- so a future change
+    that quietly detached the draws from the global RNG (a hard-coded generator, a cached sample)
+    would fail here rather than pass the replay vacuously.
+    """
+    model, _ = tiny_model
+    adapter = get_adapter(model)
+    path = _synthetic_artifact(model.config.hidden_size, tmp_path / "synthetic.pt")
+    frequencies = torch.rand(model.config.vocab_size, generator=torch.Generator().manual_seed(3))
+    calls = [("pre_qkv", 0), ("pre_o", 0), ("pre_mlp", 0), ("pre_qkv", 1), ("pre_mlp", 1),
+             ("pre_lm_head", 2)]
+
+    def draws(seed):
+        torch.manual_seed(seed)
+        sampler = Sampler(str(path), device="cpu", seed=None)
+        sampler.build_embedding_lookup_from_model(model, adapter, frequencies)
+        return [sampler.sample_best(layer, site, N_ANCHOR_SAMPLES) for site, layer in calls]
+
+    baseline, bumped = draws(4242), draws(4243)
+    assert all(torch.equal(a, b) for a, b in zip(baseline, draws(4242)))    # the seed still fixes it
+    for (site, layer), a, b in zip(calls, baseline, bumped):
+        assert not torch.equal(a, b), (
+            f"{site} at layer {layer} drew the same vectors under two different global seeds: "
+            "the replay tests would pass whatever the sampler did")
 
 
 def test_the_artifact_build_fits_the_same_pca_basis(tiny_model):

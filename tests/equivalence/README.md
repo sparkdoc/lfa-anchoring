@@ -19,13 +19,18 @@ is absent.
 The marker is deselected by the default `addopts`, so ask for it explicitly:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 pytest tests/equivalence -m equivalence -q      # all ten
-pytest tests/equivalence -m "equivalence and not gpu" -q               # the four CPU ones
+CUDA_VISIBLE_DEVICES=0 pytest tests/equivalence -m equivalence -q      # all thirteen
+pytest tests/equivalence -m "equivalence and not gpu" -q               # the seven CPU ones
 ```
 
-Three of them import `src.*` from the the research code checkout in-process. `src.lra_distribution` imports
-`scipy` at module level, which is not a dependency of this package; without it the two that
+Five of them import `src.*` from the the research code checkout in-process (appended to `sys.path`, never
+prepended — the research root holds packages with common names). `src.lra_distribution` imports
+`scipy` at module level, which is not a dependency of this package; without it the tests that
 import it skip with a message naming it (`uv pip install scipy -p .venv` to run them).
+
+Fixture paths are stored **relative to the the research code root** and re-rooted at test time, so a
+checkout elsewhere works: set `LFA_RESEARCH_ROOT=/path/to/the research code`. Each fixture also records the
+research checkout's git revision it was captured against.
 
 ## What each test proves
 
@@ -35,17 +40,31 @@ import it skip with a message naming it (`uv pip install scipy -p .venv` to run 
 | `test_the_loader_reproduces_the_reference_training_batch` | The chunk count and the first training batch, collated | exact |
 | `test_the_anchor_components_match_the_reference` | `L_qkv`, `L_mlp`, `L_lm_head`, `L_embed`, total | 1e-4 relative |
 | `test_mu_matches_the_reference_on_both_of_its_paths` | mu through the LoRA factors and the general way | 1e-4 / see below |
-| `test_the_extension_collects_the_same_activations` | The activations a continual extension collects through the fused model | 1e-4 relative |
+| `test_the_extension_collects_the_same_activations` | The activations a continual extension collects through the fused model | `allclose(rtol=1e-4, atol=1e-3)` (measured 0.0) |
 | `test_the_domain_mixture_is_the_reference_fit_at_a_matched_initialization` | The fitted domain mixture's means and variances | exact |
-| `test_the_extension_merges_the_domain_into_the_artifact` | Component count, accumulated sample count, the domain's weight share, and the merged mixture's held-out likelihood | exact / 5% (see below) |
+| `test_the_extension_merges_the_domain_into_the_artifact` | Component count, accumulated sample count, the domain's weight share | exact |
 | `test_blockwise_quantization_is_bit_identical_on_a_real_basis_block` | `quantize_blockwise` on a shipped `pca_components` basis | **zero** |
 | `test_the_whole_fidelity_ladder_replays_bit_for_bit_on_a_synthetic_artifact` | Full-covariance heads, whitened top-m heads with a Gaussian tail, PCA-only and moments-only sites, and the frequency-weighted layer-0 lookup | **zero** |
 | `test_the_artifact_build_fits_the_same_pca_basis` | The build's `pca_n_components` and eigen-spectrum on a real activation covariance | exact / fp16 storage |
+| `test_all_four_anchor_blocks_match_in_process` | `L_qkv`, `L_mlp`, `L_lm_head`, `L_embed` with **all four non-zero**, against a student perturbed everywhere | **zero** |
+| `test_the_layer_schedule_matches_the_reference` | `compute_layer_weights` over {cosine, linear, exponential} × `end_ratio` {0.1, 0.5, 1.0} × normalize {True, False} | **zero** |
+| `test_a_bumped_seed_changes_every_draw` | The negative control: one off in the global seed moves every draw | — |
 
 **The sampler is the one checked at zero tolerance**, because it is the input side of the anchor:
 a sample stream that has drifted is a different `p(h)`, every anchor number moves with it, and
-nothing raises. The losses are reductions over bf16 forward passes, so their last digits carry
-the accumulation order; what is claimed there is that the same blocks are computed the same way.
+nothing raises. The fixture-backed losses are reductions over bf16 forward passes, so their last
+digits carry the accumulation order; what is claimed there is that the same blocks are computed
+the same way (they come out bit-identical in fact). Where both implementations can run in one
+process on the CPU — the four anchor blocks, the layer schedule, the fidelity ladder, the storage
+format, the basis fit — the bar is bit-identity, and `test_a_bumped_seed_changes_every_draw` is
+the control saying those replays can fail.
+
+The extension's collection is compared with `allclose(rtol=1e-4, atol=1e-3)` rather than
+bitwise — it runs a 0.6 B model forward on both sides — though it measures 0.0 in practice. Its
+held-out rows come from the capture script's own mirror of the research collector
+(`_collect_heldout`: the same loader, the same seeded chunk order, a hook on `gate_proj`, whose
+input *is* the `pre_mlp` site), run past the fit's `need` so no mixture on either side saw them.
+They are the coordinates both mixtures are scored on, not a claim in themselves.
 
 ### Two places the companion deliberately differs
 
@@ -63,10 +82,11 @@ Both are real, both are documented in the code, and neither is a port defect.
   the chunk permutation only and leaves every site's mixture at `fit_domain_gmm`'s default
   `seed=0`; the companion's `extend_artifact` uses one seed for the whole extension, fits
   included. Started from the same k-means++ draw the two fitters produce **identical** means and
-  variances — that is what the matched-initialization test asserts — so the end-to-end test can
-  only compare mixtures started from different draws, and its tolerance is the measured width of
-  that initialization band (5%; five initializations of the reference fitter span 3.7% at
-  `1_pre_mlp` and 0.6% at `12_pre_mlp`).
+  variances — that is what the matched-initialization test asserts. The end-to-end test therefore
+  does not compare the mixture at all: it could only compare mixtures started from different
+  draws, against a band 3.7% wide at `1_pre_mlp` (five initializations of the reference fitter
+  span −624.2 to −647.2 nats) and 0.6% at `12_pre_mlp`, and every failure such a check could
+  catch is caught exactly one test earlier. It asserts the merge terms, which are exact.
 
 ## Regenerating the fixtures
 
@@ -110,6 +130,11 @@ Two details of the capture worth knowing before changing it:
 | `sampler_draws.pt` | 7.4 MB | seed, device, the 85 `(site, layer, n)` calls and every returned tensor |
 | `losses.pt` | 0.08 MB | the anchor's components, mu on both paths, the training batch, the document list |
 | `extend_ref.pt` | 4.2 MB | the merged artifact's two compared sites, the fitted domain components, and 500 held-out activations per site |
+
+Every payload also carries `research_revision` — the research checkout's `git rev-parse HEAD`
+(with a `-dirty` marker) at capture time — and stores its paths relative to the the research code root.
+The committed fixtures were captured at `6895aee4dc4c50f8f9d0a32916e2918da5c5c695-dirty` (the
+dirty files were three `docs/*.csv`, which the capture does not read).
 
 Draws are stored as float32. The layer-0 draw comes off a bfloat16 lookup table, and
 bfloat16 → float32 is exact and injective, so equality in float32 is equality in bfloat16 — the

@@ -5,6 +5,18 @@ import pytest, torch
 from transformers import LlamaConfig, LlamaForCausalLM, PreTrainedTokenizerFast
 from tokenizers import Tokenizer, models, pre_tokenizers
 
+def pytest_runtest_setup(item):
+    """A ``gpu``-marked test skips, rather than errors, on a machine with no CUDA.
+
+    The marker's usual job is selection -- the default ``addopts`` deselects it -- but a run that
+    asks for a marker explicitly (``-m equivalence``) selects the GPU tests along with the rest,
+    and without this they would fail inside torch on "No CUDA GPUs are available" instead of
+    saying what they need.
+    """
+    if item.get_closest_marker("gpu") and not torch.cuda.is_available():
+        pytest.skip("needs CUDA (marked gpu)")
+
+
 @pytest.fixture(scope="session")
 def tiny_model():
     torch.manual_seed(0)
