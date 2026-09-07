@@ -241,7 +241,7 @@ def test_the_paper_loader_frame_says_nothing(tmp_path, registry, base_dir, corpu
     assert not any("loader frame" in r.message for r in caplog.records)
 
 
-def test_epochs_overrides_the_recipes_dose(tmp_path, registry, base_dir, corpus_a):
+def test_epochs_overrides_the_recipes_epoch_count(tmp_path, registry, base_dir, corpus_a):
     ws = new_workspace(tmp_path, base_dir)
     entry = ws.train(corpus_a, recipe=tiny_recipe(base_dir),
                      epochs=2, device="cpu")
@@ -309,7 +309,7 @@ def test_a_new_corpus_before_extending_names_the_command_to_run(tmp_path, regist
 
 def test_the_same_corpus_again_is_the_same_stage_not_the_next_one(tmp_path, registry, base_dir,
                                                                   corpus_a):
-    """More dose on the domain already being learned needs no extension -- and no lambda bump."""
+    """More epochs on the domain already being learned need no extension -- and no lambda bump."""
     ws = new_workspace(tmp_path, base_dir)
     first = ws.train(corpus_a, recipe=tiny_recipe(base_dir), device="cpu")
     again = ws.train(corpus_a, recipe=tiny_recipe(base_dir), device="cpu")
@@ -563,7 +563,7 @@ def test_a_stage_records_the_documents_it_held_out(tmp_path, registry, base_dir,
 def test_the_held_out_split_is_scored_after_every_epoch_of_the_stage(tmp_path, registry, base_dir,
                                                                     corpus_a):
     """The split the workspace builds goes to the trainer, not only to `evaluate`: the run's own
-    history carries the held-out loss per epoch, which is what says a dose has begun to over-fit."""
+    history carries the held-out loss per epoch, which is what says a run has begun to over-fit."""
     ws = new_workspace(tmp_path, base_dir)
     entry = ws.train(corpus_a, recipe=tiny_recipe(base_dir, val_fraction=0.5, epochs=2),
                      device="cpu")

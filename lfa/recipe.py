@@ -21,7 +21,7 @@ deliberately:
 * ``val_fraction=0.1``: a tenth of the *documents* (shuffled under the recipe's seed) are held out
   and never trained on, so the domain perplexity reported for a stage is a held-out measurement
   rather than a fit, and the per-epoch validation curve in ``training_history.json`` says when a
-  dose has started to over-fit. Set it to ``0.0`` to train on everything -- and then read the
+  run has started to over-fit. Set it to ``0.0`` to train on everything -- and then read the
   domain number as a fit.
 
 ``Recipe.load`` resolves a bare name against the recipes bundled inside the package, so it works

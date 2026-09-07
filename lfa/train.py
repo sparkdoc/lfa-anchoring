@@ -548,7 +548,7 @@ def _build_scheduler(
 
 @torch.no_grad()
 def validation_loss(student: nn.Module, dataloader: DataLoader) -> dict[str, float]:
-    """Cross-entropy on the held-out documents: the number that says whether a dose over-fits.
+    """Cross-entropy on the held-out documents: the number that says whether a run over-fits.
 
     Token-weighted, so a short trailing batch does not count as much as a full one, and reported
     with its perplexity (``exp(loss)``) because that is the unit every other domain measurement in
@@ -664,7 +664,7 @@ def train(
             control), which is the one case where mu is the only preservation pressure.
         val_dataset: the documents held out of training (``config.val_fraction`` of them, built
             by the caller with the same chunker). When given, every epoch ends with a
-            :func:`validation_loss` pass whose loss and perplexity land in the history, so a dose
+            :func:`validation_loss` pass whose loss and perplexity land in the history, so a run
             that has started to over-fit says so at the epoch it happens rather than at the end.
             It is chunked once, at offset 0, and never re-chunked -- the epoch-to-epoch change
             has to come from the model, not from the text moving.
