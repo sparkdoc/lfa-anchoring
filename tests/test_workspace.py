@@ -139,6 +139,23 @@ def test_init_accepts_a_local_artifact_file_and_copies_it_in(tmp_path, tiny_arti
     assert ws.state["artifact_id"] is None          # not from the registry: no n_samples to read
 
 
+def test_a_local_file_does_not_shadow_a_published_artifact_id(tmp_path, registry, base_dir,
+                                                              monkeypatch):
+    """`--artifact tiny` means the published artifact, whatever happens to be named `tiny` here."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "tiny").write_bytes(b"not the published artifact")
+
+    ws = new_workspace(tmp_path / "ws", base_dir)
+
+    assert ws.state["artifact_id"] == "tiny"
+    assert sha256_file(ws.state["current_artifact"]) == registry["sha256"]
+
+
+def test_an_artifact_that_is_neither_an_id_nor_a_path_says_both(tmp_path, base_dir):
+    with pytest.raises(ValueError, match="qwen3-0.6b-diagonal"):
+        Workspace.init(tmp_path, str(base_dir), artifact="no-such-artifact")
+
+
 def test_init_refuses_to_overwrite_an_existing_workspace(tmp_path, registry, base_dir):
     new_workspace(tmp_path, base_dir)
     with pytest.raises(FileExistsError, match="open"):
@@ -288,6 +305,31 @@ def test_epochs_overrides_the_recipes_dose(tmp_path, registry, base_dir, corpus_
     assert [record["epoch"] for record in history] == [1, 2]
 
 
+def test_keep_short_whole_can_be_overridden_per_run(tmp_path, registry, base_dir, corpus_a,
+                                                    caplog):
+    """The loader frame is a per-run override, because the paper's runs used the other one."""
+    ws = new_workspace(tmp_path, base_dir)
+    with caplog.at_level("INFO", logger="lfa.workspace"):
+        entry = ws.train(corpus_a, recipe=tiny_recipe(base_dir, keep_short_whole=True),
+                         keep_short_whole=False, device="cpu")
+
+    config = json.loads((Path(entry["output_dir"]) / "config.json").read_text())
+    assert config["keep_short_whole"] is False
+    assert entry["keep_short_whole"] is False
+    assert entry["recipe"]["keep_short_whole"] is True            # the recipe is left as it is
+    assert not any("loader frame" in record.message for record in caplog.records)
+
+
+def test_full_weight_can_be_overridden_per_run(tmp_path, registry, base_dir, corpus_a):
+    ws = new_workspace(tmp_path, base_dir)
+    entry = ws.train(corpus_a, recipe=tiny_recipe(base_dir), full_weight=True, device="cpu")
+
+    config = json.loads((Path(entry["output_dir"]) / "config.json").read_text())
+    assert (config["full_weight"], config["use_lora"]) == (True, False)
+    assert entry["full_weight"] is True
+    assert not (Path(entry["adapter"]) / "adapter_config.json").exists()
+
+
 def test_train_refuses_a_device_that_would_shard_the_model(tmp_path, registry, base_dir,
                                                            corpus_a):
     ws = new_workspace(tmp_path, base_dir)
@@ -320,13 +362,60 @@ def test_the_same_corpus_again_is_the_same_stage_not_the_next_one(tmp_path, regi
                                                                   corpus_a):
     """More dose on the domain already being learned needs no extension -- and no lambda bump."""
     ws = new_workspace(tmp_path, base_dir)
-    ws.train(corpus_a, recipe=tiny_recipe(base_dir), device="cpu")
+    first = ws.train(corpus_a, recipe=tiny_recipe(base_dir), device="cpu")
     again = ws.train(corpus_a, recipe=tiny_recipe(base_dir), device="cpu")
 
     assert again["stage"] == 1
     assert again["lambda_applied"] == 10.0
     assert ws.state["stage"] == 1
     assert len(ws.history) == 2
+
+    # A repeat is a second run, not an overwrite: both runs stay readable on disk.
+    assert Path(first["output_dir"]).name == "stage1"
+    assert Path(again["output_dir"]).name == "stage1_run2"
+    for entry in (first, again):
+        assert (Path(entry["output_dir"]) / "training_history.json").is_file()
+        assert (Path(entry["adapter"]) / "adapter_model.safetensors").is_file()
+
+
+def test_a_resumed_run_keeps_training_the_adapter_it_saved(tmp_path, registry, base_dir,
+                                                           corpus_a):
+    """A resume must re-attach the saved adapter, not wrap a fresh one over the same base.
+
+    The probe is a resume with nothing left to do (`epochs` equal to the epochs already run):
+    the epoch loop runs zero times and the model is saved as it stands. Re-attached, that is the
+    adapter that was already there; wrapped fresh, it is an untrained one whose B is all zeros --
+    and it would have overwritten the checkpoint it resumed from.
+    """
+    ws = new_workspace(tmp_path, base_dir)
+    entry = ws.train(corpus_a, recipe=tiny_recipe(base_dir), device="cpu")
+    trained = _adapter_weights(entry["adapter"])
+    assert any(tensor.abs().sum() > 0 for name, tensor in trained.items() if "lora_B" in name)
+
+    resumed = ws.train(corpus_a, recipe=tiny_recipe(base_dir), resume=True, device="cpu")
+
+    assert resumed["output_dir"] == entry["output_dir"]          # the same run, continuing
+    after = _adapter_weights(resumed["adapter"])
+    assert set(after) == set(trained)
+    for name, tensor in trained.items():
+        assert torch.equal(after[name], tensor), name
+
+
+def test_a_resumed_run_continues_the_epoch_count(tmp_path, registry, base_dir, corpus_a):
+    ws = new_workspace(tmp_path, base_dir)
+    ws.train(corpus_a, recipe=tiny_recipe(base_dir, schedule_horizon_epochs=2), device="cpu")
+    resumed = ws.train(corpus_a, recipe=tiny_recipe(base_dir, schedule_horizon_epochs=2),
+                       epochs=2, resume=True, device="cpu")
+
+    history = json.loads((Path(resumed["output_dir"]) / "training_history.json").read_text())
+    assert [record["epoch"] for record in history] == [1, 2]
+    assert len(ws.history) == 2 and ws.state["stage"] == 1
+
+
+def _adapter_weights(adapter_dir):
+    import safetensors.torch
+
+    return safetensors.torch.load_file(Path(adapter_dir) / "adapter_model.safetensors")
 
 
 def test_extending_with_nothing_to_extend_says_so(tmp_path, registry, base_dir):
@@ -379,6 +468,22 @@ def test_extend_names_base_n_when_nothing_supplies_the_count(tmp_path, base_dir,
 
     with pytest.raises(ValueError, match="base_n"):
         ws.extend(need=NEED, k_domain=K_DOMAIN, device="cpu")
+
+
+def test_the_base_count_predicate_reads_the_mixture_sites_only(tmp_path, registry, base_dir,
+                                                               tiny_artifact):
+    """A site with no mixture is not part of the merge, so its missing count is not a missing
+    count: reading every site instead would send the extension to the registry for a number the
+    artifact already has, and weight the new domain against the wrong pool."""
+    base, _ = tiny_artifact
+    ws = new_workspace(tmp_path, base_dir)
+    params = copy.deepcopy(base)
+    params["0_pre_qkv"] = {"mean": torch.zeros(32), "std": torch.ones(32)}   # no mixture, no count
+    # No meta total either, so the per-block counts on the mixture sites are the only answer.
+    params["__meta__"] = {k: v for k, v in params["__meta__"].items() if k != "n_samples_total"}
+    torch.save(params, ws.state["current_artifact"])
+
+    assert ws._resolve_base_n() is None                  # the mixture sites carry their own
 
 
 def _strip_counts(artifact_path, base):
@@ -520,7 +625,6 @@ def test_chain_runs_every_domain_and_extends_between_them(tmp_path, registry, ba
     spec.write_text(yaml.safe_dump({
         "domains": [{"name": "alpha", "corpus": str(corpus_a)},
                     {"name": "beta", "corpus": str(corpus_b), "epochs": 1}],
-        "extend_between": True,
     }))
 
     entries = ws.chain(spec, device="cpu", need=NEED, k_domain=K_DOMAIN)
@@ -539,13 +643,24 @@ def test_chain_resolves_a_relative_corpus_against_the_spec_file(tmp_path, regist
     spec_dir = tmp_path / "spec_dir"
     _corpus(spec_dir / "alpha", "consciousness")
     spec = spec_dir / "domains.yaml"
-    spec.write_text(yaml.safe_dump({"domains": [{"name": "alpha", "corpus": "alpha"}],
-                                    "extend_between": False}))
+    spec.write_text(yaml.safe_dump({"domains": [{"name": "alpha", "corpus": "alpha"}]}))
 
     entries = ws.chain(spec, device="cpu")
 
     assert entries[0]["corpus"] == str(spec_dir / "alpha")
-    assert ws.state["artifact_version"] == 1               # nothing to extend between
+    assert ws.state["artifact_version"] == 1               # one domain: nothing to extend between
+
+
+def test_a_spec_that_asks_not_to_extend_between_domains_is_rejected(tmp_path, registry,
+                                                                    base_dir, corpus_a):
+    """Folding each domain in IS the chain; the second domain has nowhere to start otherwise."""
+    ws = _chain_workspace(tmp_path, base_dir)
+    spec = tmp_path / "flat.yaml"
+    spec.write_text(yaml.safe_dump({"domains": [{"name": "alpha", "corpus": str(corpus_a)}],
+                                    "extend_between": False}))
+
+    with pytest.raises(ValueError, match="extend_between"):
+        ws.chain(spec, device="cpu")
 
 
 def test_a_spec_with_no_domains_is_rejected(tmp_path, registry, base_dir):

@@ -41,7 +41,8 @@ from ..models import load_teacher, load_tokenizer
 from .fit import TorchGMM
 from .schema import META_KEY, load_artifact, parse_site_key, save_artifact, validate_against_model
 
-__all__ = ["fit_domain_gmm", "extend_artifact"]
+__all__ = ["fit_domain_gmm", "extend_artifact", "gmm_site_keys",
+           "artifact_carries_base_count"]
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +189,32 @@ def _collect_domain_activations(
     return {key: torch.cat(chunks)[:need] for key, chunks in store.items() if chunks}
 
 
+def gmm_site_keys(params: dict) -> list[str]:
+    """The artifact's sites that carry a mixture -- the ones an extension adds components to.
+
+    Not every site has one: the recipe artifact prices the linear sites with a correlated
+    covariance and no GMM. Anything reading "does this artifact know its own sample count" has to
+    ask about *these* keys, since they are the only ones the merge touches.
+    """
+    return [key for key, entry in params.items()
+            if parse_site_key(key) is not None and isinstance(entry, dict)
+            and int(entry.get("gmm_n_components", 0)) > 0]
+
+
+def artifact_carries_base_count(base: dict, gmm_keys: list[str]) -> bool:
+    """Whether ``base`` supplies its own per-site sample count, per block or in its meta.
+
+    Defined as "``extend_artifact`` needs no ``base_n``", by asking the resolver itself rather
+    than by restating its rule -- a second copy of the predicate is exactly how a caller ends up
+    weighting the domain against a count the merge does not use.
+    """
+    try:
+        _resolve_base_count(base, gmm_keys, None)
+    except ValueError:
+        return False
+    return True
+
+
 def _resolve_base_count(base: dict, gmm_keys: list[str], base_n: int | None) -> int | None:
     """The base's per-block sample count, or ``None`` when the blocks already carry their own.
 
@@ -252,9 +279,7 @@ def extend_artifact(
     """
     out_path = Path(out_path)
     base = load_artifact(base_artifact_path)
-    gmm_keys = [key for key, entry in base.items()
-                if parse_site_key(key) is not None and isinstance(entry, dict)
-                and int(entry.get("gmm_n_components", 0)) > 0]
+    gmm_keys = gmm_site_keys(base)
     if not gmm_keys:
         raise ValueError(f"{base_artifact_path} has no GMM sites to extend.")
 

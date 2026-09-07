@@ -43,9 +43,9 @@ import torch
 import yaml
 
 from .adapters import get_adapter
-from .artifact.extend import extend_artifact
+from .artifact.extend import artifact_carries_base_count, extend_artifact, gmm_site_keys
 from .artifact.fetch import ARTIFACTS, fetch_artifact
-from .artifact.schema import META_KEY, parse_site_key, validate_against_model
+from .artifact.schema import validate_against_model
 from .corpus import load_corpus
 from .evaluate import (
     DOMAIN_ROW,
@@ -120,6 +120,13 @@ def _dtype_for(device: str | dict) -> torch.dtype:
 def _stage_dtype(entry: dict) -> torch.dtype:
     """The dtype a recorded stage trained in, so an export is not a silent precision change."""
     return getattr(torch, entry.get("dtype") or "bfloat16")
+
+
+def _stage_frame(entry: dict) -> bool:
+    """The corpus-chunking frame a recorded stage ran under, override included."""
+    if entry.get("keep_short_whole") is not None:
+        return bool(entry["keep_short_whole"])
+    return bool(entry["recipe"]["keep_short_whole"])
 
 
 def _delta(before: float, after: float) -> str:
@@ -251,11 +258,21 @@ class Workspace:
         artifacts_dir = path / "artifacts"
         artifacts_dir.mkdir(exist_ok=True)
 
-        source = Path(artifact)
-        artifact_id = None if source.exists() else artifact
+        # The registry is consulted first: a file that happens to be named like a published
+        # artifact must not shadow the published artifact, which is the one the recipe's lambda
+        # was calibrated against.
+        if artifact in ARTIFACTS:
+            artifact_id, source = artifact, None
+        elif Path(artifact).exists():
+            artifact_id, source = None, Path(artifact)
+        else:
+            raise ValueError(
+                f"{artifact!r} is neither a path that exists nor a published artifact id "
+                f"({', '.join(sorted(ARTIFACTS))})."
+            )
         destination = artifacts_dir / "v1.pt"
 
-        if artifact_id is None:
+        if source is not None:
             shutil.copyfile(source, destination)
             logger.info("Artifact %s copied to %s", source, destination)
         elif destination.exists():
@@ -330,6 +347,8 @@ class Workspace:
         *,
         epochs: int | None = None,
         output_name: str | None = None,
+        keep_short_whole: bool | None = None,
+        full_weight: bool | None = None,
         device: str | dict = DEFAULT_DEVICE,
         allow_sharding: bool = False,
         resume: bool = False,
@@ -348,7 +367,13 @@ class Workspace:
                 workspace's own.
             epochs: override the recipe's dose. Validated against the schedule horizon, so a dose
                 past the end of the learning-rate schedule is refused rather than run.
-            output_name: run directory name under ``runs/`` (default ``stage{N}``).
+            output_name: run directory name under ``runs/``. The default is ``stage{N}``, and
+                ``stage{N}_run{k}`` for a repeat of a stage already trained -- a repeat is a
+                second run, not an overwrite of the first, and both stay readable.
+            keep_short_whole: override the recipe's corpus-chunking *frame*. ``False``
+                reproduces the loader the paper's runs were measured under.
+            full_weight: override the recipe's training mode. Full weight is outside the LFA
+                paper's validated envelope; the recipe's own warning says so.
             device: a single device, as :func:`lfa.models.resolve_device` reads it.
             allow_sharding: permit a device map that spreads the model over several devices.
             resume: continue the run already in this stage's output directory.
@@ -384,11 +409,16 @@ class Workspace:
             )
 
         resolved = self._resolve_recipe(recipe)
+        overrides = {}
         if epochs is not None:
-            resolved = dataclasses.replace(resolved, epochs=epochs)
+            overrides["epochs"] = epochs
+        if full_weight is not None:
+            overrides["full_weight"] = full_weight
+        if overrides:
+            resolved = dataclasses.replace(resolved, **overrides)
 
         stage = self.state["stage"] if repeat else self.state["stage"] + 1
-        config = resolved.to_train_config(stage, artifact)
+        config = resolved.to_train_config(stage, artifact, keep_short_whole=keep_short_whole)
 
         # Said before anything is loaded: an off-calibration lambda is not a refusal, but it is
         # also not the measured operating point, and a run is worth more than the warning is.
@@ -398,7 +428,7 @@ class Workspace:
             logger.info(LOADER_FRAME_NOTICE)
 
         base_model = self.state["current_model"]
-        output_dir = self.path / "runs" / (output_name or f"stage{stage}")
+        output_dir = self.path / "runs" / (output_name or self._run_name(stage, repeat, resume))
         placement = resolve_device(device, allow_sharding)
         dtype = _dtype_for(placement)
         logger.info("Stage %d: %s on %s (artifact v%d, λ_qkv=%s, %d epochs)", stage, base_model,
@@ -424,6 +454,10 @@ class Workspace:
             "adapter": str(output_dir / "final_model"),
             "output_dir": str(output_dir),
             "epochs": config.num_epochs,
+            # The two frame/mode settings the run actually used, which a per-call override can
+            # move away from the recipe's own values.
+            "keep_short_whole": config.keep_short_whole,
+            "full_weight": config.full_weight,
             "final_loss": training.history[-1]["loss_total"] if training.history else None,
             # Where and in what precision this stage ran: an export merges in the dtype it was
             # trained in rather than in a default that may not be the same one.
@@ -446,9 +480,27 @@ class Workspace:
         self._save_state()
         return entry
 
+    def _run_name(self, stage: int, repeat: bool, resume: bool) -> str:
+        """The default run directory for this stage.
+
+        The first run of a stage is ``stage{N}``. A repeat -- more dose on the domain already in
+        progress -- is ``stage{N}_run{k}``, because two history entries pointing at one directory
+        would leave the first run's config, curve and checkpoint overwritten by the second's. A
+        *resumed* repeat is the same run continuing, so it keeps its own directory.
+        """
+        if not repeat:
+            return f"stage{stage}"
+        if resume:
+            return Path(self.state["last_stage_dir"]).name
+        return f"stage{stage}_run{1 + sum(1 for e in self.history if e['stage'] == stage)}"
+
     def _run_training(self, config, corpus_path, base_model, output_dir, *, placement, dtype,
                       allow_sharding, resume, anchored):
         """Load teacher, student, sampler and corpus for one run, and train it.
+
+        A resume passes the bare student through: the trainer re-attaches the saved adapter
+        (trainable), and doing it here as well would train a fresh one instead. If the resume
+        source carries no adapter, the trainer raises rather than training a frozen model.
 
         The embedding lookup is rebuilt from the teacher here rather than shipped: layer-0
         ``pre_qkv`` is ``input_layernorm(embed_tokens(id))``, exactly reconstructible and ~300 MB
@@ -464,7 +516,12 @@ class Workspace:
             adapter = get_adapter(teacher)
             student = load_student(str(base_model), device=placement, dtype=dtype,
                                    allow_sharding=allow_sharding)
-            if config.use_lora:
+            # A resumed LoRA run is handed the BARE student: `lfa.train.train` re-attaches the
+            # saved adapter itself, and only if it is not looking at a PEFT model already. Wrap
+            # it here and the resume restores the epoch counter, the history, the scheduler
+            # position and Adam's moments onto a *fresh* adapter whose B is still zero -- the run
+            # silently starts over and then overwrites the checkpoint it resumed from.
+            if config.use_lora and not resume:
                 student = apply_lora(student, adapter, rank=config.lora_rank,
                                      alpha=config.lora_alpha, dropout=config.lora_dropout,
                                      freeze_embed=config.freeze_embed)
@@ -593,12 +650,13 @@ class Workspace:
         """
         params = torch.load(self.state["current_artifact"], map_location="cpu",
                             weights_only=False)
-        sites = [entry for key, entry in params.items()
-                 if parse_site_key(key) is not None and isinstance(entry, dict)]
-        meta_total = (params.get(META_KEY) or {}).get("n_samples_total")
+        gmm_keys = gmm_site_keys(params)
+        # `gmm_keys` empty means there is nothing to extend at all; leave that for
+        # `extend_artifact` to say, rather than reporting it as a missing count.
+        answers_for_itself = not gmm_keys or artifact_carries_base_count(params, gmm_keys)
         del params
 
-        if meta_total is not None or (sites and all("n_samples" in site for site in sites)):
+        if answers_for_itself:
             return None
         registry = ARTIFACTS.get(self.state["artifact_id"] or "")
         if registry is not None:
@@ -655,7 +713,7 @@ class Workspace:
         corpus_path = Path(corpus).expanduser().resolve() if corpus else Path(entry["corpus"])
         heldout, _ = load_corpus(corpus_path, tokenizer, max_length=recipe.sequence_length,
                                  val_fraction=0.0, seed=recipe.seed,
-                                 keep_short_whole=recipe.keep_short_whole)
+                                 keep_short_whole=_stage_frame(entry))
         logger.info("Evaluating stage %d on %s (%d chunks)", entry["stage"], corpus_path,
                     len(heldout))
 
@@ -722,8 +780,10 @@ class Workspace:
     def _train_unanchored(self, entry: dict, recipe: Recipe, *, placement, dtype) -> Path:
         """Re-run the stage with the anchor and the weight backstop switched off."""
         control = dataclasses.replace(recipe, lambda_qkv=0.0, lambda_mlp=0.0, mu=0.0)
-        config = control.to_train_config(entry["stage"], entry["artifact"])
-        output_dir = self.path / "runs" / f"stage{entry['stage']}_unanchored"
+        config = control.to_train_config(entry["stage"], entry["artifact"],
+                                         keep_short_whole=_stage_frame(entry))
+        # Named after the run it controls, so a repeat of a stage gets its own control.
+        output_dir = self.path / "runs" / f"{Path(entry['output_dir']).name}_unanchored"
         logger.info("Unanchored control for stage %d -> %s", entry["stage"], output_dir)
         self._run_training(config, Path(entry["corpus"]), entry["base_model"], output_dir,
                            placement=placement, dtype=dtype, allow_sharding=False, resume=False,
@@ -786,11 +846,11 @@ class Workspace:
                 epochs: 15                # optional dose override
               - name: archaeology
                 corpus: data/domain_c
-            extend_between: true          # default: fold each domain in before the next
 
-        Every stage uses the workspace's default recipe; the stage multiplier on lambda is
-        applied by :meth:`train` as usual. ``extend_between: false`` trains each domain from the
-        same starting model, which is a *comparison*, not a chain.
+        Every domain is folded in before the next one starts -- that is what a chain *is*, and it
+        is the paper's protocol: stage N+1 adapts the fused model and anchors on the artifact
+        that domain N has been merged into. Every stage uses the workspace's default recipe, and
+        the stage multiplier on lambda is applied by :meth:`train` as usual.
 
         Args:
             spec_path: the YAML file.
@@ -807,7 +867,14 @@ class Workspace:
         domains = spec.get("domains")
         if not isinstance(domains, list) or not domains:
             raise ValueError(f"{spec_path}: a chain spec needs a non-empty 'domains' list.")
-        extend_between = bool(spec.get("extend_between", True))
+        if "extend_between" in spec:
+            raise ValueError(
+                f"{spec_path}: 'extend_between' is not a chain option. A chain always folds each "
+                "domain into the model and into p(h) before the next one starts; without that, "
+                "the second domain would adapt the first domain's base model and anchor against "
+                "a p(h) that does not describe it. To train several domains from the same "
+                "starting point instead, run them as separate workspaces."
+            )
 
         entries = []
         for position, domain in enumerate(domains, start=1):
@@ -822,6 +889,6 @@ class Workspace:
                 device=device,
                 allow_sharding=allow_sharding,
             ))
-            if extend_between and position < len(domains):
+            if position < len(domains):
                 self.extend(need=need, k_domain=k_domain, device=device)
         return entries
