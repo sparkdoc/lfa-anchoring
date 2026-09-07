@@ -1,9 +1,7 @@
 """Layerwise Function Anchoring (LFA)."""
 __version__ = "0.1.0"
 
-from .recipe import Recipe  # noqa: F401
+from .recipe import Recipe
+from .workspace import Workspace
 
-try:
-    from .workspace import Workspace  # noqa: F401
-except ImportError:  # pragma: no cover - Task 14 has not landed yet
-    pass
+__all__ = ["Recipe", "Workspace", "__version__"]

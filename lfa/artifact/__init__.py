@@ -4,12 +4,21 @@
 hidden-state statistics over a seed corpus; :mod:`~lfa.artifact.fit` turns one site's statistics
 into an entry (PCA basis, then a GMM head in it); :mod:`~lfa.artifact.build` runs the three
 end to end and saves the file the anchor samples from; :mod:`~lfa.artifact.extend` adds a later
-domain to a finished artifact without its original corpus.
+domain to a finished artifact without its original corpus; :mod:`~lfa.artifact.fetch` downloads a
+published one and verifies it against the checksum the registry records.
 """
 
 from .build import build_artifact
 from .collect import SiteStats, collect_hidden_states
 from .extend import extend_artifact, fit_domain_gmm
+from .fetch import (
+    ARTIFACTS,
+    ArtifactNotPublished,
+    ChecksumMismatch,
+    fetch_artifact,
+    list_artifacts,
+    sha256_file,
+)
 from .fit import TorchGMM, fit_site
 from .schema import (
     EMBEDDING_LOOKUP_KEY,
@@ -28,6 +37,12 @@ from .schema import (
 __all__ = [
     "build_artifact",
     "extend_artifact",
+    "ARTIFACTS",
+    "fetch_artifact",
+    "list_artifacts",
+    "sha256_file",
+    "ArtifactNotPublished",
+    "ChecksumMismatch",
     "fit_domain_gmm",
     "collect_hidden_states",
     "fit_site",
