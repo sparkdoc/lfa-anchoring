@@ -101,9 +101,10 @@ class TrainConfig:
     ``cosine_fraction`` of the post-warmup steps to a floor of ``lr_floor * learning_rate``.
     ``schedule_horizon_epochs`` is the number of epochs the schedule is laid over; ``None`` means
     ``num_epochs``. They come apart deliberately: the paper's recipe *trains* 15 epochs of a
-    100-epoch horizon, so the cosine has barely begun to bite at the dose that ships, where a
-    15-epoch horizon would have decayed the learning rate to its floor by then. Training always
-    stops at ``num_epochs`` whatever the horizon says.
+    20-epoch cosine, so the schedule is two thirds spent at the dose that ships, where a 15-epoch
+    horizon would have decayed the learning rate to its floor by then. Training always stops at
+    ``num_epochs`` whatever the horizon says. The horizon is part of the measured operating point
+    in both directions -- lengthening it is as much a change as shortening it.
 
     Checkpoint modes: ``"none"`` writes only ``best_model``/``final_model``; ``"rolling"``
     overwrites ``latest_model`` every ``checkpoint_every`` epochs; ``"all"`` accumulates

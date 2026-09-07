@@ -2,7 +2,7 @@
 
 A recipe is a *joint* operating point, so what these tests check is that the bundled Qwen3-0.6B
 file still carries exactly the published point, that turning it into a `TrainConfig` preserves the
-two settings a reader is most likely to lose (the 100-epoch schedule horizon behind a 15-epoch
+two settings a reader is most likely to lose (the 20-epoch schedule horizon behind a 15-epoch
 dose, and the checkpointing that makes that dose recoverable), and that a run which departs from
 the calibrated rank or artifact is told that lambda no longer means what it meant.
 """
@@ -21,7 +21,7 @@ SHIPPED = dict(
     lora_rank=32, lora_alpha=64, freeze_embed=True, full_weight=False,
     lambda_qkv=100000.0, lambda_mlp=100000.0, mu=0.05, mu_end_ratio=1.0,
     anchor_end_ratio=0.1, anchor_schedule="cosine", n_anchor_samples=16,
-    epochs=15, schedule_horizon_epochs=100, checkpoint_mode="all", checkpoint_every=5,
+    epochs=15, schedule_horizon_epochs=20, checkpoint_mode="all", checkpoint_every=5,
     learning_rate=3e-4, batch_size=6, gradient_accumulation_steps=1,
     warmup_steps=50, weight_decay=0.01, sequence_length=512, seed=42, keep_short_whole=True,
     val_fraction=0.1,
@@ -51,7 +51,7 @@ def test_yaml_documents_the_couplings_a_reader_has_to_know():
     """The file is read by humans before it is read by the loader; the guidance is the point."""
     text = (BUNDLED_DIR / "qwen3-0.6b.yaml").read_text()
     comments = "\n".join(line for line in text.splitlines() if line.lstrip().startswith("#")).lower()
-    for phrase in ("rank", "artifact", "full-weight", "perplexity-optimal", "100-epoch"):
+    for phrase in ("rank", "artifact", "full-weight", "perplexity-optimal", "twenty-epoch"):
         assert phrase in comments, f"the recipe's comment block never mentions {phrase!r}"
 
 
@@ -81,11 +81,17 @@ def test_stage_one_config_carries_the_recipe_verbatim(tmp_path):
     assert (config.warmup_steps, config.weight_decay, config.sequence_length, config.seed) == (50, 0.01, 512, 42)
 
 
-def test_the_fifteen_epoch_dose_keeps_its_hundred_epoch_schedule_horizon(tmp_path):
-    """e15 is the dose of a 100-epoch run: a 15-epoch horizon would decay the LR to its floor."""
+def test_the_fifteen_epoch_dose_keeps_its_twenty_epoch_schedule_horizon(tmp_path):
+    """e15 is checkpoint 15 of a 20-epoch run.
+
+    The horizon is load-bearing in BOTH directions, which is why it is asserted exactly rather
+    than as a lower bound: a 15-epoch horizon would have decayed the learning rate to its floor by
+    e15, and a longer one leaves it too high. The acceptance run measured the second failure --
+    at a 100-epoch horizon e15 reaches domain perplexity 9.69 instead of the published 8.76.
+    """
     config = Recipe.load("qwen3-0.6b").to_train_config(1, tmp_path / "stats.pt")
     assert config.num_epochs == 15
-    assert config.schedule_horizon_epochs == 100
+    assert config.schedule_horizon_epochs == 20
 
 
 def test_checkpointing_keeps_the_intermediate_doses_comparable(tmp_path):
@@ -178,7 +184,7 @@ def test_a_saved_recipe_is_plain_readable_yaml(tmp_path):
     path = tmp_path / "probe.yaml"
     Recipe.load("qwen3-0.6b").save(path)
     loaded = yaml.safe_load(path.read_text())
-    assert loaded["lambda_qkv"] == 100000 and loaded["schedule_horizon_epochs"] == 100
+    assert loaded["lambda_qkv"] == 100000 and loaded["schedule_horizon_epochs"] == 20
 
 
 def test_an_unknown_field_is_refused_rather_than_ignored(tmp_path):

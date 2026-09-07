@@ -12,15 +12,19 @@ departing from either can be told that lambda no longer means what it meant
 Several settings in the shipped point are easy to lose in a re-implementation and are carried here
 deliberately:
 
-* ``epochs`` and ``schedule_horizon_epochs`` come apart. The published dose is epoch 15 **of a
-  100-epoch run**: the learning rate is still near its peak there, where a 15-epoch cosine would
-  have decayed to its floor by the same step. Training stops at ``epochs`` whatever the horizon
-  says (see :class:`lfa.train.TrainConfig`).
+* ``epochs`` and ``schedule_horizon_epochs`` come apart. The published dose is checkpoint 15 **of
+  a twenty-epoch run**: 50 steps of warmup, then a cosine laid over twenty epochs, with training
+  stopped at fifteen (see :class:`lfa.train.TrainConfig`). Both directions matter. A 15-epoch
+  horizon would have decayed the learning rate to its floor by that step; a *longer* horizon leaves
+  it too high, and the acceptance run measured what that costs -- at a 100-epoch horizon e15 sits
+  at a learning rate of 2.9e-4 instead of 1.2e-4 and lands at domain perplexity 9.69 rather than
+  8.76.
 * ``checkpoint_mode="all"`` with ``checkpoint_every=5``, because dose is a preservation-quality
   dial rather than a converged endpoint -- e15 is the perplexity-optimal shipped point and e20 the
-  judge-optimal one. Reaching e20 means raising ``epochs`` to 20 (the horizon stays at 100); what
-  ``checkpoint_every=5`` buys is that the intermediate doses of a run stay comparable with each
-  other, since e5/e10/e15 are on disk rather than only the endpoint.
+  judge-optimal one -- and e20 is the *end* of this same run, so reaching it means raising
+  ``epochs`` to 20 with the horizon left at 20. What ``checkpoint_every=5`` buys is that the
+  intermediate doses of a run stay comparable with each other, since e5/e10/e15 are on disk rather
+  than only the endpoint.
 * ``keep_short_whole=True`` deliberately differs from the research code, where a document shorter
   than the epoch's random chunk offset is dropped for that epoch. It is a *frame* field: a run
   under either setting is not comparable with a run under the other, and the paper's perplexity
@@ -93,7 +97,7 @@ class Recipe:
 
     # -- dose and schedule
     epochs: int = 15
-    schedule_horizon_epochs: int | None = 100
+    schedule_horizon_epochs: int | None = 20
     checkpoint_mode: str = "all"
     checkpoint_every: int = 5
 

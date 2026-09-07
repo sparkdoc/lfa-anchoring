@@ -294,7 +294,7 @@ def test_resume_inside_the_warmup_replays_the_schedule(setup, tmp_path):
 
 
 def test_schedule_horizon_keeps_the_learning_rate_high_past_num_epochs(setup, tmp_path):
-    """The recipe trains 15 epochs of a 100-epoch cosine; the horizon field is what allows that."""
+    """The recipe trains 15 epochs of a 20-epoch cosine; the horizon field is what allows that."""
     teacher, fresh_student, dataset, sampler, adapter = setup
 
     def final_lr(directory, **overrides):

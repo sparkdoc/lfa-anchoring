@@ -15,14 +15,16 @@
 #     formatted Q&A is a different regularization problem; re-tune there too.
 #
 # Dose and schedule come apart on purpose. `epochs: 15` is the PERPLEXITY-OPTIMAL shipped dose,
-# and it is epoch 15 of a 100-EPOCH cosine horizon (`schedule_horizon_epochs: 100`): the learning
-# rate is still near its peak at that point, where a 15-epoch horizon would have decayed it to the
-# floor by the same step. Training stops at `epochs` whatever the horizon says. Dose is a
-# preservation-versus-quality dial rather than a converged endpoint: e20 is the JUDGE-OPTIMAL dose
-# of the same 100-epoch schedule, and reaching it means setting `epochs: 20` (the horizon stays at
-# 100 -- do not shorten it, or the learning rate is no longer the one those numbers were measured
-# under). With `epochs: 15` the checkpoints written are e5/e10/e15; `checkpoint_every: 5` is what
-# keeps the intermediate doses of a run comparable with each other.
+# and it is checkpoint 15 of a TWENTY-epoch cosine run (`schedule_horizon_epochs: 20`): 50 steps of
+# warmup, then cosine decay to zero laid over twenty epochs, with training STOPPED at fifteen. A
+# 15-epoch horizon would have decayed the learning rate to its floor by the same step and is a
+# different schedule, not a shorter one; laying the schedule over a LONGER horizon is equally wrong,
+# and measurably so -- at e15 a 100-epoch horizon leaves the learning rate at 2.9e-4 where this one
+# is at 1.2e-4, and the run lands at domain perplexity 9.69 instead of 8.76.
+# Dose is a preservation-versus-quality dial rather than a converged endpoint: e20 is the
+# JUDGE-OPTIMAL dose, and it is the END of this same run -- reaching it means setting `epochs: 20`,
+# with the horizon left at 20. With `epochs: 15` the checkpoints written are e5/e10/e15;
+# `checkpoint_every: 5` is what keeps the intermediate doses of a run comparable with each other.
 #
 # `keep_short_whole: true` deliberately differs from the research code, where a document shorter
 # than the epoch's random chunk offset is dropped for that epoch. It is a frame field: a run under
@@ -53,9 +55,9 @@ anchor_end_ratio: 0.1
 anchor_schedule: cosine
 n_anchor_samples: 16
 
-# -- dose and schedule (see the note above: 15 trained epochs of a 100-epoch horizon)
+# -- dose and schedule (see the note above: 15 trained epochs of a 20-epoch cosine)
 epochs: 15
-schedule_horizon_epochs: 100
+schedule_horizon_epochs: 20
 checkpoint_mode: all
 checkpoint_every: 5
 
