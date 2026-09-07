@@ -97,6 +97,43 @@ def test_a_local_file_does_not_shadow_a_published_artifact_id(tmp_path, registry
     assert sha256_file(ws.state["current_artifact"]) == registry["sha256"]
 
 
+def test_a_local_copy_can_be_recorded_as_the_published_artifact_it_is(tmp_path, registry,
+                                                                     base_dir, tiny_artifact):
+    """`artifact_id` is how a file fetched out of band keeps its provenance.
+
+    Without it the workspace records a path, and `Recipe.warnings` then reports that lambda was
+    calibrated against a different artifact than the one being used -- when it is the same one.
+    """
+    _, artifact_path = tiny_artifact
+
+    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact=str(artifact_path),
+                        fetch=False, artifact_id="tiny")
+
+    assert ws.state["artifact_id"] == "tiny"
+    # ...which is what the recipe's calibration is read against, so it warns about nothing.
+    assert ws._artifact_id() == "tiny"
+    assert tiny_recipe(base_dir).warnings(2, ws._artifact_id()) == []
+
+
+def test_an_artifact_id_that_is_not_published_is_refused(tmp_path, base_dir, tiny_artifact):
+    """It is a provenance claim, so a claim about an artifact nobody publishes is a mistake."""
+    _, artifact_path = tiny_artifact
+    with pytest.raises(ValueError, match="not a published artifact id"):
+        Workspace.init(tmp_path / "ws", str(base_dir), artifact=str(artifact_path),
+                       fetch=False, artifact_id="no-such-artifact")
+
+
+def test_an_artifact_id_that_contradicts_the_artifact_is_refused(tmp_path, registry, base_dir):
+    """Both name a published artifact, and they disagree: that is a mistake, not a preference."""
+    with pytest.raises(ValueError, match="names a different one"):
+        Workspace.init(tmp_path / "ws", str(base_dir), artifact="tiny",
+                       artifact_id="qwen3-0.6b-gmm1543k-int8")
+
+    # The same id twice is not a contradiction, so it is accepted.
+    ws = Workspace.init(tmp_path / "ws2", str(base_dir), artifact="tiny", artifact_id="tiny")
+    assert ws.state["artifact_id"] == "tiny"
+
+
 def test_an_artifact_that_is_neither_an_id_nor_a_path_says_both(tmp_path, base_dir):
     with pytest.raises(ValueError, match="qwen3-0.6b-diagonal"):
         Workspace.init(tmp_path, str(base_dir), artifact="no-such-artifact")

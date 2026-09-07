@@ -468,6 +468,44 @@ def train_epoch(
 # Checkpoint state
 # ==============================================================================================
 
+#: Module names PEFT treats as embedding layers when it decides whether to save them.
+_EMBEDDING_MODULE_NAMES = frozenset({"embed_tokens", "lm_head"})
+
+
+def _save_student(student: nn.Module, output_dir: Path) -> None:
+    """Write a checkpoint: the LoRA adapter, or the full weights.
+
+    The only subtlety is one PEFT default. ``PeftModel.save_pretrained`` leaves
+    ``save_embedding_layers="auto"``, and resolving "auto" means asking the Hub whether the base
+    model's ``config.json`` exists, to find out whether the vocabulary was resized. When the base
+    is a Hub id and the Hub cannot be reached -- which is the normal case here, since a long run
+    sets ``HF_HUB_OFFLINE=1`` so a flaky network cannot strand it -- that check cannot answer, and
+    PEFT warns once per save. Deciding it ourselves removes the network call and the warning:
+    "auto" only ever resolves to ``True`` when the embedding is a LoRA *target* or the vocabulary
+    was resized, and this package does neither (the embedding is reached through
+    ``modules_to_save``, which is a different mechanism and is unaffected by this flag -- verified
+    by saving the same adapter both ways under ``freeze_embed`` True and False and comparing the
+    tensors, which are identical).
+
+    A ``target_modules`` given as a regex is left to PEFT: guessing wrong there would silently drop
+    a resized embedding, and a warning is much cheaper than that.
+    """
+    if not hasattr(student, "peft_config"):
+        student.save_pretrained(output_dir)          # full weight: an ordinary HF checkpoint
+        return
+
+    targets: set[str] = set()
+    for peft_config in student.peft_config.values():
+        configured = getattr(peft_config, "target_modules", None) or ()
+        if isinstance(configured, str):              # a regex; let PEFT work it out
+            student.save_pretrained(output_dir)
+            return
+        targets.update(configured)
+
+    student.save_pretrained(output_dir,
+                            save_embedding_layers=bool(targets & _EMBEDDING_MODULE_NAMES))
+
+
 def _save_training_state(
     state: TrainingState,
     optimizer: torch.optim.Optimizer,
@@ -557,10 +595,14 @@ def validation_loss(student: nn.Module, dataloader: DataLoader) -> dict[str, flo
     It leaves the training stream untouched, which is what makes it safe to add to a run whose
     numbers are being compared against another implementation: no gradients, no optimizer, and a
     loader built with ``shuffle=False``, which therefore takes no generator. (A ``DataLoader`` with
-    ``generator=None`` still draws a ``_base_seed`` from torch's global CPU RNG once per epoch;
-    that is harmless here precisely because nothing in the training path reads the global stream --
-    the anchor sampler owns a private generator and LoRA dropout is 0.) The student is put in
-    ``eval()`` for the pass and restored to whatever mode it was in.
+    ``generator=None`` still draws a ``_base_seed`` from torch's global CPU RNG once per epoch.
+    That is harmless whenever nothing in the training path reads the global stream, which holds for
+    a **seeded** sampler -- every anchor draw, the embedding term included, then goes through its
+    private generator, and LoRA dropout is 0. An unseeded sampler (``Sampler(..., seed=None)``,
+    the mode that reproduces the reference implementation call for call) does read the global
+    stream, so a run configured that way *with* the embedding term live is the one case where a
+    validation pass shifts the anchor's draws.) The student is put in ``eval()`` for the pass and
+    restored to whatever mode it was in.
 
     ``tokens`` counts label positions that are not ``-100``, which is one per sequence more than
     the causal-LM loss averages over, since the labels are shifted inside the model. That is
@@ -758,11 +800,12 @@ def train(
             pad_token_id = source.pad_token_id
             break
     dataloader = make_dataloader(dataset, config.batch_size, True, config.seed, pad_token_id)
-    # shuffle=False: the held-out pass takes no generator, and nothing in the training path reads
-    # the global RNG (the anchor sampler is seeded privately), so the training stream is
-    # bit-identical to a run without it -- which
-    # `test_the_held_out_pass_leaves_the_training_stream_untouched` asserts by comparing the two
-    # runs' adapters byte for byte.
+    # shuffle=False: the held-out pass takes no generator. With a seeded sampler nothing in the
+    # training path reads the global RNG either, so the training stream is bit-identical to a run
+    # without validation -- which `test_the_held_out_pass_leaves_the_training_stream_untouched`
+    # asserts by comparing the two runs' adapters byte for byte, with the embedding anchor both
+    # off and on. (Unseeded, the embedding draw follows the global stream by design; see
+    # `lfa.losses.embed_anchor_loss`.)
     val_dataloader = (None if val_dataset is None else
                       make_dataloader(val_dataset, config.batch_size, False, config.seed,
                                       pad_token_id))
@@ -861,11 +904,11 @@ def train(
         if config.checkpoint_mode != "none" and (epoch + 1) % config.checkpoint_every == 0:
             name = ("latest_model" if config.checkpoint_mode == "rolling"
                     else f"checkpoint_epoch_{epoch + 1}")
-            student.save_pretrained(output_dir / name)
+            _save_student(student, output_dir / name)
             run_logger.info("  Checkpoint saved to %s", output_dir / name)
             _save_training_state(state, optimizer, output_dir, name, run_logger)
 
-    student.save_pretrained(output_dir / "final_model")
+    _save_student(student, output_dir / "final_model")
     run_logger.info("Final model saved to %s", output_dir / "final_model")
     _save_training_state(state, optimizer, output_dir, "final_model", run_logger)
 

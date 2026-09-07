@@ -345,6 +345,10 @@ def embed_anchor_loss(
     # A generator draws only for its own device, so a seeded sampler draws on the sampler's device
     # and an unseeded one on the teacher's -- which is where the reference implementation draws.
     # `generator=None` is the global RNG, so the unseeded path is unchanged, call for call.
+    # This mirrors `Sampler._multinomial`'s rule deliberately rather than calling it: that helper
+    # must NOT move its weights (the GMM component weights are kept on the CPU on purpose, because
+    # moving them changes every sample stream), and this draw must. The two are separate for that
+    # reason and have to stay in step: a change to the device rule in one belongs in both.
     generator = sampler.generator
     draw_device = device if generator is None else sampler.device
     if "token_frequencies" in lookup:

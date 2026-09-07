@@ -11,6 +11,7 @@ import logging
 import shutil
 import math
 import warnings
+from pathlib import Path
 
 import pytest
 import safetensors.torch
@@ -151,6 +152,88 @@ def test_periodic_checkpoints_are_written_and_final_model_is_what_ships(setup, t
     assert not (tmp_path / "checkpoint_epoch_1").exists()
     assert (tmp_path / "final_model").is_dir()
     assert not (tmp_path / "best_model").exists()
+
+
+def _apply_repo_warning_filters() -> list[str]:
+    """Apply this repo's `pyproject.toml` warning filters to the current `catch_warnings` scope.
+
+    Read from the file and parsed with pytest's own parser, so a test that wants the project's
+    real strictness gets exactly it -- `error` first, then the two torch pin-memory deprecations
+    that are exempted by message. Returns the raw specs, for a test that wants to assert on them.
+    """
+    import tomllib
+
+    from _pytest.config import parse_warning_filter
+
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    specs = tomllib.loads(pyproject.read_text())["tool"]["pytest"]["ini_options"]["filterwarnings"]
+    for spec in specs:
+        warnings.filterwarnings(*parse_warning_filter(spec, escape=False))
+    return specs
+
+
+def test_the_repo_turns_warnings_into_errors():
+    """The premise of the test below: a warning is a failure here, not a line of noise."""
+    assert _apply_repo_warning_filters()[0] == "error"
+
+
+def test_a_run_over_a_hub_id_base_saves_offline_without_warning(setup, tmp_path, monkeypatch):
+    """A checkpoint save must not warn, because a warning is an error in this suite.
+
+    `PeftModel.save_pretrained` resolves `save_embedding_layers="auto"` by asking the Hub whether
+    the base model's config exists. With a Hub-id base and no network -- exactly the case the
+    acceptance harness creates, since it sets `HF_HUB_OFFLINE=1` itself -- that check cannot
+    answer and PEFT warns. Under this repo's `filterwarnings = ["error", ...]` that warning aborts
+    training at the first checkpoint, so this is a two-second stand-in for the two-hour run that
+    would otherwise be the only thing to catch it.
+
+    The repo's own `filterwarnings` list is read out of `pyproject.toml` and applied around the
+    call, rather than trusting how pytest happened to be invoked -- so the guard holds under `-p
+    no:cacheprovider`, a different `-c`, or a bare `pytest tests/test_train.py`, and it stays in
+    step with the config instead of duplicating it.
+    """
+    teacher, fresh_student, dataset, sampler, adapter = setup
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
+    config = make_config(num_epochs=1, checkpoint_mode="all", checkpoint_every=1)
+    student = apply_lora(fresh_student(), adapter, rank=config.lora_rank, alpha=config.lora_alpha)
+    # What a run over `Qwen/Qwen3-0.6B` records, and what the Hub lookup then fails on.
+    student.peft_config["default"].base_model_name_or_path = "Qwen/Qwen3-0.6B"
+
+    with warnings.catch_warnings():
+        _apply_repo_warning_filters()
+        train(teacher, student, dataset, sampler, adapter, config, tmp_path)
+
+    assert (tmp_path / "final_model" / "adapter_model.safetensors").exists()
+    assert (tmp_path / "checkpoint_epoch_1" / "adapter_model.safetensors").exists()
+
+
+@pytest.mark.parametrize("freeze_embed", [True, False])
+def test_deciding_save_embedding_layers_ourselves_saves_the_same_tensors(freeze_embed, setup,
+                                                                        tmp_path):
+    """The fix must be silent, not lossy: same adapter, with and without PEFT's "auto".
+
+    The unfrozen case is the one that could have gone wrong -- the embedding is saved there, but
+    through `modules_to_save`, which this flag does not govern.
+    """
+    from lfa.train import _save_student
+
+    _, fresh_student, _, _, adapter = setup
+    config = make_config(freeze_embed=freeze_embed)
+    student = apply_lora(fresh_student(), adapter, rank=config.lora_rank,
+                         alpha=config.lora_alpha, freeze_embed=freeze_embed)
+    student.peft_config["default"].base_model_name_or_path = "Qwen/Qwen3-0.6B"
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")          # the "auto" path warns; that is the point
+        student.save_pretrained(tmp_path / "auto")
+    _save_student(student, tmp_path / "ours")
+
+    auto = safetensors.torch.load_file(tmp_path / "auto" / "adapter_model.safetensors")
+    ours = safetensors.torch.load_file(tmp_path / "ours" / "adapter_model.safetensors")
+    assert set(auto) == set(ours) and auto
+    assert all(torch.equal(auto[key], ours[key]) for key in auto)
+    assert any("embed" in key for key in ours) is (not freeze_embed)
 
 
 def test_resume_reattaches_the_adapter_and_keeps_learning(setup, tmp_path):

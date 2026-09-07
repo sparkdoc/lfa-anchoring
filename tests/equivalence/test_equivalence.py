@@ -612,8 +612,11 @@ def test_all_four_anchor_blocks_match_in_process(tiny_model, tmp_path):
     The fixture-backed loss test can only assert that ``L_lm_head`` and ``L_embed`` stay zero:
     the archived recipe adapter froze the embedding and targets the seven projections, so those
     two sub-modules ARE the teacher's. That leaves half the anchor unproved, and the embedding
-    block is the one with its own sampling path (token ids drawn by corpus frequency from the
-    global RNG, not the sampler's generator) -- the easiest of the four to port wrongly.
+    block is the one with its own sampling path (token ids drawn by corpus frequency rather than
+    from p(h)) -- the easiest of the four to port wrongly. This test uses an UNSEEDED sampler on
+    both sides, which is the configuration in which that draw goes to the global RNG, call for
+    call as the reference implementation does; a seeded sampler routes it through its own
+    generator instead, which is what keeps a validation pass from perturbing training.
 
     So: perturb every parameter of a copy of the teacher, which makes all four blocks non-zero,
     and run both implementations over the synthetic artifact with its embedding lookup built.
