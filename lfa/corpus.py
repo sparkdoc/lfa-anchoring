@@ -255,8 +255,11 @@ def load_corpus(
     """Read ``path`` and build the training corpus, optionally holding documents out.
 
     Documents are shuffled with ``seed`` before the split, so the same seed gives the same split.
-    Returns ``(train, val)``; ``val`` is ``None`` when ``val_fraction <= 0`` (the default — the
-    training recipe evaluates on held-out corpora, not on a slice of the domain).
+    Returns ``(train, val)``; ``val`` is ``None`` when ``val_fraction <= 0``, which is this
+    function's default because most callers (the artifact extension, an explicit evaluation of a
+    named corpus) want every document. A training run does not: the shipped recipe sets
+    ``val_fraction=0.1`` and :meth:`lfa.workspace.Workspace.train` passes it here, so the stage's
+    domain number is a held-out measurement rather than a fit.
     """
     texts = load_texts(path)
     if not texts:
