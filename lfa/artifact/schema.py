@@ -70,6 +70,7 @@ def make_meta(
     num_layers: int,
     sites: list[str],
     n_samples_total: int | None,
+    built_with: str = "lfa-anchoring",
 ) -> dict:
     """The ``__meta__`` block: what the statistics describe, and what built them.
 
@@ -81,6 +82,11 @@ def make_meta(
             (:func:`lfa.artifact.extend.extend_artifact`). The shipped qwen3-0.6b artifact is named
             for it: ``gmm1543k`` is 1_543_040 vectors per site (the count the research chains
             pass as ``--base-n``; the id rounds it).
+        built_with: what collected and fitted these statistics. It defaults to this package, which
+            is right for :func:`lfa.artifact.build.build_artifact`; a meta block *added* to an
+            artifact something else built should say so instead (``RELEASING.md`` step 1 does).
+            ``lfa_version`` records which version wrote the block either way, so the two fields do
+            not have to answer the same question.
     """
     return {
         "model_id": model_id,
@@ -88,7 +94,7 @@ def make_meta(
         "num_layers": int(num_layers),
         "sites": list(sites),
         "n_samples_total": None if n_samples_total is None else int(n_samples_total),
-        "built_with": "lfa-anchoring",
+        "built_with": built_with,
         "lfa_version": __version__,
     }
 

@@ -1,5 +1,5 @@
 import pytest, torch
-from lfa.artifact.schema import load_artifact, save_artifact, validate_against_model, ArtifactModelMismatch, parse_site_key
+from lfa.artifact.schema import load_artifact, make_meta, save_artifact, validate_against_model, ArtifactModelMismatch, parse_site_key
 from lfa.adapters import get_adapter
 
 def test_roundtrip_quantized(tiny_artifact, tmp_path):
@@ -20,3 +20,17 @@ def test_validate_mismatch(tiny_artifact, tiny_model):
         validate_against_model(bad, model, get_adapter(model), model_id="tiny")
     with pytest.raises(ArtifactModelMismatch, match="other"):
         validate_against_model(params, model, get_adapter(model), model_id="other")
+
+
+def test_make_meta_says_who_built_the_statistics_and_who_wrote_the_block():
+    """`built_with` is provenance for the STATISTICS, so a meta block added to an artifact this
+    package did not build must be able to say so (RELEASING.md step 1 does). `lfa_version` records
+    who wrote the block either way, so the two never have to answer the same question."""
+    from lfa import __version__
+
+    default = make_meta("m", 8, 2, ["pre_mlp"], 100)
+    assert default["built_with"] == "lfa-anchoring"
+
+    added = make_meta("m", 8, 2, ["pre_mlp"], 100, built_with="the research code (research code)")
+    assert added["built_with"] == "the research code (research code)"
+    assert added["lfa_version"] == default["lfa_version"] == __version__

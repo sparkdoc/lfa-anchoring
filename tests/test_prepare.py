@@ -16,6 +16,7 @@ import pytest
 from lfa.prepare_domain import clean_text, find_input_files, prepare_domain
 from lfa.seed_corpus import (
     INSTRUCTION_SOURCES,
+    MIN_PRETRAINING_CHARS,
     PRETRAINING_SOURCES,
     REDPAJAMA_PATH,
     SHIPPED_COMPOSITION,
@@ -503,20 +504,54 @@ def _per_source_scan(rows, n_total, max_length=2048, seed=42):
         rng = random.Random(seed)
         for index in rng.sample(candidates, min(n_samples, len(candidates))):
             text = str(rows[index].get("text", "")).strip()
-            if len(text) > 50:
+            if len(text) > MIN_PRETRAINING_CHARS:
                 expected.append({"text": text[:max_length], "source": name})
     return expected
 
 
-def test_download_pretraining_scans_once_and_keeps_the_six_pass_result():
+def _redpajama_rows_the_scan_finds_awkward(per_source: int = 50) -> list[dict]:
+    """RedPajama rows carrying the two cases the single-pass scan handles differently.
+
+    The equal, disjoint blocks of `_redpajama_rows` are the happy path: every source fills its
+    shortlist and no row belongs to two of them. The real split is not like that, and neither case
+    is cosmetic for this rewrite:
+
+    * a **sparse source** (here GitHub, five rows) never fills its shortlist, so the single pass's
+      "stop when everyone is full" break must not fire -- the real `redpajama_github` is why;
+    * an **overlapping row** (a `facebook.com` URL: `is_book` matches the metadata string, `is_web`
+      matches the URL) must be taken by *both* sources, as it was when each scanned on its own. It
+      is placed first, so a scan that let one source consume it would shift the other's shortlist
+      by a row and change what is sampled.
+    """
+    rows = [{"text": "facebook.com page. " + PARAGRAPH * 3,
+             "meta": {"url": "https://facebook.com/page"}}]
+    metas = {
+        "redpajama_arxiv": {"arxiv_id": "2401.00001"},
+        "redpajama_wikipedia": {"url": "https://en.wikipedia.org/wiki/Anchor"},
+        "redpajama_github": {"url": "https://github.com/org/repo"},
+        "redpajama_stackexchange": {"url": "https://stats.stackexchange.com/q/1"},
+        "redpajama_book": {"short_book_title": "Moby Dick"},
+        "redpajama_web": {"url": "https://example.com/page"},
+    }
+    for name, meta in metas.items():
+        count = 5 if name == "redpajama_github" else per_source
+        for i in range(count):
+            rows.append({"text": f"{name} document {i}. " + PARAGRAPH * 3, "meta": meta})
+    return rows
+
+
+@pytest.mark.parametrize("build_rows", [_redpajama_rows, _redpajama_rows_the_scan_finds_awkward],
+                         ids=["disjoint-and-plentiful", "sparse-source-and-overlapping-row"])
+def test_download_pretraining_scans_once_and_keeps_the_six_pass_result(build_rows):
     """One scan instead of six, with the corpus unchanged: the rows matter, the I/O is the win.
 
     A RedPajama row is decoded on access, so the six per-source passes cost about six times what
     one costs -- and the six predicates are cheap beside a decode. The shortlists are collected in
     ascending index order either way and each source still stops at three times its allocation,
-    so the sampled rows are identical; this pins both halves of that claim.
+    so the sampled rows are identical; this pins both halves of that claim, on the happy path and
+    on the two shapes where the single pass's control flow actually differs.
     """
-    rows = _redpajama_rows()
+    rows = build_rows()
     table = CountingTable(rows)
 
     produced = download_pretraining(60, max_length=40, seed=42,
@@ -529,6 +564,21 @@ def test_download_pretraining_scans_once_and_keeps_the_six_pass_result():
     six_pass = CountingTable(rows)
     _per_source_scan(six_pass, 60, max_length=40, seed=42)
     assert len(table.reads) < len(six_pass.reads)
+
+
+def test_a_source_that_runs_out_comes_up_short_and_does_not_end_the_scan_early():
+    """The GitHub case: a source with fewer rows than its allocation, and a full scan regardless."""
+    rows = _redpajama_rows_the_scan_finds_awkward()
+    table = CountingTable(rows)
+
+    produced = download_pretraining(60, max_length=40, seed=42,
+                                    loader=FakeLoader({REDPAJAMA_PATH: table}))
+
+    counts = {name: sum(1 for r in produced if r["source"] == name) for name in PRETRAINING_SOURCES}
+    assert counts["redpajama_github"] == 5           # allocated 10, only five exist
+    assert counts["redpajama_arxiv"] == 10
+    # The sparse source never fills its shortlist, so the scan cannot stop early: every row is read.
+    assert set(table.reads) == set(range(len(rows)))
 
 
 def test_download_pretraining_allocates_across_sources_and_truncates():

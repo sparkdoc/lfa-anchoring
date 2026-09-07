@@ -50,10 +50,15 @@ from lfa.artifact.schema import (EMBEDDING_LOOKUP_KEY, LM_HEAD_SITE, META_KEY, S
 MR = Path("/path/to/the research code")
 OUT = Path("release"); OUT.mkdir(exist_ok=True)
 
+# These statistics were collected by the research code, not by this package. `built_with` says so;
+# `lfa_version`, which make_meta fills in itself, records who wrote the block.
+RESEARCH_BUILT = "the research code (research code); meta block added by lfa-anchoring"
+
 # --- the recipe artifact: correlated basis + K=32 mixture per site, blockwise int8
 params = load_artifact(MR / "data/distributions/qwen3-0.6b-gmm1543k-int8/distribution_stats.pt")
 params[META_KEY] = make_meta(model_id="Qwen/Qwen3-0.6B", hidden_size=1024, num_layers=28,
-                             sites=list(SITES) + [LM_HEAD_SITE], n_samples_total=1_543_040)
+                             sites=list(SITES) + [LM_HEAD_SITE], n_samples_total=1_543_040,
+                             built_with=RESEARCH_BUILT)
 save_artifact(params, OUT / "qwen3-0.6b-gmm1543k-int8.pt", quantize=True)
 
 # --- the diagonal budget floor, WITHOUT its ~312 MB layer-0 lookup table: that table is
@@ -64,12 +69,15 @@ diagonal = load_artifact(MR / "data/distributions/qwen3-0.6b-1200k-10to1-uniform
 lookup = diagonal[EMBEDDING_LOOKUP_KEY]
 diagonal[EMBEDDING_LOOKUP_KEY] = {"token_frequencies": lookup["token_frequencies"]}
 diagonal[META_KEY] = make_meta(model_id="Qwen/Qwen3-0.6B", hidden_size=1024, num_layers=28,
-                               sites=list(SITES) + [LM_HEAD_SITE], n_samples_total=1_200_000)
+                               sites=list(SITES) + [LM_HEAD_SITE], n_samples_total=1_200_000,
+                               built_with=RESEARCH_BUILT)
 save_artifact(diagonal, OUT / "qwen3-0.6b-diagonal.pt", quantize=True)
 ```
 
 `n_samples_total` is a **per-site** count, never a sum across sites: 1,543,040 for the recipe
-artifact (what `gmm1543k` rounds) and 1,200,000 for the diagonal one.
+artifact (what `gmm1543k` rounds) and 1,200,000 for the diagonal one. `built_with` defaults to
+`"lfa-anchoring"`, which would be a false provenance here — these statistics are the research
+code's — so both calls pass it explicitly.
 
 Rehearsed output: `qwen3-0.6b-gmm1543k-int8.pt` **112.8 MB**, `qwen3-0.6b-diagonal.pt` **1.1 MB**
 (dropping a `(151936, 1024)` table). Those are the sizes to expect; if the diagonal file comes out
@@ -133,7 +141,7 @@ Verify:
 ```bash
 lfa list-artifacts                                     # both rows say "published"
 cd "$(mktemp -d)" && lfa fetch-artifact qwen3-0.6b-gmm1543k-int8 --dest .
-lfa fetch-artifact qwen3-0.6b-gmm1543k-int8 --dest .    # again: verified in place, not re-downloaded
+lfa fetch-artifact qwen3-0.6b-gmm1543k-int8 --dest .    # again: verified, not re-downloaded
 ```
 
 `fetch_artifact` downloads to `<name>.part`, hashes it, and only then moves it into place, so an
