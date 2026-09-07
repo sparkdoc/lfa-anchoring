@@ -18,8 +18,17 @@
 # and it is epoch 15 of a 100-EPOCH cosine horizon (`schedule_horizon_epochs: 100`): the learning
 # rate is still near its peak at that point, where a 15-epoch horizon would have decayed it to the
 # floor by the same step. Training stops at `epochs` whatever the horizon says. Dose is a
-# preservation-versus-quality dial rather than a converged endpoint -- e20 is the JUDGE-OPTIMAL
-# dose of the same run -- which is why checkpointing keeps every fifth epoch.
+# preservation-versus-quality dial rather than a converged endpoint: e20 is the JUDGE-OPTIMAL dose
+# of the same 100-epoch schedule, and reaching it means setting `epochs: 20` (the horizon stays at
+# 100 -- do not shorten it, or the learning rate is no longer the one those numbers were measured
+# under). With `epochs: 15` the checkpoints written are e5/e10/e15; `checkpoint_every: 5` is what
+# keeps the intermediate doses of a run comparable with each other.
+#
+# `keep_short_whole: true` deliberately differs from the research code, where a document shorter
+# than the epoch's random chunk offset is dropped for that epoch. It is a frame field: a run under
+# either setting is not comparable with a run under the other, and the paper's perplexity points
+# were measured under `false` (pass `keep_short_whole=False` to `to_train_config` to reproduce
+# them).
 #
 # Full-weight training (`full_weight: true`) is outside the paper's validated envelope: every
 # published LFA result is LoRA. If you go there, calibrate lambda in 50,000-100,000 and check

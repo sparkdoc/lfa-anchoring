@@ -18,7 +18,14 @@ deliberately:
   says (see :class:`lfa.train.TrainConfig`).
 * ``checkpoint_mode="all"`` with ``checkpoint_every=5``, because dose is a preservation-quality
   dial rather than a converged endpoint -- e15 is the perplexity-optimal shipped point and e20 the
-  judge-optimal one, and only a run that keeps its intermediate checkpoints can report both.
+  judge-optimal one. Reaching e20 means raising ``epochs`` to 20 (the horizon stays at 100); what
+  ``checkpoint_every=5`` buys is that the intermediate doses of a run stay comparable with each
+  other, since e5/e10/e15 are on disk rather than only the endpoint.
+* ``keep_short_whole=True`` deliberately differs from the research code, where a document shorter
+  than the epoch's random chunk offset is dropped for that epoch. It is a *frame* field: a run
+  under either setting is not comparable with a run under the other, and the paper's perplexity
+  points were measured under ``False`` -- pass ``keep_short_whole=False`` to
+  :meth:`Recipe.to_train_config` to reproduce them.
 
 ``Recipe.load`` resolves a bare name against the recipes bundled inside the package, so it works
 from an installed wheel and from any working directory; anything that looks like a path is read as
@@ -153,6 +160,13 @@ class Recipe:
         unknown = sorted(set(data) - known)
         if unknown:
             raise ValueError(f"{path}: unknown recipe field(s): {', '.join(unknown)}")
+        # A field with no default is one the recipe cannot be guessed for; naming it here beats
+        # the bare `TypeError` the constructor would raise, which names neither the file nor YAML.
+        required = {f.name for f in fields(cls) if f.default is dataclasses.MISSING
+                    and f.default_factory is dataclasses.MISSING}
+        missing = sorted(required - set(data))
+        if missing:
+            raise ValueError(f"{path}: missing required recipe field(s): {', '.join(missing)}")
         return cls(**data)
 
     def save(self, path: str | Path) -> Path:
@@ -220,9 +234,13 @@ class Recipe:
         allowed, it just is not the measured operating point.
         """
         notes: list[str] = []
+        # The two site families can carry different lambdas; quoting one of them as "the lambda"
+        # would misreport the recipe whenever they differ.
+        quoted = (f"{self.lambda_qkv:g}" if self.lambda_qkv == self.lambda_mlp
+                  else f"qkv {self.lambda_qkv:g}, mlp {self.lambda_mlp:g}")
         if rank != self.calibrated_rank:
             notes.append(
-                f"lambda is coupled to LoRA rank: this recipe's lambda ({self.lambda_qkv:g}) was "
+                f"lambda is coupled to LoRA rank: this recipe's lambda ({quoted}) was "
                 f"calibrated at rank {self.calibrated_rank} and you are running rank {rank}. "
                 "Lambda constrains motion inside the rank-r update subspace, so the same value "
                 "binds harder at a lower rank -- re-tune it rather than porting it (lower rank "

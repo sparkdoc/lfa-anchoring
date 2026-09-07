@@ -54,6 +54,14 @@ def test_yaml_documents_the_couplings_a_reader_has_to_know():
         assert phrase in comments, f"the recipe's comment block never mentions {phrase!r}"
 
 
+def test_yaml_discloses_keep_short_whole_as_a_frame_field():
+    """It departs from the research code, under which the paper's perplexity points were measured."""
+    comments = "\n".join(line for line in (BUNDLED_DIR / "qwen3-0.6b.yaml").read_text().splitlines()
+                         if line.lstrip().startswith("#")).lower()
+    assert "keep_short_whole" in comments and "frame field" in comments
+    assert "not comparable" in comments and "false" in comments
+
+
 # ==============================================================================================
 # to_train_config
 # ==============================================================================================
@@ -79,7 +87,8 @@ def test_the_fifteen_epoch_dose_keeps_its_hundred_epoch_schedule_horizon(tmp_pat
     assert config.schedule_horizon_epochs == 100
 
 
-def test_checkpointing_keeps_every_dose_reachable(tmp_path):
+def test_checkpointing_keeps_the_intermediate_doses_comparable(tmp_path):
+    """e5/e10/e15 land on disk; e20 is a different `epochs`, not something this run reaches."""
     config = Recipe.load("qwen3-0.6b").to_train_config(1, tmp_path / "stats.pt")
     assert config.checkpoint_mode == "all"
     assert config.checkpoint_every == 5
@@ -127,6 +136,12 @@ def test_a_different_rank_warns_that_lambda_must_be_retuned():
     [warning] = Recipe.load("qwen3-0.6b").warnings(16, "qwen3-0.6b-gmm1543k-int8")
     assert "rank" in warning and "16" in warning and "32" in warning
     assert "re-tune" in warning.lower()
+
+
+def test_the_rank_warning_quotes_both_lambdas_when_they_differ():
+    recipe = dataclasses.replace(Recipe.load("qwen3-0.6b"), lambda_mlp=50000.0)
+    [warning] = recipe.warnings(16, "qwen3-0.6b-gmm1543k-int8")
+    assert "100000" in warning and "50000" in warning
 
 
 def test_a_different_artifact_warns_on_its_own():
@@ -180,6 +195,13 @@ def _write(tmp_path, **overrides):
     path = tmp_path / "probe.yaml"
     path.write_text(yaml.safe_dump({**SHIPPED, **overrides}))
     return path
+
+
+def test_a_missing_required_field_is_named(tmp_path):
+    path = tmp_path / "probe.yaml"
+    path.write_text(yaml.safe_dump({k: v for k, v in SHIPPED.items() if k not in ("name", "artifact")}))
+    with pytest.raises(ValueError, match="missing required recipe field.*artifact, name"):
+        Recipe.load(path)
 
 
 def test_epochs_must_be_at_least_one(tmp_path):
