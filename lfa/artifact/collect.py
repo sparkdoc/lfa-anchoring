@@ -169,6 +169,7 @@ def collect_hidden_states(
     token_frequencies: bool = True,
     progress: bool = True,
     dtype: torch.dtype = torch.float32,
+    seed: int | None = None,
 ) -> tuple[dict[str, SiteStats], torch.Tensor | None]:
     """Run ``texts`` through ``model`` and accumulate statistics at every anchoring site.
 
@@ -195,6 +196,8 @@ def collect_hidden_states(
             sampling. Counts run to ``len(tokenizer)``, which can be shorter than the embedding
             table (Qwen3: 151669 vs 151936) -- the sampler handles the shorter prefix.
         dtype: reservoir storage dtype (see :class:`SiteStats`).
+        seed: seeds the reservoir's replacement draws, making which vectors are kept reproducible.
+            ``None`` draws from the global RNG.
 
     Returns:
         ``(stats, token_counts)``: statistics keyed ``f"{layer}_{site}"``, and raw token counts
@@ -213,8 +216,12 @@ def collect_hidden_states(
         targets.append((site_key(num_layers, LM_HEAD_SITE),
                         adapter.site_module(model, num_layers, LM_HEAD_SITE)))
 
+    # One generator shared by every site: the sites see the same vectors in the same order, so
+    # sharing keeps their reservoirs decorrelated rather than identically sampled.
+    generator = None if seed is None else torch.Generator().manual_seed(seed)
     stats: dict[str, SiteStats] = {
-        key: SiteStats(reservoir_size=reservoir_size, dtype=dtype) for key, _ in targets
+        key: SiteStats(reservoir_size=reservoir_size, dtype=dtype, generator=generator)
+        for key, _ in targets
     }
     mask_holder: dict[str, torch.Tensor | None] = {"mask": None}
 

@@ -384,8 +384,14 @@ class Sampler:
         self._embed_moments = None  # derived from the table -- must not survive a new one
 
     def has_embedding_lookup(self) -> bool:
-        """Whether the exact layer-0 pre_qkv lookup table is available."""
-        return "embedding_lookup" in self.params
+        """Whether the exact layer-0 pre_qkv lookup table is available.
+
+        The key alone is not enough: a built artifact ships a frequencies-only stub (the table is
+        ~300 MB and exactly reconstructible), so this asks for the table itself. Until
+        :meth:`build_embedding_lookup_from_model` has run, layer-0 pre_qkv has no statistics at
+        all and :meth:`sample_best` returns ``None`` rather than raising on the missing table.
+        """
+        return "pre_qkv_table" in (self.params.get("embedding_lookup") or {})
 
     def _load_embedding_lookup(self) -> None:
         """Lazily move the lookup table (and frequencies) onto the sampling device, once."""

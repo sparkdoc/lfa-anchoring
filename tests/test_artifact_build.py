@@ -5,6 +5,7 @@ reservoir cut down so the whole file stays inside a couple of seconds.
 """
 
 import copy
+import inspect
 import json
 
 import pytest
@@ -21,6 +22,7 @@ from lfa.artifact.schema import (
     load_artifact,
     validate_against_model,
 )
+from lfa.losses import anchor_loss
 from lfa.sampler import Sampler
 
 EXPECTED_KEYS = {"0_pre_o", "0_pre_mlp", "1_pre_qkv", "1_pre_o", "1_pre_mlp", "2_pre_lm_head"}
@@ -289,3 +291,53 @@ def test_built_gmm_head_reproduces_the_site_distribution(built):
     assert ((x.mean(0) - entry["mean"]).abs() < 0.25 * entry["std"]).all()
     ratio = x.std(0) / entry["std"]
     assert 0.85 < float(ratio.mean()) < 1.15
+
+
+def test_built_artifact_anchors_once_the_lookup_is_rebuilt(built, tiny_model):
+    """Layer-0 pre_qkv is unavailable until the table is rebuilt from the teacher, and available
+    -- not raising -- after; `anchor_loss` must run over a freshly built artifact either way."""
+    model, _ = tiny_model
+    adapter = get_adapter(model)
+
+    sampler = Sampler(built, device="cpu", seed=0)
+    assert sampler.has_embedding_lookup() is False
+    assert sampler.sample_best(0, "pre_qkv", 4) is None
+
+    sampler.build_embedding_lookup_from_model(model, adapter)
+    assert sampler.sample_best(0, "pre_qkv", 4).shape == (4, 32)
+
+    student = copy.deepcopy(model)
+    with torch.no_grad():
+        student.model.layers[1].mlp.down_proj.weight.add_(0.05)
+    out = anchor_loss(model, student, sampler, adapter, n_samples=4)
+    assert out["total"].item() > 0 and torch.isfinite(out["total"])
+
+
+def test_build_defaults_to_an_fp16_reservoir(built):
+    """fp32 reservoirs are ~92 GB for Qwen3-0.6B in one group; fp16 is the shipped default."""
+    assert inspect.signature(build_artifact).parameters["dtype"].default is torch.float16
+
+
+def test_build_honours_reservoir_size(tmp_path, model_dir, corpus_file):
+    """A reservoir of 3 caps the mixture at 3 components, whatever `gmm_k` asks for."""
+    out = tmp_path / "small_reservoir.pt"
+    build_artifact(str(model_dir), corpus_file, out, max_samples=1000, seq_len=128,
+                   reservoir_size=3, pca_variance=0.9, gmm_k=8, quantize=False,
+                   device="cpu", seed=0)
+    params = load_artifact(out)
+    assert all(params[k]["gmm_n_components"] == 3 for k in EXPECTED_KEYS)
+
+
+def test_collect_reservoir_is_seeded(tiny_model, build_texts):
+    model, tokenizer = tiny_model
+    adapter = get_adapter(model)
+
+    def run(seed):
+        stats, _ = collect_hidden_states(model, tokenizer, adapter, build_texts,
+                                         max_samples=10_000, seq_len=128, batch_size=8,
+                                         reservoir_size=64, device="cpu", progress=False,
+                                         token_frequencies=False, seed=seed)
+        return stats["1_pre_mlp"].reservoir
+
+    assert torch.equal(run(11), run(11))
+    assert not torch.equal(run(11), run(12))

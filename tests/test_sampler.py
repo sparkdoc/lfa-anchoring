@@ -32,3 +32,21 @@ def test_gmm_marginal_mean_close(tiny_artifact):
     x = s.sample_gmm(1, "pre_mlp", 20000)
     e = params["1_pre_mlp"]; V = e["pca_components"]; mix_mean = (e["gmm_weights"][:, None] * e["gmm_means"]).sum(0)
     assert torch.allclose(x.mean(0), e["mean"] + mix_mean @ V.T, atol=0.05)
+
+def test_frequencies_only_stub_is_not_a_lookup(tiny_artifact, tiny_model, tmp_path):
+    """A built artifact ships token frequencies without the table; layer-0 pre_qkv is then simply
+    unavailable, not a KeyError waiting inside `sample_best`."""
+    params, _ = tiny_artifact; model, _ = tiny_model
+    stub = {k: v for k, v in params.items()}
+    stub["embedding_lookup"] = {"token_frequencies": torch.ones(256) / 256}
+    path = tmp_path / "stub.pt"; torch.save(stub, path)
+
+    s = Sampler(path, device="cpu", seed=0)
+    assert s.has_embedding_lookup() is False
+    assert s.sample_best(0, "pre_qkv", 4) is None
+
+    s.build_embedding_lookup_from_model(model, get_adapter(model))
+    assert s.has_embedding_lookup() is True
+    assert s.sample_best(0, "pre_qkv", 4).shape == (4, 32)
+    # the frequencies from the stub survive the rebuild and still drive weighted sampling
+    assert "token_frequencies" in s.params["embedding_lookup"]

@@ -1,5 +1,14 @@
-"""The LFA p(h) artifact: its on-disk schema, and the helpers that read and write it."""
+"""The LFA p(h) artifact: its on-disk schema, and the pipeline that builds, reads and writes it.
 
+:mod:`~lfa.artifact.schema` defines the format; :mod:`~lfa.artifact.collect` accumulates a model's
+hidden-state statistics over a seed corpus; :mod:`~lfa.artifact.fit` turns one site's statistics
+into an entry (PCA basis, then a GMM head in it); :mod:`~lfa.artifact.build` runs the three
+end to end and saves the file the anchor samples from.
+"""
+
+from .build import build_artifact
+from .collect import SiteStats, collect_hidden_states
+from .fit import TorchGMM, fit_site
 from .schema import (
     EMBEDDING_LOOKUP_KEY,
     LM_HEAD_SITE,
@@ -15,6 +24,11 @@ from .schema import (
 )
 
 __all__ = [
+    "build_artifact",
+    "collect_hidden_states",
+    "fit_site",
+    "SiteStats",
+    "TorchGMM",
     "SITES",
     "LM_HEAD_SITE",
     "META_KEY",

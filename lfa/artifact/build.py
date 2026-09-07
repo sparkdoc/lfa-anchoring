@@ -54,13 +54,15 @@ def build_artifact(
     *,
     max_samples: int = 1_500_000,
     seq_len: int = 512,
+    batch_size: int = 8,
+    reservoir_size: int = 200_000,
     pca_variance: float = 0.95,
     gmm_k: int = 32,
     layer_group_size: int | None = None,
     quantize: bool = True,
     device: str = "cuda:0",
     seed: int = 0,
-    dtype: torch.dtype = torch.float32,
+    dtype: torch.dtype = torch.float16,
 ) -> Path:
     """Collect, fit and save the p(h) artifact for ``model_id`` over ``corpus_path``.
 
@@ -72,20 +74,34 @@ def build_artifact(
         out_path: where to write ``distribution_stats.pt``.
         max_samples: hidden vectors to collect per site.
         seq_len: tokenizer truncation length.
+        batch_size: documents per forward pass.
+        reservoir_size: raw vectors retained per site for the GMM fit. This is what the build
+            costs in host RAM -- see below.
         pca_variance: variance the stored basis must span.
         gmm_k: mixture components per site.
         layer_group_size: collect this many layers at a time instead of all at once, then fit and
-            free before the next group. The reservoir dominates memory (``sites x reservoir_size x
-            D``), so grouping is what keeps a large model in RAM -- at the cost of one corpus pass
-            per group. ``None`` (all sites at once) is right for a 0.6B model; use ~7 for larger.
+            free before the next group, at the cost of one corpus pass per group. ``None`` keeps
+            every site live at once, which is only viable when the arithmetic below fits.
         quantize: store the large fields blockwise-int8 (halves the file; dequantized on load).
         device: device to run collection on.
         seed: base seed -- the reservoir's draws and each site's GMM initialization derive from it.
-        dtype: storage dtype of the retained reservoir samples. float16 halves its memory, which
-            is what the shipped qwen3-0.6b artifact used.
+        dtype: storage dtype of the retained reservoir samples. fp16 (the default, and what the
+            shipped qwen3-0.6b artifact used) halves the figures below; fp32 keeps the samples
+            exact and doubles them.
 
     Returns:
         The path written.
+
+    Note:
+        **Host RAM is the binding constraint, and it is the reservoirs.** One site costs
+        ``reservoir_size * D * itemsize`` bytes, where ``D`` is that site's own width -- which for
+        ``pre_o`` is ``num_heads * head_dim``, twice the hidden size on Qwen3-0.6B. For that model
+        (28 layers, hidden 1024, ``pre_o`` 2048) at the default 200k reservoir in fp16: 56 sites of
+        width 1024 at 0.41 GB, plus 28 ``pre_o`` sites at 0.82 GB, is **~46 GB in one group** (~92 GB
+        in fp32) -- so ``layer_group_size=None`` is *not* what to run it with. ``layer_group_size=7``
+        holds 14 narrow sites and 7 wide ones, **~12 GB per group** in fp16, in four corpus passes.
+        The float64 covariance accumulators add ``D * D * 8`` bytes per site (~1.6 GB across all 84
+        sites of that model), which is small beside the reservoirs but not nothing.
 
     Note:
         The model is loaded in float32 rather than bf16: the artifact is a second-moment estimate,
@@ -118,9 +134,10 @@ def build_artifact(
     for index, group in enumerate(groups):
         stats, counts = collect_hidden_states(
             model, tokenizer, adapter, texts,
-            max_samples=max_samples, seq_len=seq_len, sites=SITES,
+            max_samples=max_samples, seq_len=seq_len, batch_size=batch_size,
+            reservoir_size=reservoir_size, sites=SITES,
             include_lm_head=(index == len(groups) - 1), layers=group,
-            device=device, token_frequencies=(index == 0), dtype=dtype,
+            device=device, token_frequencies=(index == 0), dtype=dtype, seed=seed,
         )
         if counts is not None:
             token_counts = counts
