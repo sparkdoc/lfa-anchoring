@@ -21,6 +21,7 @@ import torch
 
 from lfa.corpus import ChunkedCorpus
 from lfa.evaluate import (
+    DatasetUnavailable,
     domain_perplexity,
     perplexity_table,
     sequence_perplexity,
@@ -191,6 +192,29 @@ def test_wikitext2_perplexity_sliding_window(tiny_model):
                                device="cpu")
     assert math.isfinite(ppl)
     assert ppl > 1.0
+
+
+def test_an_unreachable_wikitext_split_names_the_way_out(tiny_model, monkeypatch):
+    """No network is the ordinary case for the general axis, and it is not a bug.
+
+    The refusal names `--n-windows none`, which is what the quickstart offers as the offline
+    route, so the reader is told the way out rather than only the problem.
+    """
+    import datasets
+
+    def unreachable(*args, **kwargs):
+        raise ConnectionError("Couldn't reach https://huggingface.co")
+
+    monkeypatch.setattr(datasets, "load_dataset", unreachable)
+    model, tokenizer = tiny_model
+
+    with pytest.raises(DatasetUnavailable) as failure:
+        wikitext2_perplexity(model, tokenizer, n_windows=3, stride=64, device="cpu")
+
+    message = str(failure.value)
+    assert "WikiText-2" in message
+    assert "--n-windows none" in message
+    assert isinstance(failure.value.__cause__, ConnectionError)   # the reason is kept
 
 
 @pytest.mark.parametrize("stride, max_length, seq_len", [(512, 2048, 1000), (100, 250, 1000)])

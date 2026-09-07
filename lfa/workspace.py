@@ -856,9 +856,11 @@ class Workspace:
     def _general(model, tokenizer, n_windows, placement) -> float | None:
         """WikiText-2 perplexity, or ``None`` when the split is not reachable.
 
-        The exception net is wide on purpose: a missing ``datasets``, an offline cache, a Hub
-        outage and a failed download all surface differently, and none of them is a reason to
-        lose the domain number the caller came for. The reason is logged with the failure.
+        A Hub failure arrives as :class:`lfa.evaluate.DatasetUnavailable` and is *not* passed on:
+        it is logged and the axis is reported unmeasured, because an offline machine should still
+        get the domain number it came for. The net stays wide beyond that class, since a model
+        that cannot be scored is likewise not a reason to lose the domain number, and the reason
+        is logged either way.
         """
         if n_windows is None:
             return None
@@ -965,9 +967,19 @@ class Workspace:
 
         Returns:
             The history entries the chain appended, in order.
+
+        Raises:
+            ValueError: the spec is not valid YAML, is not a mapping, has no non-empty
+                ``domains`` list, has a domain without a ``corpus``, or asks not to extend
+                between domains. Each names the spec file.
         """
         spec_path = Path(spec_path)
-        spec = yaml.safe_load(spec_path.read_text()) or {}
+        try:
+            spec = yaml.safe_load(spec_path.read_text()) or {}
+        except yaml.YAMLError as error:
+            # As in `Recipe.load`: a typo in the spec is a ValueError naming the file, not a
+            # parser traceback from inside yaml.
+            raise ValueError(f"{spec_path}: not valid YAML ({error})") from error
         if not isinstance(spec, dict):
             raise ValueError(f"{spec_path}: a chain spec must be a YAML mapping.")
         domains = spec.get("domains")

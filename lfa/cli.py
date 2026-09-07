@@ -30,6 +30,7 @@ import sys
 from .artifact.build import build_artifact
 from .artifact.fetch import (ArtifactNotPublished, ChecksumMismatch, fetch_artifact,
                              list_artifacts)
+from .evaluate import DatasetUnavailable
 from .models import DEFAULT_DEVICE, NoTrainableParameters, ShardingRefused
 from .prepare_domain import prepare_domain
 from .seed_corpus import SourceUnavailable, prepare_seed_corpus
@@ -41,8 +42,9 @@ __all__ = ["main"]
 #: Every exception the library raises **at the user** rather than at a caller: a chain out of
 #: order, a workspace that is not there or is already there or is not ready for what was asked, a
 #: device map that would shard the model, an artifact that is unpublished or arrives corrupted, a
-#: seed-corpus dataset that cannot be reached, a resume with no adapter to continue, a student with
-#: nothing trainable, and any value a recipe or a flag fails validation on. Each carries a message
+#: dataset that cannot be reached (the seed corpus, or WikiText-2 for the general axis), a resume
+#: with no adapter to continue, a student with nothing trainable, and any value a recipe, a chain
+#: spec or a flag fails validation on. Each carries a message
 #: written to be read, so each is reported as one line rather than as the last line of a traceback.
 #: Anything outside this tuple is a bug and keeps its traceback.
 #:
@@ -51,7 +53,7 @@ __all__ = ["main"]
 #: their traceback rather than be collapsed to a line.
 USER_FACING_ERRORS = (
     StageOrderError, WorkspaceNotReady, ShardingRefused, ArtifactNotPublished, ChecksumMismatch,
-    SourceUnavailable, ResumeSourceHasNoAdapter, NoTrainableParameters,
+    SourceUnavailable, DatasetUnavailable, ResumeSourceHasNoAdapter, NoTrainableParameters,
     FileNotFoundError, FileExistsError, ValueError,
 )
 

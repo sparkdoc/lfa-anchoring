@@ -252,6 +252,58 @@ def test_a_seed_corpus_source_that_cannot_be_loaded_exits_two_with_one_line(tmp_
     assert "RedPajama" in lines[0]
 
 
+def test_evaluate_keeps_the_domain_axis_when_the_hub_is_unreachable(trained, monkeypatch, capsys):
+    """An offline machine still gets the domain number: the general axis is skipped, not fatal.
+
+    `Workspace._general` catches the `DatasetUnavailable` that `lfa.evaluate` now raises instead
+    of a `datasets` traceback, so the command still exits 0 and prints the table with the general
+    row replaced by a line that says it was not measured.
+    """
+    import datasets
+
+    def unreachable(*args, **kwargs):
+        raise ConnectionError("Couldn't reach https://huggingface.co")
+
+    monkeypatch.setattr(datasets, "load_dataset", unreachable)
+    capsys.readouterr()
+
+    code = main(["evaluate", "--workspace", str(trained), "--device", "cpu"])
+
+    assert code == 0
+    captured = capsys.readouterr()
+    assert "Traceback" not in captured.err
+    assert "domain" in captured.out
+    assert "not measured" in captured.out
+
+
+@pytest.mark.parametrize("broken", ["recipe", "chain spec"])
+def test_a_yaml_file_that_does_not_parse_exits_two_with_one_line(broken, tmp_path, registry,
+                                                                 base_dir, corpus_a, capsys):
+    """A typo in a YAML file is a user's mistake, and it names the file like every other one.
+
+    The semantic failures already did (a non-mapping, an unknown field, a missing `domains`); only
+    the parse error escaped, as `yaml.parser.ParserError`.
+    """
+    workspace = tmp_path / "ws"
+    assert main(["init", str(workspace), "--model", str(base_dir), "--artifact", "tiny"]) == 0
+    broken_file = tmp_path / f"{broken.split()[0]}.yaml"
+    broken_file.write_text("domains: [\n  - name: alpha")          # unterminated flow sequence
+    capsys.readouterr()
+
+    if broken == "recipe":
+        argv = ["train", "--workspace", str(workspace), "--corpus", str(corpus_a),
+                "--recipe", str(broken_file), "--device", "cpu"]
+    else:
+        argv = ["chain", str(broken_file), "--workspace", str(workspace), "--device", "cpu"]
+
+    code = main(argv)
+
+    assert code == 2
+    lines = error_lines(capsys)                  # asserts there is no traceback
+    assert len(lines) == 1
+    assert broken_file.name in lines[0] and "not valid YAML" in lines[0]
+
+
 def test_a_directory_that_is_not_a_workspace_exits_two_with_one_line(tmp_path, corpus_a,
                                                                      recipe_path, capsys):
     code = main(["train", "--workspace", str(tmp_path), "--corpus", str(corpus_a),

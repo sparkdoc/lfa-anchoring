@@ -108,9 +108,15 @@ The artifact build is the expensive part, and you do it once per model, not per 
 ## When something is refused
 
 The library raises rather than guesses, and the CLI prints those refusals as one line and exits 2:
-a chain out of order, a workspace that is not there or already is, a device map that would shard,
-an artifact that is not published, a recipe field that does not validate. The message ends with
-what to do instead. Anything that comes back as a traceback is a bug in this package.
+a chain out of order, a workspace that is not there or already is or has not trained anything yet
+(what `fuse` and `evaluate` say), a workspace with no p(h) artifact, a device map that would shard,
+an artifact that is not published, a dataset that cannot be reached, and a recipe or chain spec
+that does not parse or does not validate. The message ends with what to do instead. Anything that
+comes back as a traceback is a bug in this package.
+
+One failure is deliberately *not* a refusal: if WikiText-2 cannot be fetched, `evaluate` says so
+and reports the general axis as unmeasured rather than losing the domain number you came for.
+`--n-windows none` asks for that on purpose.
 
 ## Next
 

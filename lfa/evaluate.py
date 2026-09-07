@@ -42,6 +42,7 @@ __all__ = [
     "GENERAL_ROW",
     "DOMAIN_ROW",
     "DOMAIN_BATCH_SIZE",
+    "DatasetUnavailable",
     "sequence_perplexity",
     "wikitext2_perplexity",
     "domain_perplexity",
@@ -51,6 +52,22 @@ __all__ = [
 #: Row labels of :func:`perplexity_table`, keyed in its inputs by ``"general"`` and ``"domain"``.
 GENERAL_ROW = "general (WikiText-2)"
 DOMAIN_ROW = "domain"
+
+class DatasetUnavailable(RuntimeError):
+    """Raised when the WikiText-2 test split cannot be loaded.
+
+    The general axis is the one measurement here that is not computed from the caller's own files:
+    it reads a dataset from the Hugging Face Hub. No network, an offline cache that does not hold
+    it, or a moved dataset id are all ordinary situations rather than bugs, so this arrives as one
+    line naming the way out (``--n-windows none`` scores the domain axis alone) rather than as a
+    ``datasets`` traceback. It is in :data:`lfa.cli.USER_FACING_ERRORS`.
+
+    :meth:`lfa.workspace.Workspace.evaluate` does not let it out at all: it logs the reason and
+    reports the general axis as unmeasured, because an offline machine should still get the domain
+    number. This class is what a *direct* caller of :func:`wikitext2_perplexity` sees, and what
+    that log line names.
+    """
+
 
 #: Batch size for :func:`domain_perplexity`, as in the research code's plain-perplexity path. The result
 #: is token-weighted, so this trades memory against speed and not accuracy -- except that a batch
@@ -155,9 +172,20 @@ def _wikitext2_tokens(tokenizer, n_windows: int, stride: int) -> torch.Tensor:
     ``n_windows * stride`` tokens -- a deterministic prefix, no sampling. ``n_windows <= 0``
     keeps the full split.
     """
-    from datasets import load_dataset
+    try:
+        from datasets import load_dataset
 
-    dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
+        dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
+    except Exception as error:                       # noqa: BLE001 - see DatasetUnavailable
+        # Wide on purpose: a missing `datasets`, an offline cache, a Hub outage and a failed
+        # download all surface differently, and none of them is a defect in this package.
+        raise DatasetUnavailable(
+            "Could not load the WikiText-2 test split for the general axis "
+            f"({type(error).__name__}: {error}). It is read from the Hugging Face Hub, so this is "
+            "usually no network or an offline cache that does not hold it. Pass "
+            "`--n-windows none` (or `n_windows=None`) to skip the general axis and score the "
+            "domain alone."
+        ) from error
     text = "\n\n".join(dataset["text"])
     input_ids = tokenizer(text, return_tensors="pt")["input_ids"].squeeze(0)
 

@@ -137,8 +137,9 @@ class Recipe:
         Raises:
             FileNotFoundError: No such bundled recipe (the message lists the ones there are) or no
                 such file.
-            ValueError: The file carries a field this class does not have, or a value that fails
-                validation.
+            ValueError: The file is not valid YAML, or carries a field this class does not have,
+                or a value that fails validation. All three name the file, because a recipe is
+                usually one of several on disk and "which one" is the first thing to know.
         """
         path = Path(name_or_path)
         if path.suffix.lower() not in (".yaml", ".yml") and not path.exists():
@@ -152,7 +153,13 @@ class Recipe:
         if not path.is_file():
             raise FileNotFoundError(f"no recipe file at {path}")
 
-        data = yaml.safe_load(path.read_text()) or {}
+        try:
+            data = yaml.safe_load(path.read_text()) or {}
+        except yaml.YAMLError as error:
+            # A parse error is a user's typo, not a bug: it arrives as a ValueError naming the
+            # file, exactly as every semantic failure below does, rather than as a
+            # `yaml.parser.ParserError` traceback from inside the loader.
+            raise ValueError(f"{path}: not valid YAML ({error})") from error
         if not isinstance(data, dict):
             raise ValueError(f"{path}: a recipe file must be a YAML mapping, got {type(data).__name__}")
 
