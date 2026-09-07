@@ -9,6 +9,8 @@ Companion package for the LFA paper. Install:
 pip install -e '.[dev]'
 ```
 
+Tested with the versions in `constraints-tested.txt`.
+
 Then run the tests:
 
 ```bash
