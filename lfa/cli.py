@@ -77,7 +77,8 @@ def _open(args) -> Workspace:
 
 
 def _init(args) -> int:
-    workspace = Workspace.init(args.path, args.model, artifact=args.artifact, recipe=args.recipe)
+    workspace = Workspace.init(args.path, args.model, artifact=args.artifact,
+                               recipe=args.recipe, artifact_id=args.artifact_id)
     print(f"Workspace initialised at {workspace.path} over {args.model}")
     return 0
 
@@ -99,7 +100,7 @@ def _train(args) -> int:
     entry = _open(args).train(
         args.corpus, args.recipe, epochs=args.epochs, device=args.device,
         allow_sharding=args.allow_sharding, resume=args.resume,
-        keep_short_whole=args.keep_short_whole, full_weight=args.full_weight,
+        full_weight=args.full_weight,
     )
     loss = entry["final_loss"]
     cost = f" (final loss {loss:.4f})" if loss is not None else ""
@@ -190,6 +191,10 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--artifact", default="qwen3-0.6b-gmm1543k-int8", metavar="ID",
                       help="a published artifact id or a path to an artifact file "
                            "(default: %(default)s)")
+    init.add_argument("--artifact-id", dest="artifact_id", metavar="ID",
+                      help="the published artifact id a locally-passed artifact FILE is a copy "
+                           "of, so the recipe's calibration is read against it rather than "
+                           "against a path (ignored when --artifact is itself an id)")
     init.add_argument("--recipe", metavar="NAME",
                       help="the workspace's default recipe: a bundled name or a path (default: "
                            "the bundled recipe that names this model, if there is one)")
@@ -215,15 +220,11 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--recipe", metavar="NAME|PATH",
                        help="a bundled recipe name or a path (default: the workspace's own)")
     train.add_argument("--epochs", type=int, metavar="N",
-                       help="override the recipe's dose")
+                       help="override the recipe's number of epochs (the learning-rate schedule "
+                            "is laid over whatever this says)")
     train.add_argument("--full-weight", dest="full_weight", action="store_true", default=None,
                        help="train full weights instead of LoRA; outside the paper's validated "
                             "envelope")
-    train.add_argument("--keep-short-whole", dest="keep_short_whole",
-                       action=argparse.BooleanOptionalAction, default=None,
-                       help="keep a document that fits in one chunk in every epoch; "
-                            "--no-keep-short-whole reproduces the loader the paper's runs were "
-                            "measured under (default: the recipe's own setting)")
     train.add_argument("--resume", action="store_true",
                        help="continue the run already in this stage's output directory")
     _add_device(train, sharding=True)

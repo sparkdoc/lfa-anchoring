@@ -16,11 +16,11 @@ The two paths use completely separate data, which is what makes the method data-
 from the previously-learned domains is stored or replayed, and the preservation signal comes
 from the artifact plus the frozen teacher alone.
 
-Everything else here is bookkeeping around that step -- gradient accumulation, the
-warmup/plateau/cosine learning-rate schedule, per-epoch re-chunking of the corpus, checkpoints,
-and resume. Two guards earn their keep: a run whose optimizer steps produce a gradient norm of
-exactly zero is announced loudly rather than left to finish as a silent no-op, and full-weight
-training says up front that it is outside the paper's validated envelope.
+Everything else here is bookkeeping around that step -- gradient accumulation, the learning-rate
+schedule, per-epoch re-chunking of the corpus, per-epoch validation on the held-out documents,
+checkpoints, and resume. Two guards earn their keep: a run whose optimizer steps produce a
+gradient norm of exactly zero is announced loudly rather than left to finish as a silent no-op,
+and full-weight training says up front that it is outside the validated envelope.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ from torch.utils.data import DataLoader
 
 from .adapters import ModelAdapter
 from .corpus import ChunkedCorpus, make_dataloader
-from .losses import anchor_loss, compute_layer_weights, schedule_weight, weight_loss
+from .losses import anchor_loss, compute_layer_weights, weight_loss
 from .models import assert_trainable_params, load_adapter_for_training
 from .sampler import Sampler
 
@@ -49,6 +49,7 @@ logger = logging.getLogger("lfa.train")
 
 __all__ = [
     "TrainConfig",
+    "LR_SCHEDULES",
     "ResumeSourceHasNoAdapter",
     "StepMetrics",
     "EpochMetrics",
@@ -57,8 +58,14 @@ __all__ = [
     "EMBED_ANCHOR_DISABLED_NOTICE",
     "train_step",
     "train_epoch",
+    "validation_loss",
     "train",
 ]
+
+#: The learning-rate schedules a run may ask for. Both start with ``warmup_steps`` of linear
+#: warmup from 0.1x to 1.0x of ``learning_rate``; they differ in what follows.
+LR_SCHEDULES = ("cosine", "constant")
+
 
 class ResumeSourceHasNoAdapter(RuntimeError):
     """Raised when a LoRA run resumes from a checkpoint that saved no adapter."""
@@ -88,7 +95,7 @@ EMBED_ANCHOR_DISABLED_NOTICE = (
 
 @dataclass
 class TrainConfig:
-    """Every knob of an LFA run. The defaults are the paper's recipe.
+    """Every knob of an LFA run. The defaults are the shipped Qwen3-0.6B operating point.
 
     The recipe is a *joint* operating point, not a set of independent settings. In particular
     ``lambda_qkv``/``lambda_mlp`` are coupled to ``lora_rank``, to the artifact's sharpness, and
@@ -96,18 +103,15 @@ class TrainConfig:
     subspace, so the same lambda binds far harder at a lower rank, and a lambda carried across
     ranks or corpora is not the same regularizer. Re-tune it rather than porting it.
 
-    Learning rate schedule: ``warmup_steps`` of linear warmup (0.1x -> 1.0x), then a plateau
-    (constant, or a linear ramp down to ``plateau_end_factor``), then cosine decay over
-    ``cosine_fraction`` of the post-warmup steps to a floor of ``lr_floor * learning_rate``.
-    ``schedule_horizon_epochs`` is the number of epochs the schedule is laid over; ``None`` means
-    ``num_epochs``. They come apart deliberately: the paper's recipe *trains* 15 epochs of a
-    20-epoch cosine, so the schedule is two thirds spent at the dose that ships, where a 15-epoch
-    horizon would have decayed the learning rate to its floor by then. Training always stops at
-    ``num_epochs`` whatever the horizon says. The horizon is part of the measured operating point
-    in both directions -- lengthening it is as much a change as shortening it.
+    Learning rate schedule: ``warmup_steps`` of linear warmup (0.1x -> 1.0x of
+    ``learning_rate``), then either cosine decay over every remaining step of ``num_epochs`` to a
+    floor of ``lr_floor * learning_rate`` (``lr_schedule="cosine"``, the default) or a flat hold
+    at the peak (``lr_schedule="constant"``). The schedule is always laid over the epochs actually
+    trained, so a change of ``num_epochs`` is a change of the whole curve, not only of where it
+    stops.
 
-    Checkpoint modes: ``"none"`` writes only ``best_model``/``final_model``; ``"rolling"``
-    overwrites ``latest_model`` every ``checkpoint_every`` epochs; ``"all"`` accumulates
+    Checkpoint modes: ``"none"`` writes only ``final_model``; ``"rolling"`` overwrites
+    ``latest_model`` every ``checkpoint_every`` epochs; ``"all"`` accumulates
     ``checkpoint_epoch_N``. Both periodic modes also write ``training_state.pt``, so only they
     make a mid-run resume possible.
     """
@@ -119,7 +123,6 @@ class TrainConfig:
     lambda_qkv: float = 100000.0
     lambda_mlp: float = 100000.0
     mu: float = 0.05
-    mu_end_ratio: float = 1.0
     n_anchor_samples: int = 16
     anchor_end_ratio: float = 0.1
     anchor_schedule: str = "cosine"
@@ -130,23 +133,16 @@ class TrainConfig:
     weight_decay: float = 0.01
     max_grad_norm: float = 1.0
     warmup_steps: int = 50
-    cosine_fraction: float = 1.0
+    lr_schedule: str = "cosine"
     lr_floor: float = 0.0
-    plateau_end_factor: float = 1.0
     batch_size: int = 6
     gradient_accumulation_steps: int = 1
     num_epochs: int = 15
     sequence_length: int = 512
-    schedule_horizon_epochs: int | None = None
-
-    # -- lambda ramp across epochs (None = constant lambda)
-    lambda_end_ratio: float | None = None
-    lambda_schedule: str = "cosine"
 
     # -- checkpointing and logging
     checkpoint_mode: str = "none"
     checkpoint_every: int = 10
-    save_best_model: bool = True
     logging_steps: int = 10
 
     # -- LoRA / full weight
@@ -166,6 +162,13 @@ class TrainConfig:
     #: :func:`lfa.corpus.load_corpus` -- and recorded in ``config.json`` so a run says which
     #: documents it was allowed to see.
     val_fraction: float = 0.1
+
+    def __post_init__(self) -> None:
+        if self.lr_schedule not in LR_SCHEDULES:
+            raise ValueError(
+                f"lr_schedule must be one of {', '.join(LR_SCHEDULES)}, got "
+                f"{self.lr_schedule!r}."
+            )
 
     def to_dict(self) -> dict[str, Any]:
         """The config as a JSON-serializable dict (what lands in ``config.json``)."""
@@ -214,7 +217,6 @@ class TrainingState:
 
     epoch: int = 0
     global_step: int = 0
-    best_loss: float = float("inf")
     history: list[dict[str, Any]] = field(default_factory=list)
     #: Losses of the untrained student over the whole training set, measured before epoch 1.
     baseline: dict[str, float] | None = None
@@ -242,7 +244,6 @@ def train_step(
     config: TrainConfig,
     layer_weights: list[float] | None = None,
     accumulation_steps: int = 1,
-    lambda_scale: float = 1.0,
 ) -> tuple[torch.Tensor, StepMetrics]:
     """One micro-batch: content loss, function anchor, weight backstop.
 
@@ -253,7 +254,6 @@ def train_step(
         accumulation_steps: the returned loss is divided by this, so that accumulating
             ``accumulation_steps`` micro-batches gives the same gradient as one large batch. The
             reported metrics are *not* scaled -- they stay comparable across batch geometries.
-        lambda_scale: the epoch's multiplier on lambda and mu (see ``lambda_end_ratio``).
 
     Returns:
         ``(loss_to_backward, metrics)``.
@@ -262,14 +262,14 @@ def train_step(
 
     # The LM head and the embedding are two ends of one tied matrix, so both anchor at layer 0's
     # strength -- and both are pointless when freeze_embed has frozen that matrix.
-    lm_head_weight = config.lambda_qkv * lambda_scale if not config.freeze_embed else 0.0
+    lm_head_weight = config.lambda_qkv if not config.freeze_embed else 0.0
     include_embed = (
         config.lambda_qkv > 0
         and sampler is not None
         and sampler.has_embedding_lookup()
         and not config.freeze_embed
     )
-    embed_weight = config.lambda_qkv * lambda_scale if include_embed else 0.0
+    embed_weight = config.lambda_qkv if include_embed else 0.0
 
     # -- L_content: cross-entropy on the new domain's text
     attention_mask = batch.get("attention_mask")
@@ -295,8 +295,8 @@ def train_step(
             include_mlp=config.lambda_mlp > 0,
             include_lm_head=lm_head_weight > 0,
             include_embed=include_embed,
-            qkv_weight=config.lambda_qkv * lambda_scale,
-            mlp_weight=config.lambda_mlp * lambda_scale,
+            qkv_weight=config.lambda_qkv,
+            mlp_weight=config.lambda_mlp,
             lm_head_weight=lm_head_weight,
             embed_weight=embed_weight,
         )
@@ -307,19 +307,13 @@ def train_step(
         loss_lm_head = anchor.get("lm_head", 0.0)
         loss_embed = anchor.get("embed", 0.0)
 
-    # -- mu * L_weight: L2 toward the teacher, uniform over layers by default. mu catches the
-    # drift the function anchor does not price, so it gets its own schedule rather than the
-    # anchor's.
+    # -- mu * L_weight: L2 toward the teacher, UNIFORM over layers. mu catches the drift the
+    # function anchor does not price -- global shrinkage, deliberately not aimed anywhere -- so it
+    # does not take the anchor's layer schedule.
     loss_mu: Any = 0.0
     if config.mu > 0:
-        mu_layer_weights = None
-        if config.mu_end_ratio < 1.0:
-            mu_layer_weights = compute_layer_weights(
-                adapter.num_layers(teacher), end_ratio=config.mu_end_ratio,
-                schedule=config.anchor_schedule, normalize=True,
-            )
-        loss_mu = config.mu * lambda_scale * weight_loss(
-            teacher=teacher, student=student, adapter=adapter, layer_weights=mu_layer_weights,
+        loss_mu = config.mu * weight_loss(
+            teacher=teacher, student=student, adapter=adapter, layer_weights=None,
         )
 
     loss_total = (loss_content + loss_anchor + loss_mu) / accumulation_steps
@@ -362,7 +356,6 @@ def train_epoch(
     layer_weights: list[float] | None = None,
     global_step: int = 0,
     run_logger: logging.Logger | None = None,
-    lambda_scale: float = 1.0,
 ) -> tuple[EpochMetrics, int]:
     """One pass over ``dataloader`` with gradient accumulation.
 
@@ -433,7 +426,6 @@ def train_epoch(
         loss, last_metrics = train_step(
             student=student, teacher=teacher, batch=batch, sampler=sampler, adapter=adapter,
             config=config, layer_weights=layer_weights, accumulation_steps=accumulation_steps,
-            lambda_scale=lambda_scale,
         )
         loss.backward()
 
@@ -492,7 +484,6 @@ def _save_training_state(
         {
             "epoch": state.epoch,
             "global_step": state.global_step,
-            "best_loss": state.best_loss,
             "history": state.history,
             "baseline": state.baseline,
             "model_checkpoint": model_checkpoint,
@@ -532,39 +523,70 @@ def _build_scheduler(
     optimizer: torch.optim.Optimizer, config: TrainConfig, total_steps: int,
     run_logger: logging.Logger,
 ) -> torch.optim.lr_scheduler.LRScheduler:
-    """Warmup -> plateau (or ramp-down) -> cosine-to-floor, as the recipe defines it."""
+    """Linear warmup, then cosine decay to the floor (or a flat hold at the peak).
+
+    ``total_steps`` is the whole run: ``steps_per_epoch * num_epochs``. A warmup longer than the
+    run is clamped to it, which is the only case in which ``"cosine"`` has no cosine phase at all.
+    """
     warmup_steps = min(config.warmup_steps, total_steps)
     post_warmup_steps = total_steps - warmup_steps
-    cosine_steps = int(post_warmup_steps * config.cosine_fraction) if config.cosine_fraction > 0 else 0
-    plateau_steps = max(0, post_warmup_steps - cosine_steps)
 
     warmup = LinearLR(optimizer, start_factor=0.1, end_factor=1.0, total_iters=warmup_steps)
-    eta_min = config.lr_floor * config.learning_rate
-    floor_str = f", floor={config.lr_floor}" if config.lr_floor > 0 else ""
 
-    if cosine_steps > 0 and plateau_steps > 0:
-        if config.plateau_end_factor < 1.0:
-            plateau = LinearLR(optimizer, start_factor=1.0,
-                               end_factor=config.plateau_end_factor, total_iters=plateau_steps)
-            plateau_desc = f"rampdown→{config.plateau_end_factor}"
-        else:
-            plateau = ConstantLR(optimizer, factor=1.0, total_iters=plateau_steps)
-            plateau_desc = "plateau"
-        decay = CosineAnnealingLR(optimizer, T_max=cosine_steps, eta_min=eta_min)
-        run_logger.info("LR schedule: warmup(%d) → %s(%d) → cosine(%d%s)",
-                        warmup_steps, plateau_desc, plateau_steps, cosine_steps, floor_str)
-        return SequentialLR(optimizer, schedulers=[warmup, plateau, decay],
-                            milestones=[warmup_steps, warmup_steps + plateau_steps])
-
-    if cosine_steps > 0:
-        decay = CosineAnnealingLR(optimizer, T_max=cosine_steps, eta_min=eta_min)
+    if config.lr_schedule == "cosine" and post_warmup_steps > 0:
+        eta_min = config.lr_floor * config.learning_rate
+        floor_str = f", floor={config.lr_floor}" if config.lr_floor > 0 else ""
+        decay = CosineAnnealingLR(optimizer, T_max=post_warmup_steps, eta_min=eta_min)
         run_logger.info("LR schedule: warmup(%d) → cosine(%d%s)",
-                        warmup_steps, cosine_steps, floor_str)
+                        warmup_steps, post_warmup_steps, floor_str)
         return SequentialLR(optimizer, schedulers=[warmup, decay], milestones=[warmup_steps])
 
     constant = ConstantLR(optimizer, factor=1.0, total_iters=post_warmup_steps)
     run_logger.info("LR schedule: warmup(%d) → constant(%d)", warmup_steps, post_warmup_steps)
     return SequentialLR(optimizer, schedulers=[warmup, constant], milestones=[warmup_steps])
+
+
+@torch.no_grad()
+def validation_loss(student: nn.Module, dataloader: DataLoader) -> dict[str, float]:
+    """Cross-entropy on the held-out documents: the number that says whether a dose over-fits.
+
+    Token-weighted, so a short trailing batch does not count as much as a full one, and reported
+    with its perplexity (``exp(loss)``) because that is the unit every other domain measurement in
+    this package is in.
+
+    It leaves the training stream untouched, which is what makes it safe to add to a run whose
+    numbers are being compared against another implementation: no gradients, no optimizer, and a
+    loader built with ``shuffle=False`` -- so it draws from no generator and consumes no RNG. The
+    student is put in ``eval()`` for the pass and restored to whatever mode it was in.
+
+    Returns:
+        ``{"loss": ..., "perplexity": ..., "tokens": ...}``; an empty split gives loss ``0.0``.
+    """
+    was_training = student.training
+    student.eval()
+    device = next(student.parameters()).device
+    total_loss = 0.0
+    total_tokens = 0
+    try:
+        for batch in dataloader:
+            labels = batch["labels"].to(device)
+            attention_mask = batch.get("attention_mask")
+            outputs = student(
+                input_ids=batch["input_ids"].to(device),
+                attention_mask=None if attention_mask is None else attention_mask.to(device),
+                labels=labels,
+            )
+            # Weighted by the tokens that actually carried a target: left padding writes -100.
+            batch_tokens = int((labels != -100).sum().item())
+            total_loss += float(outputs.loss.item()) * batch_tokens
+            total_tokens += batch_tokens
+    finally:
+        if was_training:
+            student.train()
+
+    loss = total_loss / max(total_tokens, 1)
+    return {"loss": loss, "perplexity": float(torch.exp(torch.tensor(loss))),
+            "tokens": total_tokens}
 
 
 @torch.no_grad()
@@ -594,7 +616,6 @@ def _measure_baseline(
             _, metrics = train_step(
                 student=student, teacher=teacher, batch=batch, sampler=sampler, adapter=adapter,
                 config=config, layer_weights=layer_weights, accumulation_steps=1,
-                lambda_scale=1.0,
             )
             totals["total"] += metrics.loss_total
             totals["content"] += metrics.loss_content
@@ -626,18 +647,27 @@ def train(
     logger: logging.Logger | None = None,
     resume: bool = False,
     tokenizer=None,
+    val_dataset: ChunkedCorpus | None = None,
 ) -> TrainingState:
     """Train ``student`` against the frozen ``teacher`` and write the run to ``output_dir``.
 
     Writes ``config.json``, ``training_history.json``, ``final_model/`` (the LoRA adapter, or
-    the full weights) and ``training_state.pt``, plus ``best_model/`` and any periodic
-    checkpoints the config asks for.
+    the full weights) and ``training_state.pt``, plus any periodic checkpoints the config asks
+    for. ``final_model`` is what ships: there is no separate "best" checkpoint, because a
+    checkpoint chosen by the lowest loss is chosen on one axis of a method whose whole point is
+    the trade between two.
 
     Args:
         dataset: re-chunked at the start of every epoch, from an offset determined by
             ``config.seed`` and the epoch number, for positional diversity.
         sampler: the ``p(h)`` sampler; ``None`` trains with no anchor at all (the unanchored
             control), which is the one case where mu is the only preservation pressure.
+        val_dataset: the documents held out of training (``config.val_fraction`` of them, built
+            by the caller with the same chunker). When given, every epoch ends with a
+            :func:`validation_loss` pass whose loss and perplexity land in the history, so a dose
+            that has started to over-fit says so at the epoch it happens rather than at the end.
+            It is chunked once, at offset 0, and never re-chunked -- the epoch-to-epoch change
+            has to come from the model, not from the text moving.
         resume: continue a run in this directory. The saved optimizer moments, epoch counter,
             history and scheduler position are restored, and a saved LoRA adapter is re-attached
             to ``student`` *trainable* -- attaching one for inference instead is the classic
@@ -684,7 +714,6 @@ def train(
         saved = _load_training_state(output_dir)
         state.epoch = saved["epoch"]
         state.global_step = saved["global_step"]
-        state.best_loss = saved["best_loss"]
         state.history = saved["history"]
         state.baseline = saved.get("baseline")
 
@@ -719,15 +748,17 @@ def train(
             pad_token_id = source.pad_token_id
             break
     dataloader = make_dataloader(dataset, config.batch_size, True, config.seed, pad_token_id)
+    # shuffle=False: the held-out pass takes no generator, so it draws no randomness and the
+    # training stream is bit-identical to a run without it.
+    val_dataloader = (None if val_dataset is None else
+                      make_dataloader(val_dataset, config.batch_size, False, config.seed,
+                                      pad_token_id))
 
     # Ceiling division: a trailing partial accumulation window takes an optimizer step too.
     steps_per_epoch = ((len(dataloader) + config.gradient_accumulation_steps - 1)
                        // config.gradient_accumulation_steps)
-    horizon_epochs = config.schedule_horizon_epochs or config.num_epochs
-    if horizon_epochs != config.num_epochs:
-        run_logger.info("LR schedule laid over %d epochs; training stops at %d",
-                        horizon_epochs, config.num_epochs)
-    scheduler = _build_scheduler(optimizer, config, steps_per_epoch * horizon_epochs, run_logger)
+    scheduler = _build_scheduler(optimizer, config, steps_per_epoch * config.num_epochs,
+                                 run_logger)
 
     if resume:
         # torch's LR schedulers are chainable: each step multiplies the group's CURRENT lr rather
@@ -747,8 +778,7 @@ def train(
             warnings.filterwarnings("ignore", message=r".*before `optimizer\.step\(\)`.*")
             for _ in range(state.global_step):
                 scheduler.step()
-        run_logger.info("Resuming from epoch %d, global_step %d, best_loss %.4f",
-                        state.epoch, state.global_step, state.best_loss)
+        run_logger.info("Resuming from epoch %d, global_step %d", state.epoch, state.global_step)
 
     # Merge rather than clobber: a caller may already have written run metadata here.
     config_path = output_dir / "config.json"
@@ -774,11 +804,6 @@ def train(
     for epoch in range(state.epoch, config.num_epochs):
         dataset.rechunk(epoch, config.seed)
 
-        lambda_scale = 1.0
-        if config.lambda_end_ratio is not None:
-            t = epoch / max(1, config.num_epochs - 1)
-            lambda_scale = schedule_weight(t, config.lambda_end_ratio, config.lambda_schedule)
-
         run_logger.info("Epoch %d/%d (%d chunks, %d tokens)", epoch + 1, config.num_epochs,
                         len(dataset), dataset.total_tokens())
 
@@ -786,7 +811,6 @@ def train(
             student=student, teacher=teacher, dataloader=dataloader, sampler=sampler,
             adapter=adapter, config=config, optimizer=optimizer, scheduler=scheduler,
             layer_weights=layer_weights, global_step=state.global_step, run_logger=run_logger,
-            lambda_scale=lambda_scale,
         )
         state.epoch = epoch + 1
 
@@ -812,15 +836,14 @@ def train(
             "learning_rate": optimizer.param_groups[0]["lr"],
             "duration": epoch_metrics.duration_seconds,
         }
-        if config.lambda_end_ratio is not None:
-            record["lambda_scale"] = lambda_scale
+        if val_dataloader is not None:
+            validation = validation_loss(student, val_dataloader)
+            record["val_loss"] = validation["loss"]
+            record["val_perplexity"] = validation["perplexity"]
+            record["val_tokens"] = validation["tokens"]
+            run_logger.info("  Held-out: loss=%.4f perplexity=%.3f over %d tokens",
+                            validation["loss"], validation["perplexity"], validation["tokens"])
         state.history.append(record)
-
-        if epoch_metrics.avg_loss_total < state.best_loss:
-            state.best_loss = epoch_metrics.avg_loss_total
-            if config.save_best_model:
-                student.save_pretrained(output_dir / "best_model")
-                run_logger.info("  New best model saved (train loss %.4f)", state.best_loss)
 
         if config.checkpoint_mode != "none" and (epoch + 1) % config.checkpoint_every == 0:
             name = ("latest_model" if config.checkpoint_mode == "rolling"

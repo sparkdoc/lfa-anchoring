@@ -126,7 +126,7 @@ def tiny_recipe(base_dir, **overrides):
     kwargs = dict(
         name="tiny", model_id=str(base_dir), artifact="tiny",
         lora_rank=2, lora_alpha=4, lambda_qkv=10.0, lambda_mlp=10.0, mu=0.05,
-        n_anchor_samples=4, epochs=1, schedule_horizon_epochs=1, checkpoint_mode="none",
+        n_anchor_samples=4, epochs=1, checkpoint_mode="none",
         learning_rate=1e-2, warmup_steps=1, batch_size=2, sequence_length=64, seed=0,
         calibrated_rank=2, calibrated_artifact="tiny",
         # These workspaces have eight short documents each: holding a tenth of them out

@@ -9,30 +9,19 @@ defaults, and it records *which* rank and *which* artifact it was calibrated at 
 departing from either can be told that lambda no longer means what it meant
 (:meth:`Recipe.warnings`).
 
-Several settings in the shipped point are easy to lose in a re-implementation and are carried here
+Two settings in the shipped point are easy to lose in a re-implementation and are carried here
 deliberately:
 
-* ``epochs`` and ``schedule_horizon_epochs`` come apart. The published dose is checkpoint 15 **of
-  a twenty-epoch run**: 50 steps of warmup, then a cosine laid over twenty epochs, with training
-  stopped at fifteen (see :class:`lfa.train.TrainConfig`). Both directions matter. A 15-epoch
-  horizon would have decayed the learning rate to its floor by that step; a *longer* horizon leaves
-  it too high, and the acceptance run measured what that costs -- at a 100-epoch horizon e15 sits
-  at a learning rate of 2.9e-4 instead of 1.2e-4 and lands at domain perplexity 9.69 rather than
-  8.76.
-* ``checkpoint_mode="all"`` with ``checkpoint_every=5``, because dose is a preservation-quality
-  dial rather than a converged endpoint -- e15 is the perplexity-optimal shipped point and e20 the
-  judge-optimal one -- and e20 is the *end* of this same run, so reaching it means raising
-  ``epochs`` to 20 with the horizon left at 20. What ``checkpoint_every=5`` buys is that the
-  intermediate doses of a run stay comparable with each other, since e5/e10/e15 are on disk rather
-  than only the endpoint.
-* ``keep_short_whole=True`` deliberately differs from the research code, where a document shorter
-  than the epoch's random chunk offset is dropped for that epoch. It is a *frame* field: a run
-  under either setting is not comparable with a run under the other, and the paper's perplexity
-  points were measured under ``False`` -- pass ``keep_short_whole=False`` to
-  :meth:`Recipe.to_train_config` to reproduce them.
-* ``val_fraction=0.1``: the paper's runs held a tenth of the *documents* out (shuffled under seed
-  42) and never trained on them, so the domain perplexity reported for a stage is a held-out
-  measurement rather than a fit. Set it to ``0.0`` to train on everything -- and then read the
+* ``keep_short_whole=True``: a document that fits in one chunk is present in every epoch, rather
+  than dropping out of the epochs whose random chunk offset is past its end. It is a *frame*
+  field -- realized exposure to short documents differs about threefold between the two settings,
+  and lambda is coupled to corpus composition -- so a run under one setting is not comparable with
+  a run under the other. Pass ``keep_short_whole=False`` to :meth:`Recipe.to_train_config` for the
+  other frame.
+* ``val_fraction=0.1``: a tenth of the *documents* (shuffled under the recipe's seed) are held out
+  and never trained on, so the domain perplexity reported for a stage is a held-out measurement
+  rather than a fit, and the per-epoch validation curve in ``training_history.json`` says when a
+  dose has started to over-fit. Set it to ``0.0`` to train on everything -- and then read the
   domain number as a fit.
 
 ``Recipe.load`` resolves a bare name against the recipes bundled inside the package, so it works
@@ -48,7 +37,7 @@ from pathlib import Path
 
 import yaml
 
-from .train import TrainConfig
+from .train import LR_SCHEDULES, TrainConfig
 
 __all__ = ["Recipe", "BUNDLED_DIR"]
 
@@ -65,9 +54,10 @@ class Recipe:
         model_id: The teacher/student model this point was tuned on.
         artifact: The p(h) artifact id (or a path) the lambdas are calibrated against.
         stage2_lambda_multiplier: What :meth:`to_train_config` multiplies lambda by from stage 2
-            on. A later stage anchors a model that already carries a domain, and the measured
-            operating point for that is a *harder* anchor; it is a level, not a per-stage
-            compounding factor.
+            on. A later stage anchors a model that already carries a domain, and what that wants
+            is a *harder* anchor; it is a level, not a per-stage compounding factor. The shipped
+            3.0 is a starting default rather than a calibrated constant -- lambda is coupled to
+            the corpus, so a chain over a new pair of domains re-tunes it.
         calibrated_rank: The LoRA rank the lambdas were tuned at.
         calibrated_artifact: The artifact id the lambdas were tuned against.
 
@@ -90,19 +80,18 @@ class Recipe:
     lambda_qkv: float = 100_000.0
     lambda_mlp: float = 100_000.0
     mu: float = 0.05
-    mu_end_ratio: float = 1.0
     anchor_end_ratio: float = 0.1
     anchor_schedule: str = "cosine"
     n_anchor_samples: int = 16
 
-    # -- dose and schedule
+    # -- run length and checkpointing
     epochs: int = 15
-    schedule_horizon_epochs: int | None = 20
-    checkpoint_mode: str = "all"
+    checkpoint_mode: str = "rolling"
     checkpoint_every: int = 5
 
     # -- optimization
     learning_rate: float = 3e-4
+    lr_schedule: str = "cosine"
     batch_size: int = 6
     gradient_accumulation_steps: int = 1
     warmup_steps: int = 50
@@ -120,12 +109,9 @@ class Recipe:
     def __post_init__(self) -> None:
         if self.epochs < 1:
             raise ValueError(f"epochs must be at least 1, got {self.epochs}")
-        if self.schedule_horizon_epochs is not None and self.schedule_horizon_epochs < self.epochs:
+        if self.lr_schedule not in LR_SCHEDULES:
             raise ValueError(
-                f"schedule_horizon_epochs ({self.schedule_horizon_epochs}) is shorter than epochs "
-                f"({self.epochs}): the learning-rate schedule is laid over the horizon and "
-                "training stops at epochs, so a shorter horizon would end the run past the "
-                "schedule's end"
+                f"lr_schedule must be one of {', '.join(LR_SCHEDULES)}, got {self.lr_schedule!r}."
             )
         if self.stage2_lambda_multiplier <= 0:
             raise ValueError(
@@ -216,19 +202,18 @@ class Recipe:
             lambda_qkv=self.lambda_qkv * lambda_scale,
             lambda_mlp=self.lambda_mlp * lambda_scale,
             mu=self.mu,
-            mu_end_ratio=self.mu_end_ratio,
             n_anchor_samples=self.n_anchor_samples,
             anchor_end_ratio=self.anchor_end_ratio,
             anchor_schedule=self.anchor_schedule,
             artifact_path=str(artifact_path),
             learning_rate=self.learning_rate,
+            lr_schedule=self.lr_schedule,
             weight_decay=self.weight_decay,
             warmup_steps=self.warmup_steps,
             batch_size=self.batch_size,
             gradient_accumulation_steps=self.gradient_accumulation_steps,
             num_epochs=self.epochs,
             sequence_length=self.sequence_length,
-            schedule_horizon_epochs=self.schedule_horizon_epochs,
             checkpoint_mode=self.checkpoint_mode,
             checkpoint_every=self.checkpoint_every,
             use_lora=not self.full_weight,

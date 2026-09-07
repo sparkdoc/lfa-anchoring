@@ -2,8 +2,8 @@
 
 The CLI owns no behaviour of its own, so what is tested here is the front door and nothing
 behind it: that every subcommand parses and renders its help, that a flag reaches the value it
-names (`--keep-short-whole` and `--full-weight` are checked in the run's own `config.json`, since
-they are frame/mode settings a silent default would change without saying so), that a library
+names (`--full-weight` is checked in the run's own `config.json`, since it is a mode setting a
+silent default would change without saying so), that a library
 refusal comes out as one line and exit 2 rather than a traceback, and that `--workspace` really
 does default to the working directory.
 
@@ -119,18 +119,37 @@ def test_train_reports_the_run_directory_it_wrote(tmp_path, registry, base_dir, 
     assert str(workspace / "runs" / "stage1") in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("flag, expected", [("--keep-short-whole", True),
-                                            ("--no-keep-short-whole", False)])
-def test_the_keep_short_whole_flags_reach_the_runs_config(flag, expected, tmp_path, registry,
-                                                          base_dir, corpus_a, recipe_path):
+def test_the_recipes_loader_frame_reaches_the_runs_config(tmp_path, registry, base_dir, corpus_a,
+                                                         recipe_path):
+    """There is no flag for it: `keep_short_whole` is the recipe's, and the run records it."""
     workspace = tmp_path / "ws"
     assert main(["init", str(workspace), "--model", str(base_dir), "--artifact", "tiny"]) == 0
 
     assert main(["train", "--workspace", str(workspace), "--corpus", str(corpus_a),
-                 "--recipe", str(recipe_path), "--device", "cpu", flag]) == 0
+                 "--recipe", str(recipe_path), "--device", "cpu"]) == 0
 
     config = json.loads((workspace / "runs" / "stage1" / "config.json").read_text())
-    assert config["keep_short_whole"] is expected
+    assert config["keep_short_whole"] is yaml.safe_load(
+        recipe_path.read_text())["keep_short_whole"]
+
+
+def test_a_local_artifact_can_be_recorded_as_the_published_one_it_copies(tmp_path, registry,
+                                                                        base_dir, tiny_artifact):
+    """`--artifact-id`: the file was fetched out of band, but the recipe's calibration still
+    reads against the registry id rather than against a path."""
+    _, artifact_path = tiny_artifact
+    workspace = tmp_path / "ws"
+
+    assert main(["init", str(workspace), "--model", str(base_dir),
+                 "--artifact", str(artifact_path), "--artifact-id", "tiny"]) == 0
+
+    assert json.loads((workspace / "workspace.json").read_text())["artifact_id"] == "tiny"
+
+
+def test_an_unpublished_artifact_id_is_refused(tmp_path, registry, base_dir, tiny_artifact):
+    _, artifact_path = tiny_artifact
+    assert main(["init", str(tmp_path / "ws"), "--model", str(base_dir),
+                 "--artifact", str(artifact_path), "--artifact-id", "not-published"]) == 2
 
 
 def test_full_weight_reaches_the_runs_config(tmp_path, registry, base_dir, corpus_a, recipe_path):

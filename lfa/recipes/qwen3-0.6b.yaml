@@ -1,39 +1,28 @@
-# The shipped Layerwise Function Anchoring (LFA) operating point for Qwen3-0.6B.
+# The Layerwise Function Anchoring (LFA) operating point for Qwen3-0.6B.
 #
-# This is a JOINT point: the values below were tuned together and measured together, and three of
-# them do not travel independently.
+# What this is: rank-32 LoRA (alpha 64, embedding and LM head frozen) over the int8 `gmm1543k`
+# p(h) artifact, anchored at lambda = 100,000 on both site families with mu = 0.05 as the uniform
+# weight backstop, n = 16 anchor samples per step, the anchor's layer schedule decaying to 0.1 of
+# layer 0 on a cosine. Adam at 3e-4, batch 6 x 512 tokens, 50 warmup steps then cosine decay to
+# zero over the fifteen epochs trained. It adapts a 0.6B model to a book-sized corpus in about an
+# hour and a half on one 24 GB card.
 #
-#   * lambda is coupled to LoRA RANK. It constrains motion inside the rank-r update subspace, so
-#     the same value binds far harder at a lower rank. Lower rank => lower lambda: at rank 16 the
-#     measured frontier on this corpus sits at roughly 2e4-5e4, not 1e5. Re-tune lambda rather
-#     than porting it across ranks, and diagnose against held-out DOMAIN perplexity -- over-
-#     anchoring makes general-text perplexity look its best while domain quality collapses.
-#   * lambda is coupled to the p(h) ARTIFACT. `calibrated_artifact` below records what these
-#     lambdas were priced against; a sharper or flatter p(h) changes the anchor's scale, so an
-#     artifact swap is a re-tune.
-#   * lambda is coupled to the corpus composition. A corpus with a different share of chat-
-#     formatted Q&A is a different regularization problem; re-tune there too.
+# This is a JOINT point: the values were tuned together, and lambda in particular does not travel
+# on its own. It is coupled to three things:
 #
-# Dose and schedule come apart on purpose. `epochs: 15` is the PERPLEXITY-OPTIMAL shipped dose,
-# and it is checkpoint 15 of a TWENTY-epoch cosine run (`schedule_horizon_epochs: 20`): 50 steps of
-# warmup, then cosine decay to zero laid over twenty epochs, with training STOPPED at fifteen. A
-# 15-epoch horizon would have decayed the learning rate to its floor by the same step and is a
-# different schedule, not a shorter one; laying the schedule over a LONGER horizon is equally wrong,
-# and measurably so -- at e15 a 100-epoch horizon leaves the learning rate at 2.9e-4 where this one
-# is at 1.2e-4, and the run lands at domain perplexity 9.69 instead of 8.76.
-# Dose is a preservation-versus-quality dial rather than a converged endpoint: e20 is the
-# JUDGE-OPTIMAL dose, and it is the END of this same run -- reaching it means setting `epochs: 20`,
-# with the horizon left at 20. With `epochs: 15` the checkpoints written are e5/e10/e15;
-# `checkpoint_every: 5` is what keeps the intermediate doses of a run comparable with each other.
+#   * LoRA RANK. Lambda constrains motion inside the rank-r update subspace, so the same value
+#     binds far harder at a lower rank. Lower rank => lower lambda: at rank 16 the measured
+#     frontier on a corpus like this sits at roughly 2e4-5e4, not 1e5. Re-tune rather than port,
+#     and diagnose against held-out DOMAIN perplexity -- over-anchoring makes general-text
+#     perplexity look its best while domain quality collapses.
+#   * The p(h) ARTIFACT. `calibrated_artifact` below records what these lambdas were priced
+#     against; a sharper or flatter p(h) changes the anchor's scale, so an artifact swap is a
+#     re-tune.
+#   * The CORPUS COMPOSITION. A corpus with a different share of chat-formatted Q&A, or of short
+#     documents, is a different regularization problem; re-tune there too.
 #
-# `keep_short_whole: true` deliberately differs from the research code, where a document shorter
-# than the epoch's random chunk offset is dropped for that epoch. It is a frame field: a run under
-# either setting is not comparable with a run under the other, and the paper's perplexity points
-# were measured under `false` (pass `keep_short_whole=False` to `to_train_config` to reproduce
-# them).
-#
-# Full-weight training (`full_weight: true`) is outside the paper's validated envelope: every
-# published LFA result is LoRA. If you go there, calibrate lambda in 50,000-100,000 and check
+# Full-weight training (`full_weight: true`) is outside the validated envelope: every LFA result
+# behind this point is LoRA. If you go there, calibrate lambda in 50,000-100,000 and check
 # held-out domain perplexity.
 
 name: qwen3-0.6b
@@ -50,30 +39,41 @@ full_weight: false
 lambda_qkv: 100000.0
 lambda_mlp: 100000.0
 mu: 0.05
-mu_end_ratio: 1.0
 anchor_end_ratio: 0.1
 anchor_schedule: cosine
 n_anchor_samples: 16
 
-# -- dose and schedule (see the note above: 15 trained epochs of a 20-epoch cosine)
+# -- run length and checkpointing
 epochs: 15
-schedule_horizon_epochs: 20
-checkpoint_mode: all
+# rolling: `latest_model` plus `training_state.pt` every 5 epochs, so an interrupted run can be
+# resumed rather than restarted. `final_model` is what ships either way.
+checkpoint_mode: rolling
 checkpoint_every: 5
 
 # -- optimization
 learning_rate: 3.0e-4
+# warmup then cosine decay to zero over the epochs actually trained (`constant` holds the peak)
+lr_schedule: cosine
 batch_size: 6
 gradient_accumulation_steps: 1
 warmup_steps: 50
 weight_decay: 0.01
 sequence_length: 512
 seed: 42
+# keep_short_whole is a frame field, not a tuning knob: with `true` a document that fits in one
+# chunk is present in EVERY epoch, and with `false` it drops out of every epoch whose random chunk
+# offset is past its end. The two settings show the model different amounts of the short documents,
+# so perplexity numbers measured under one are not comparable with numbers measured under the other.
 keep_short_whole: true
-# the paper's runs held out 10 % of documents under seed 42
+# a tenth of the documents are held out and scored after every epoch, so the domain number is a
+# measurement rather than a fit
 val_fraction: 0.1
 
-# -- what this point was calibrated at (the couplings above are checked against these)
+# -- later stages of a chain. A starting default, not a calibrated constant: stage 2 anchors a
+# model that already carries a domain, and 3x lambda is where to begin re-tuning for YOUR pair of
+# domains, judged on the same two axes.
 stage2_lambda_multiplier: 3.0
+
+# -- what this point was calibrated at (the couplings above are checked against these)
 calibrated_rank: 32
 calibrated_artifact: qwen3-0.6b-gmm1543k-int8

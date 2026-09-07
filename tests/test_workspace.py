@@ -243,7 +243,7 @@ def test_the_paper_loader_frame_says_nothing(tmp_path, registry, base_dir, corpu
 
 def test_epochs_overrides_the_recipes_dose(tmp_path, registry, base_dir, corpus_a):
     ws = new_workspace(tmp_path, base_dir)
-    entry = ws.train(corpus_a, recipe=tiny_recipe(base_dir, schedule_horizon_epochs=4),
+    entry = ws.train(corpus_a, recipe=tiny_recipe(base_dir),
                      epochs=2, device="cpu")
 
     assert entry["recipe"]["epochs"] == 2
@@ -352,8 +352,8 @@ def test_a_resumed_run_keeps_training_the_adapter_it_saved(tmp_path, registry, b
 
 def test_a_resumed_run_continues_the_epoch_count(tmp_path, registry, base_dir, corpus_a):
     ws = new_workspace(tmp_path, base_dir)
-    ws.train(corpus_a, recipe=tiny_recipe(base_dir, schedule_horizon_epochs=2), device="cpu")
-    resumed = ws.train(corpus_a, recipe=tiny_recipe(base_dir, schedule_horizon_epochs=2),
+    ws.train(corpus_a, recipe=tiny_recipe(base_dir), device="cpu")
+    resumed = ws.train(corpus_a, recipe=tiny_recipe(base_dir),
                        epochs=2, resume=True, device="cpu")
 
     history = json.loads((Path(resumed["output_dir"]) / "training_history.json").read_text())
@@ -550,14 +550,36 @@ def test_evaluate_before_any_stage_says_what_is_missing(tmp_path, registry, base
 # ------------------------------------------------------------------- the held-out split
 
 def test_a_stage_records_the_documents_it_held_out(tmp_path, registry, base_dir, corpus_a):
-    """The paper's runs held a tenth of the documents out; the split is a property of the run, so
-    the history has to say how it fell or `evaluate` cannot rebuild it."""
+    """The shipped recipe holds a tenth of the documents out; the split is a property of the run,
+    so the history has to say how it fell or `evaluate` cannot rebuild it."""
     ws = new_workspace(tmp_path, base_dir)
     entry = ws.train(corpus_a, recipe=tiny_recipe(base_dir, val_fraction=0.5), device="cpu")
 
     assert entry["val_fraction"] == 0.5
     assert (entry["n_train_docs"], entry["n_val_docs"]) == (4, 4)          # eight documents, halved
     assert json.loads((ws.path / "runs" / "stage1" / "config.json").read_text())["val_fraction"] == 0.5
+
+
+def test_the_held_out_split_is_scored_after_every_epoch_of_the_stage(tmp_path, registry, base_dir,
+                                                                    corpus_a):
+    """The split the workspace builds goes to the trainer, not only to `evaluate`: the run's own
+    history carries the held-out loss per epoch, which is what says a dose has begun to over-fit."""
+    ws = new_workspace(tmp_path, base_dir)
+    entry = ws.train(corpus_a, recipe=tiny_recipe(base_dir, val_fraction=0.5, epochs=2),
+                     device="cpu")
+
+    history = json.loads((Path(entry["output_dir"]) / "training_history.json").read_text())
+    assert len(history) == 2
+    assert all(record["val_loss"] > 0 and record["val_perplexity"] > 1 for record in history)
+
+
+def test_a_stage_that_holds_nothing_out_has_no_validation_curve(tmp_path, registry, base_dir,
+                                                                corpus_a):
+    ws = new_workspace(tmp_path, base_dir)
+    entry = ws.train(corpus_a, recipe=tiny_recipe(base_dir, val_fraction=0.0), device="cpu")
+
+    history = json.loads((Path(entry["output_dir"]) / "training_history.json").read_text())
+    assert all("val_loss" not in record for record in history)
 
 
 def test_evaluate_scores_the_half_the_stage_never_trained_on(tmp_path, registry, base_dir,

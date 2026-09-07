@@ -7,8 +7,10 @@ really learns, that a switched-off anchor is switched off -- not convergence.
 
 import copy
 import json
+import logging
 import shutil
 import math
+import warnings
 
 import pytest
 import safetensors.torch
@@ -22,6 +24,7 @@ from lfa.train import (
     EMBED_ANCHOR_DISABLED_NOTICE,
     ResumeSourceHasNoAdapter,
     TrainConfig,
+    _build_scheduler,
     train,
     train_epoch,
     train_step,
@@ -136,7 +139,8 @@ def test_anchor_is_positive_once_the_student_has_moved(setup, tmp_path):
 
 # --- checkpoints and resume ------------------------------------------------------------------
 
-def test_checkpoints_and_best_model_are_written(setup, tmp_path):
+def test_periodic_checkpoints_are_written_and_final_model_is_what_ships(setup, tmp_path):
+    """There is no `best_model`: the run ships `final_model`, and nothing selects on train loss."""
     teacher, fresh_student, dataset, sampler, adapter = setup
     config = make_config(checkpoint_mode="all", checkpoint_every=2)
     student = apply_lora(fresh_student(), adapter, rank=config.lora_rank, alpha=config.lora_alpha)
@@ -145,7 +149,8 @@ def test_checkpoints_and_best_model_are_written(setup, tmp_path):
 
     assert (tmp_path / "checkpoint_epoch_2").is_dir()
     assert not (tmp_path / "checkpoint_epoch_1").exists()
-    assert (tmp_path / "best_model").is_dir()
+    assert (tmp_path / "final_model").is_dir()
+    assert not (tmp_path / "best_model").exists()
 
 
 def test_resume_reattaches_the_adapter_and_keeps_learning(setup, tmp_path):
@@ -182,6 +187,79 @@ def test_resume_without_a_prior_run_says_so(setup, tmp_path):
     student = apply_lora(fresh_student(), adapter, rank=config.lora_rank, alpha=config.lora_alpha)
     with pytest.raises(FileNotFoundError, match="Cannot resume"):
         train(teacher, student, dataset, sampler, adapter, config, tmp_path, resume=True)
+
+
+# --- the held-out pass -----------------------------------------------------------------------
+
+def test_the_held_out_split_is_scored_after_every_epoch(setup, tiny_model, tmp_path, tiny_texts):
+    """Loss and perplexity per epoch, from the documents the run never trains on."""
+    teacher, fresh_student, dataset, sampler, adapter = setup
+    _, tokenizer = tiny_model
+    holdout = ChunkedCorpus(tiny_texts[8:], tokenizer, max_length=64)
+    config = make_config()
+    student = apply_lora(fresh_student(), adapter, rank=config.lora_rank, alpha=config.lora_alpha)
+
+    state = train(teacher, student, dataset, sampler, adapter, config, tmp_path,
+                  tokenizer=tokenizer, val_dataset=holdout)
+
+    history = json.loads((tmp_path / "training_history.json").read_text())
+    assert len(history) == 2
+    for record in history:
+        assert record["val_loss"] > 0
+        assert record["val_perplexity"] == pytest.approx(math.exp(record["val_loss"]), rel=1e-6)
+        assert record["val_tokens"] == history[0]["val_tokens"] > 0    # the same text every epoch
+    assert state.history == history
+
+
+def test_without_a_held_out_split_the_history_carries_no_validation_columns(setup, tmp_path):
+    teacher, fresh_student, dataset, sampler, adapter = setup
+    config = make_config(num_epochs=1)
+    student = apply_lora(fresh_student(), adapter, rank=config.lora_rank, alpha=config.lora_alpha)
+
+    train(teacher, student, dataset, sampler, adapter, config, tmp_path)
+
+    [record] = json.loads((tmp_path / "training_history.json").read_text())
+    assert "val_loss" not in record and "val_perplexity" not in record
+
+
+def test_the_held_out_pass_leaves_the_training_stream_untouched(setup, tiny_model, tiny_artifact,
+                                                                tmp_path, tiny_texts):
+    """The proof that validation is free: the same run with and without it trains identically.
+
+    A held-out pass that drew from the training RNG, or left the model in `eval()`, or stepped
+    anything, would move the losses -- so the two runs are compared as exact floats, not as
+    approximations, and their adapters must come out byte for byte the same.
+    """
+    teacher, fresh_student, dataset, _, adapter = setup
+    _, tokenizer = tiny_model
+    _, artifact_path = tiny_artifact
+    holdout = ChunkedCorpus(tiny_texts[8:], tokenizer, max_length=64)
+
+    def run(directory, val_dataset):
+        config = make_config()
+        dataset.rechunk(0, config.seed)
+        torch.manual_seed(0)
+        # A FRESH sampler per run: it carries its own generator, so reusing one object would
+        # make the second run differ for a reason that has nothing to do with validation.
+        sampler = Sampler(artifact_path, device="cpu", seed=0)
+        student = apply_lora(fresh_student(), adapter, rank=config.lora_rank,
+                             alpha=config.lora_alpha)
+        return train(teacher, student, dataset, sampler, adapter, config, directory,
+                     tokenizer=tokenizer, val_dataset=val_dataset)
+
+    without = run(tmp_path / "without", None)
+    with_val = run(tmp_path / "with", holdout)
+
+    for a, b in zip(without.history, with_val.history):
+        for key in ("loss_total", "loss_content", "loss_anchor", "loss_mu", "grad_norm",
+                    "learning_rate", "global_step"):
+            assert a[key] == b[key], key
+    plain = safetensors.torch.load_file(tmp_path / "without" / "final_model"
+                                        / "adapter_model.safetensors")
+    validated = safetensors.torch.load_file(tmp_path / "with" / "final_model"
+                                            / "adapter_model.safetensors")
+    assert set(plain) == set(validated)
+    assert all(torch.equal(plain[key], validated[key]) for key in plain)
 
 
 # --- guards ----------------------------------------------------------------------------------
@@ -270,9 +348,12 @@ def test_resume_inside_the_warmup_replays_the_schedule(setup, tmp_path):
     uninterrupted one.
     """
     teacher, fresh_student, dataset, sampler, adapter = setup
-    # A horizon longer than the run keeps both runs strictly inside the warmup window, which is
-    # where the bug lives (the next phase resets the lr from base_lrs and hides it).
-    knobs = dict(warmup_steps=50, schedule_horizon_epochs=10, batch_size=6)
+    # The warmup is set to two and a half epochs so that the epoch the comparison reads (the
+    # second) is strictly inside it. That is where the bug lives: at the warmup's end SequentialLR
+    # re-derives the next phase's rate from `base_lrs`, which wipes a compounded value and hides it.
+    dataset.rechunk(0, make_config().seed)
+    steps_per_epoch = math.ceil(len(dataset) / 6)
+    knobs = dict(warmup_steps=int(2.5 * steps_per_epoch), batch_size=6)
 
     def run(directory, epochs, resume=False):
         config = make_config(num_epochs=epochs, **knobs)
@@ -282,35 +363,100 @@ def test_resume_inside_the_warmup_replays_the_schedule(setup, tmp_path):
         return train(teacher, student, dataset, sampler, adapter, config, directory,
                      resume=resume)
 
-    uninterrupted = run(tmp_path / "one_go", 2)
+    uninterrupted = run(tmp_path / "one_go", 3)
     run(tmp_path / "interrupted", 1)
-    resumed = run(tmp_path / "interrupted", 2, resume=True)
+    resumed = run(tmp_path / "interrupted", 3, resume=True)
 
     assert resumed.history[-1]["global_step"] == uninterrupted.history[-1]["global_step"]
-    assert resumed.history[-1]["learning_rate"] == pytest.approx(
-        uninterrupted.history[-1]["learning_rate"], rel=1e-9)
+    # End of epoch 2: the first epoch the resume is responsible for, and still inside the warmup.
+    assert resumed.history[1]["learning_rate"] == pytest.approx(
+        uninterrupted.history[1]["learning_rate"], rel=1e-9)
     # ...and it is still climbing through the warmup, not sitting at the peak.
-    assert 0 < resumed.history[-1]["learning_rate"] < make_config().learning_rate
+    assert 0 < resumed.history[1]["learning_rate"] < make_config().learning_rate
 
 
-def test_schedule_horizon_keeps_the_learning_rate_high_past_num_epochs(setup, tmp_path):
-    """The recipe trains 15 epochs of a 20-epoch cosine; the horizon field is what allows that."""
-    teacher, fresh_student, dataset, sampler, adapter = setup
+def _research_schedule(optimizer, learning_rate, warmup_steps, total_steps, lr_floor=0.0):
+    """the research code's scheduler, transcribed, at ``cosine_fraction=1.0, plateau_end_factor=1.0``.
 
-    def final_lr(directory, **overrides):
-        config = make_config(num_epochs=2, warmup_steps=1, **overrides)
-        dataset.rechunk(0, config.seed)
-        student = apply_lora(fresh_student(), adapter, rank=config.lora_rank,
-                             alpha=config.lora_alpha)
-        state = train(teacher, student, dataset, sampler, adapter, config, directory)
-        return state.history[-1]["learning_rate"]
+    From ``src/lra_training.py`` (the phase-boundary block that builds ``warmup → plateau →
+    cosine``): with ``cosine_fraction=1.0`` the plateau is empty and the schedule is the
+    ``warmup → cosine`` branch. Kept here as an independent copy rather than imported, so that
+    :func:`lfa.train._build_scheduler` is checked against the research formula itself and not
+    against another call into its own code.
+    """
+    warmup_steps = min(warmup_steps, total_steps)
+    cosine_steps = total_steps - warmup_steps
+    warmup = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.1, end_factor=1.0,
+                                               total_iters=warmup_steps)
+    if cosine_steps <= 0:
+        constant = torch.optim.lr_scheduler.ConstantLR(optimizer, factor=1.0,
+                                                       total_iters=total_steps - warmup_steps)
+        return torch.optim.lr_scheduler.SequentialLR(optimizer, schedulers=[warmup, constant],
+                                                     milestones=[warmup_steps])
+    decay = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cosine_steps,
+                                                       eta_min=lr_floor * learning_rate)
+    return torch.optim.lr_scheduler.SequentialLR(optimizer, schedulers=[warmup, decay],
+                                                 milestones=[warmup_steps])
 
-    short = final_lr(tmp_path / "short")
-    long_horizon = final_lr(tmp_path / "long", schedule_horizon_epochs=20)
 
-    assert long_horizon > 10 * short
-    assert json.loads((tmp_path / "long" / "config.json").read_text())[
-        "schedule_horizon_epochs"] == 20
+@pytest.mark.parametrize("warmup_steps, steps_per_epoch, num_epochs, lr_floor", [
+    (50, 603, 15, 0.0),        # the shipped point: warmup(50) → cosine(8995)
+    (1, 7, 2, 0.0),            # a tiny run, where the warmup is most of it
+    (50, 3, 5, 0.0),           # warmup longer than the whole run
+    (10, 20, 3, 0.05),         # a non-zero floor
+])
+def test_the_cosine_schedule_matches_researchs_scheduler_step_for_step(
+    warmup_steps, steps_per_epoch, num_epochs, lr_floor
+):
+    """``lr_schedule="cosine"`` is the research code's schedule at ``cosine_fraction=1.0``, exactly.
+
+    The learning rate at a given step is the single largest lever on where a run lands (a wrong
+    schedule cost 0.9 of domain perplexity once), so the two formulas are compared at *every*
+    step rather than at the end.
+    """
+    config = make_config(learning_rate=3e-4, warmup_steps=warmup_steps, num_epochs=num_epochs,
+                         lr_schedule="cosine", lr_floor=lr_floor)
+    total_steps = steps_per_epoch * num_epochs
+
+    ours_param = torch.nn.Parameter(torch.zeros(1))
+    theirs_param = torch.nn.Parameter(torch.zeros(1))
+    ours_opt = torch.optim.AdamW([ours_param], lr=config.learning_rate)
+    theirs_opt = torch.optim.AdamW([theirs_param], lr=config.learning_rate)
+
+    ours = _build_scheduler(ours_opt, config, total_steps, logging.getLogger("test"))
+    theirs = _research_schedule(theirs_opt, config.learning_rate, warmup_steps, total_steps,
+                                 lr_floor)
+
+    with warnings.catch_warnings():                # stepping a scheduler with no optimizer step
+        warnings.filterwarnings("ignore", message=r".*before `optimizer\.step\(\)`.*")
+        for step in range(total_steps + 5):    # past the end too: both must stay well-defined
+            assert ours_opt.param_groups[0]["lr"] == pytest.approx(
+                theirs_opt.param_groups[0]["lr"], rel=1e-12, abs=1e-15), f"step {step}"
+            ours.step()
+            theirs.step()
+
+
+def test_a_constant_schedule_holds_the_peak_after_the_warmup():
+    """``lr_schedule="constant"`` is the research code's ``cosine_fraction=0`` branch: warmup, then flat."""
+    config = make_config(learning_rate=3e-4, warmup_steps=5, lr_schedule="constant")
+    param = torch.nn.Parameter(torch.zeros(1))
+    optimizer = torch.optim.AdamW([param], lr=config.learning_rate)
+    scheduler = _build_scheduler(optimizer, config, 40, logging.getLogger("test"))
+
+    seen = []
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r".*before `optimizer\.step\(\)`.*")
+        for _ in range(40):
+            seen.append(optimizer.param_groups[0]["lr"])
+            scheduler.step()
+
+    assert seen[0] == pytest.approx(3e-5)                      # start_factor 0.1
+    assert all(lr == pytest.approx(3e-4) for lr in seen[5:])   # flat from the warmup's end
+
+
+def test_an_unknown_lr_schedule_is_refused_at_construction():
+    with pytest.raises(ValueError, match="lr_schedule"):
+        make_config(lr_schedule="linear-warmdown")
 
 
 def test_a_missing_embedding_lookup_is_warned_about_once(setup, tmp_path, caplog):

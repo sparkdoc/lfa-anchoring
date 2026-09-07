@@ -1,10 +1,10 @@
 """The recipe layer: the shipped operating point, its stage-2 lift, and its coupling warnings.
 
 A recipe is a *joint* operating point, so what these tests check is that the bundled Qwen3-0.6B
-file still carries exactly the published point, that turning it into a `TrainConfig` preserves the
-two settings a reader is most likely to lose (the 20-epoch schedule horizon behind a 15-epoch
-dose, and the checkpointing that makes that dose recoverable), and that a run which departs from
-the calibrated rank or artifact is told that lambda no longer means what it meant.
+file still carries exactly the shipped point, that turning it into a `TrainConfig` preserves the
+two settings a reader is most likely to lose (the loader frame and the held-out split), and that
+a run which departs from the calibrated rank or artifact is told that lambda no longer means what
+it meant.
 """
 
 import dataclasses
@@ -19,10 +19,10 @@ from lfa.recipe import BUNDLED_DIR
 SHIPPED = dict(
     name="qwen3-0.6b", model_id="Qwen/Qwen3-0.6B", artifact="qwen3-0.6b-gmm1543k-int8",
     lora_rank=32, lora_alpha=64, freeze_embed=True, full_weight=False,
-    lambda_qkv=100000.0, lambda_mlp=100000.0, mu=0.05, mu_end_ratio=1.0,
+    lambda_qkv=100000.0, lambda_mlp=100000.0, mu=0.05,
     anchor_end_ratio=0.1, anchor_schedule="cosine", n_anchor_samples=16,
-    epochs=15, schedule_horizon_epochs=20, checkpoint_mode="all", checkpoint_every=5,
-    learning_rate=3e-4, batch_size=6, gradient_accumulation_steps=1,
+    epochs=15, checkpoint_mode="rolling", checkpoint_every=5,
+    learning_rate=3e-4, lr_schedule="cosine", batch_size=6, gradient_accumulation_steps=1,
     warmup_steps=50, weight_decay=0.01, sequence_length=512, seed=42, keep_short_whole=True,
     val_fraction=0.1,
     stage2_lambda_multiplier=3.0, calibrated_rank=32,
@@ -51,16 +51,16 @@ def test_yaml_documents_the_couplings_a_reader_has_to_know():
     """The file is read by humans before it is read by the loader; the guidance is the point."""
     text = (BUNDLED_DIR / "qwen3-0.6b.yaml").read_text()
     comments = "\n".join(line for line in text.splitlines() if line.lstrip().startswith("#")).lower()
-    for phrase in ("rank", "artifact", "full-weight", "perplexity-optimal", "twenty-epoch"):
+    for phrase in ("rank", "artifact", "corpus composition", "full-weight", "re-tune"):
         assert phrase in comments, f"the recipe's comment block never mentions {phrase!r}"
 
 
 def test_yaml_discloses_keep_short_whole_as_a_frame_field():
-    """It departs from the research code, under which the paper's perplexity points were measured."""
+    """Two runs under different settings of it see different text; the file has to say so."""
     comments = "\n".join(line for line in (BUNDLED_DIR / "qwen3-0.6b.yaml").read_text().splitlines()
                          if line.lstrip().startswith("#")).lower()
     assert "keep_short_whole" in comments and "frame field" in comments
-    assert "not comparable" in comments and "false" in comments
+    assert "not comparable" in comments
 
 
 # ==============================================================================================
@@ -73,7 +73,7 @@ def test_stage_one_config_carries_the_recipe_verbatim(tmp_path):
     assert config.lambda_qkv == 100000 and config.lambda_mlp == 100000
     assert config.model_id == "Qwen/Qwen3-0.6B"
     assert config.artifact_path == str(tmp_path / "stats.pt")
-    assert (config.mu, config.mu_end_ratio, config.n_anchor_samples) == (0.05, 1.0, 16)
+    assert (config.mu, config.n_anchor_samples) == (0.05, 16)
     assert (config.anchor_end_ratio, config.anchor_schedule) == (0.1, "cosine")
     assert (config.lora_rank, config.lora_alpha) == (32, 64)
     assert config.use_lora is True and config.full_weight is False and config.freeze_embed is True
@@ -81,23 +81,17 @@ def test_stage_one_config_carries_the_recipe_verbatim(tmp_path):
     assert (config.warmup_steps, config.weight_decay, config.sequence_length, config.seed) == (50, 0.01, 512, 42)
 
 
-def test_the_fifteen_epoch_dose_keeps_its_twenty_epoch_schedule_horizon(tmp_path):
-    """e15 is checkpoint 15 of a 20-epoch run.
-
-    The horizon is load-bearing in BOTH directions, which is why it is asserted exactly rather
-    than as a lower bound: a 15-epoch horizon would have decayed the learning rate to its floor by
-    e15, and a longer one leaves it too high. The acceptance run measured the second failure --
-    at a 100-epoch horizon e15 reaches domain perplexity 9.69 instead of the published 8.76.
-    """
+def test_the_schedule_is_a_cosine_over_the_epochs_actually_trained(tmp_path):
+    """One knob, and it is laid over `epochs`: there is no horizon that outlives the run."""
     config = Recipe.load("qwen3-0.6b").to_train_config(1, tmp_path / "stats.pt")
     assert config.num_epochs == 15
-    assert config.schedule_horizon_epochs == 20
+    assert config.lr_schedule == "cosine"
 
 
-def test_checkpointing_keeps_the_intermediate_doses_comparable(tmp_path):
-    """e5/e10/e15 land on disk; e20 is a different `epochs`, not something this run reaches."""
+def test_checkpointing_leaves_a_run_resumable(tmp_path):
+    """`rolling` writes `latest_model` + `training_state.pt`, which is what a resume needs."""
     config = Recipe.load("qwen3-0.6b").to_train_config(1, tmp_path / "stats.pt")
-    assert config.checkpoint_mode == "all"
+    assert config.checkpoint_mode == "rolling"
     assert config.checkpoint_every == 5
 
 
@@ -184,7 +178,7 @@ def test_a_saved_recipe_is_plain_readable_yaml(tmp_path):
     path = tmp_path / "probe.yaml"
     Recipe.load("qwen3-0.6b").save(path)
     loaded = yaml.safe_load(path.read_text())
-    assert loaded["lambda_qkv"] == 100000 and loaded["schedule_horizon_epochs"] == 20
+    assert loaded["lambda_qkv"] == 100000 and loaded["lr_schedule"] == "cosine"
 
 
 def test_an_unknown_field_is_refused_rather_than_ignored(tmp_path):
@@ -216,15 +210,14 @@ def test_epochs_must_be_at_least_one(tmp_path):
         Recipe.load(_write(tmp_path, epochs=0))
 
 
-def test_the_schedule_horizon_may_not_be_shorter_than_the_dose(tmp_path):
-    with pytest.raises(ValueError, match="15.*10|10.*15"):
-        Recipe.load(_write(tmp_path, epochs=15, schedule_horizon_epochs=10))
+def test_an_unknown_lr_schedule_is_refused_at_load(tmp_path):
+    with pytest.raises(ValueError, match="lr_schedule"):
+        Recipe.load(_write(tmp_path, lr_schedule="one-cycle"))
 
 
-def test_an_absent_schedule_horizon_is_allowed(tmp_path):
-    """`None` means "lay the schedule over the epochs actually trained"."""
-    recipe = Recipe.load(_write(tmp_path, schedule_horizon_epochs=None))
-    assert recipe.to_train_config(1, tmp_path / "s.pt").schedule_horizon_epochs is None
+def test_a_constant_schedule_is_allowed(tmp_path):
+    recipe = Recipe.load(_write(tmp_path, lr_schedule="constant"))
+    assert recipe.to_train_config(1, tmp_path / "s.pt").lr_schedule == "constant"
 
 
 def test_the_stage_two_multiplier_must_be_positive(tmp_path):
@@ -244,7 +237,7 @@ def test_val_fraction_must_leave_something_to_train_on(tmp_path, bad):
 
 
 def test_the_shipped_point_holds_a_tenth_of_the_documents_out(tmp_path):
-    """The paper's runs never trained on a tenth of the corpus, so their domain perplexity is a
+    """A tenth of the corpus is never trained on, so the domain perplexity a stage reports is a
     held-out measurement; a recipe that trained on everything would report a fit under the same
     name."""
     recipe = Recipe.load("qwen3-0.6b")

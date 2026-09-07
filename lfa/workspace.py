@@ -240,6 +240,7 @@ class Workspace:
         artifact: str = "qwen3-0.6b-gmm1543k-int8",
         recipe: str | None = None,
         fetch: bool = True,
+        artifact_id: str | None = None,
     ) -> "Workspace":
         """Create a workspace over ``model_id`` and put its first p(h) artifact in place.
 
@@ -257,6 +258,14 @@ class Workspace:
                 none is, every training call has to name one.
             fetch: download a registry artifact that is not already there. ``False`` leaves the
                 workspace without a p(h) (and says so), for a machine with no network.
+            artifact_id: the registry id ``artifact`` is a copy of, when it is passed as a *path*
+                to a file fetched out of band. It is recorded as the workspace's ``artifact_id``,
+                which is what :meth:`lfa.recipe.Recipe.warnings` reads the recipe's calibration
+                against -- so naming it here stops a recipe warning that lambda was calibrated
+                against a different artifact when it was calibrated against exactly this one. It
+                is taken on the caller's word (the file is not digest-checked against the
+                registry), so name it only for a file you know the provenance of; it is ignored
+                when ``artifact`` is itself a registry id.
 
         Raises:
             FileExistsError: ``path`` already holds a workspace.
@@ -277,7 +286,15 @@ class Workspace:
         if artifact in ARTIFACTS:
             artifact_id, source = artifact, None
         elif Path(artifact).exists():
-            artifact_id, source = None, Path(artifact)
+            source = Path(artifact)
+            if artifact_id is not None and artifact_id not in ARTIFACTS:
+                raise ValueError(
+                    f"artifact_id={artifact_id!r} is not a published artifact id "
+                    f"({', '.join(sorted(ARTIFACTS))}). Leave it out for a local artifact that "
+                    "is not a copy of a published one."
+                )
+            if artifact_id is not None:
+                logger.info("Local artifact %s recorded as the published %r", source, artifact_id)
         else:
             raise ValueError(
                 f"{artifact!r} is neither a path that exists nor a published artifact id "
@@ -370,16 +387,16 @@ class Workspace:
 
         The stage number decides the lambda: from stage 2 on, the recipe's
         ``stage2_lambda_multiplier`` applies, because a later stage anchors a model that already
-        carries a domain. Training the *same* corpus again -- more dose on the domain in progress
-        -- is the same stage and keeps the same lambda; a *different* corpus is the next stage and
-        must be preceded by :meth:`extend`.
+        carries a domain. Training the *same* corpus again -- more epochs on the domain in
+        progress -- is the same stage and keeps the same lambda; a *different* corpus is the next
+        stage and must be preceded by :meth:`extend`.
 
         Args:
             corpus: a file or directory of documents (see :func:`lfa.corpus.load_texts`).
             recipe: a :class:`~lfa.recipe.Recipe`, a bundled name, or a path. Defaults to the
                 workspace's own.
-            epochs: override the recipe's dose. Validated against the schedule horizon, so a dose
-                past the end of the learning-rate schedule is refused rather than run.
+            epochs: override the recipe's number of epochs. The learning-rate schedule is laid
+                over whatever this says, so it changes the whole curve, not only where it stops.
             output_name: run directory name under ``runs/``. The default is ``stage{N}``, and
                 ``stage{N}_run{k}`` for a repeat of a stage already trained -- a repeat is a
                 second run, not an overwrite of the first, and both stay readable.
@@ -501,8 +518,8 @@ class Workspace:
     def _run_name(self, stage: int, repeat: bool, resume: bool) -> str:
         """The default run directory for this stage.
 
-        The first run of a stage is ``stage{N}``. A repeat -- more dose on the domain already in
-        progress -- is ``stage{N}_run{k}``, because two history entries pointing at one directory
+        The first run of a stage is ``stage{N}``. A repeat -- more epochs on the domain already
+        in progress -- is ``stage{N}_run{k}``, because two history entries pointing at one directory
         would leave the first run's config, curve and checkpoint overwritten by the second's. A
         *resumed* repeat is the same run continuing, so it keeps its own directory.
         """
@@ -555,9 +572,10 @@ class Workspace:
                 sampler.build_embedding_lookup_from_model(teacher, adapter)
 
             tokenizer = load_tokenizer(str(base_model))
-            # The held-out split is built and then not passed to the trainer: holding documents
-            # out is what makes this stage's domain perplexity a measurement rather than a fit,
-            # and `evaluate` rebuilds the same split from the recorded corpus, seed and fraction.
+            # Holding documents out is what makes this stage's domain perplexity a measurement
+            # rather than a fit. The split goes to the trainer, which scores it after every epoch
+            # (loss and perplexity into `training_history.json`), and `evaluate` later rebuilds
+            # the same split from the recorded corpus, seed and fraction.
             dataset, holdout = load_corpus(corpus_path, tokenizer,
                                            max_length=config.sequence_length,
                                            val_fraction=config.val_fraction, seed=config.seed,
@@ -566,7 +584,8 @@ class Workspace:
                       "n_val_docs": holdout.report["n_docs"] if holdout is not None else 0}
 
             training = run_training(teacher, student, dataset, sampler, adapter, config,
-                                    output_dir, resume=resume, tokenizer=tokenizer)
+                                    output_dir, resume=resume, tokenizer=tokenizer,
+                                    val_dataset=holdout)
             return training, counts
         finally:
             del teacher, student, sampler
@@ -896,7 +915,7 @@ class Workspace:
             domains:
               - name: philosophy          # the run directory under runs/ (optional)
                 corpus: data/domain_a     # relative paths resolve against the spec file
-                epochs: 15                # optional dose override
+                epochs: 15                # optional epoch-count override
               - name: archaeology
                 corpus: data/domain_c
 
