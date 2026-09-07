@@ -75,13 +75,15 @@ __all__ = ["Workspace", "StageOrderError", "WORKSPACE_FILE", "HISTORY_FILE",
 WORKSPACE_FILE = "workspace.json"
 HISTORY_FILE = "history.json"
 
-#: Logged once per run whose corpus loader keeps short documents in every epoch. It is a *frame*
-#: field, not a tuning knob: the paper's perplexity points were measured under the other setting,
-#: where a document shorter than the epoch's random chunk offset drops out of that epoch, so a
-#: number produced under one loader is not comparable with a number produced under the other.
+#: Logged once per run whose corpus loader keeps short documents in every epoch (the default).
+#: It is a *frame* field, not a tuning knob: under the other setting a document shorter than the
+#: epoch's random chunk offset drops out of that epoch, so the model sees a different amount of
+#: the short documents and a perplexity produced under one loader is not comparable with a
+#: perplexity produced under the other. Said out loud because it is invisible in every metric.
 LOADER_FRAME_NOTICE = (
-    "loader frame: short documents are kept every epoch (differs from the paper's measured runs; "
-    "perplexity points are not comparable across this frame)"
+    "loader frame: short documents are kept whole in every epoch; a run under "
+    "keep_short_whole=False sees them in fewer epochs, and perplexities are not comparable "
+    "across the two"
 )
 
 
@@ -400,8 +402,8 @@ class Workspace:
             output_name: run directory name under ``runs/``. The default is ``stage{N}``, and
                 ``stage{N}_run{k}`` for a repeat of a stage already trained -- a repeat is a
                 second run, not an overwrite of the first, and both stay readable.
-            keep_short_whole: override the recipe's corpus-chunking *frame*. ``False``
-                reproduces the loader the paper's runs were measured under.
+            keep_short_whole: override the recipe's corpus-chunking *frame*. Under ``False`` a
+                document shorter than the epoch's random chunk offset drops out of that epoch.
             full_weight: override the recipe's training mode. Full weight is outside the LFA
                 paper's validated envelope; the recipe's own warning says so.
             device: a single device, as :func:`lfa.models.resolve_device` reads it.

@@ -253,7 +253,8 @@ def test_epochs_overrides_the_recipes_epoch_count(tmp_path, registry, base_dir, 
 
 def test_keep_short_whole_can_be_overridden_per_run(tmp_path, registry, base_dir, corpus_a,
                                                     caplog):
-    """The loader frame is a per-run override, because the paper's runs used the other one."""
+    """The loader frame is a per-run override: two runs under different settings see different
+    text, so it has to be reachable without editing the recipe."""
     ws = new_workspace(tmp_path, base_dir)
     with caplog.at_level("INFO", logger="lfa.workspace"):
         entry = ws.train(corpus_a, recipe=tiny_recipe(base_dir, keep_short_whole=True),

@@ -156,11 +156,11 @@ class TrainConfig:
     # -- data
     seed: int = 42
     keep_short_whole: bool = True
-    #: Share of DOCUMENTS held out of training, shuffled under ``seed`` (the paper's runs held out
-    #: 0.1). :func:`lfa.train.train` is handed a corpus that is already built, so this field is
-    #: read by whoever builds it -- :meth:`lfa.workspace.Workspace.train` passes it to
-    #: :func:`lfa.corpus.load_corpus` -- and recorded in ``config.json`` so a run says which
-    #: documents it was allowed to see.
+    #: Share of DOCUMENTS held out of training, shuffled under ``seed``. :func:`lfa.train.train`
+    #: is handed a corpus that is already built, so this field is read by whoever builds it --
+    #: :meth:`lfa.workspace.Workspace.train` passes it to :func:`lfa.corpus.load_corpus`, and
+    #: hands the trainer the held-out half for the per-epoch :func:`validation_loss` pass -- and
+    #: it is recorded in ``config.json`` so a run says which documents it was allowed to see.
     val_fraction: float = 0.1
 
     def __post_init__(self) -> None:
