@@ -29,3 +29,15 @@ def test_unsupported_model_raises():
 def test_effective_weight_plain_linear():
     lin = torch.nn.Linear(4, 3)
     assert torch.equal(effective_weight(lin), lin.weight)
+
+def test_site_module_resolves_the_module_whose_input_is_the_site(tiny_model):
+    model, _ = tiny_model
+    ad = get_adapter(model)
+    # pre_qkv is the input_layernorm output, i.e. what q_proj reads; pre_o is o_proj's input.
+    assert ad.site_module(model, 0, "pre_qkv") is model.model.layers[0].self_attn.q_proj
+    assert ad.site_module(model, 1, "pre_o") is model.model.layers[1].self_attn.o_proj
+
+def test_site_module_rejects_an_unknown_site(tiny_model):
+    model, _ = tiny_model
+    with pytest.raises(ValueError, match="post_mlp"):
+        get_adapter(model).site_module(model, 0, "post_mlp")

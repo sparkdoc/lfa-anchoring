@@ -265,3 +265,23 @@ def test_make_dataloader_shuffle_is_seeded(tiny_model, tiny_texts):
 
     assert first_batch(42) == first_batch(42)
     assert first_batch(42) != first_batch(7)
+
+
+def test_load_texts_renders_instruction_pairs_with_the_chat_template(tmp_path):
+    (tmp_path / "pairs.jsonl").write_text('{"prompt":"q","response":"r"}\n')
+
+    class Templating:
+        def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=False):
+            return "<chat>" + "|".join(m["content"] for m in messages) + "</chat>"
+
+    assert load_texts(tmp_path, tokenizer=Templating()) == ["<chat>q|r</chat>"]
+
+
+def test_load_texts_falls_back_when_the_template_refuses(tmp_path):
+    (tmp_path / "pairs.jsonl").write_text('{"prompt":"q","response":"r"}\n')
+
+    class NoTemplate:
+        def apply_chat_template(self, *args, **kwargs):
+            raise ValueError("this tokenizer has no chat template")
+
+    assert load_texts(tmp_path, tokenizer=NoTemplate()) == ["q\nr"]

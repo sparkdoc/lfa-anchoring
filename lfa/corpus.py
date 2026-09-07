@@ -168,8 +168,13 @@ class ChunkedCorpus(Dataset):
 # Reading documents off disk
 # ------------------------------------------------------------------------------------------
 
-def _extract_text(obj: Any) -> str | None:
-    """The document carried by a JSON record, or ``None`` if it carries none."""
+def _extract_text(obj: Any, tokenizer=None) -> str | None:
+    """The document carried by a JSON record, or ``None`` if it carries none.
+
+    A ``prompt``/``response`` pair is rendered with ``tokenizer``'s chat template when one is
+    given, so that the text carries the control tokens the model actually sees in use; without a
+    tokenizer (or if the template fails) the two fields are joined by a newline.
+    """
     if isinstance(obj, str):
         return obj
     if isinstance(obj, dict):
@@ -177,11 +182,20 @@ def _extract_text(obj: Any) -> str | None:
             if isinstance(obj.get(key), str):
                 return obj[key]
         if obj.get("prompt"):
-            return (str(obj.get("prompt", "")) + "\n" + str(obj.get("response", ""))).strip()
+            prompt, response = str(obj.get("prompt", "")), str(obj.get("response", ""))
+            if tokenizer is not None and hasattr(tokenizer, "apply_chat_template"):
+                messages = [{"role": "user", "content": prompt},
+                            {"role": "assistant", "content": response}]
+                try:
+                    return tokenizer.apply_chat_template(messages, tokenize=False,
+                                                         add_generation_prompt=False)
+                except Exception:                     # no template, or one that rejects the pair
+                    logger.debug("Chat template failed for an instruction pair; joining plainly.")
+            return (prompt + "\n" + response).strip()
     return None
 
 
-def _load_json_texts(file_path: Path) -> list[str]:
+def _load_json_texts(file_path: Path, tokenizer=None) -> list[str]:
     """Documents from a ``.json`` (object or array) or ``.jsonl`` (one object per line) file."""
     texts: list[str] = []
     with open(file_path, "r", encoding="utf-8") as f:
@@ -191,19 +205,25 @@ def _load_json_texts(file_path: Path) -> list[str]:
             data = json.load(f)
             records = data if isinstance(data, list) else [data]
     for record in records:
-        text = _extract_text(record)
+        text = _extract_text(record, tokenizer)
         if text and text.strip():
             texts.append(text)
     return texts
 
 
-def load_texts(path: str | Path) -> list[str]:
+def load_texts(path: str | Path, tokenizer=None) -> list[str]:
     """Read documents from a file or a directory tree, in sorted path order.
 
     ``.txt``/``.md`` files are one document each; ``.jsonl`` files are one record per line and
     ``.json`` files a single object or an array, each record contributing its ``text`` (or
-    ``content``/``body``/``document``/``passage``) field, else its ``prompt`` and ``response``
-    joined by a newline. Other extensions are ignored, as are blank documents.
+    ``content``/``body``/``document``/``passage``) field, else its ``prompt`` and ``response``.
+    Other extensions are ignored, as are blank documents.
+
+    Args:
+        tokenizer: when given, ``prompt``/``response`` records are rendered with its chat
+            template rather than joined by a newline. Pass one when the texts are being used to
+            estimate p(h) -- the hidden states of a chat-formatted exchange are not those of the
+            same words run together -- and leave it out for training documents.
     """
     path = Path(path)
     if not path.exists():
@@ -215,7 +235,7 @@ def load_texts(path: str | Path) -> list[str]:
     for file_path in files:
         suffix = file_path.suffix.lower()
         if suffix in JSON_EXTENSIONS:
-            texts.extend(_load_json_texts(file_path))
+            texts.extend(_load_json_texts(file_path, tokenizer))
         elif suffix in TEXT_EXTENSIONS:
             content = file_path.read_text(encoding="utf-8").strip()
             if content:

@@ -110,13 +110,35 @@ class ArtifactModelMismatch(ValueError):
     """Raised when a p(h) artifact does not describe the model it is about to anchor."""
 
 
+def _site_input_width(adapter, model, layer: int, site: str) -> int | None:
+    """How wide the tensor entering ``site`` is, read off the module the site feeds.
+
+    This is NOT always the model's hidden size: ``pre_o`` is the concatenated attention head
+    outputs, ``num_heads * head_dim``, which on Qwen3-0.6B is 2048 against a hidden size of 1024.
+    Returns ``None`` when the module cannot be resolved (an out-of-range layer, say) or exposes no
+    input width, leaving that site unchecked rather than failed on a guess.
+    """
+    try:
+        module = adapter.site_module(model, layer, site)
+    except (ValueError, IndexError, AttributeError):
+        return None
+    width = getattr(module, "in_features", None)
+    if width is not None:
+        return int(width)
+    for child in module.modules():                 # a composite site (the whole MLP): its first
+        if isinstance(child, torch.nn.Linear):     # projection reads the site's input
+            return int(child.in_features)
+    return None
+
+
 def validate_against_model(params: dict, model, adapter, model_id: str | None = None) -> None:
     """Check that ``params`` was collected from a model shaped like ``model``.
 
-    Verifies the hidden size (every site's ``mean``), the layer count (the largest per-layer site
-    index plus one), and -- when the artifact carries a ``__meta__`` block and ``model_id`` is
-    given -- that the two model identifiers agree. An artifact silently mismatched on any of these
-    produces anchoring pressure toward the wrong function, so this is a hard failure.
+    Verifies each site's width against the input width of the module that site feeds, the layer
+    count (the largest per-layer site index plus one), and -- when the artifact carries a
+    ``__meta__`` block -- that the block agrees with the model on hidden size and depth, and with
+    ``model_id`` when one is given. An artifact silently mismatched on any of these produces
+    anchoring pressure toward the wrong function, so this is a hard failure.
 
     Raises:
         ArtifactModelMismatch: naming both sides of the first disagreement found.
@@ -132,10 +154,11 @@ def validate_against_model(params: dict, model, adapter, model_id: str | None = 
             continue
         layer, site = parsed
         mean = entry.get("mean")
-        if torch.is_tensor(mean) and mean.shape[0] != hidden_size:
+        expected_width = _site_input_width(adapter, model, layer, site)
+        if torch.is_tensor(mean) and expected_width is not None and mean.shape[0] != expected_width:
             raise ArtifactModelMismatch(
-                f"Artifact site {key!r} has hidden size {mean.shape[0]}, but the model's hidden "
-                f"size is {hidden_size}."
+                f"Artifact site {key!r} has width {mean.shape[0]}, but this model's {site} input "
+                f"is {expected_width} wide (hidden size {hidden_size})."
             )
         if site != LM_HEAD_SITE:
             layer_indices.append(layer)
@@ -148,7 +171,20 @@ def validate_against_model(params: dict, model, adapter, model_id: str | None = 
             )
 
     meta = params.get(META_KEY)
-    if meta is not None and model_id is not None and meta.get("model_id") != model_id:
+    if meta is None:
+        return
+
+    if meta.get("hidden_size") is not None and int(meta["hidden_size"]) != hidden_size:
+        raise ArtifactModelMismatch(
+            f"Artifact meta declares hidden size {meta['hidden_size']}, but the model's hidden "
+            f"size is {hidden_size}."
+        )
+    if meta.get("num_layers") is not None and int(meta["num_layers"]) != expected_layers:
+        raise ArtifactModelMismatch(
+            f"Artifact meta declares {meta['num_layers']} layers, but the model has "
+            f"{expected_layers}."
+        )
+    if model_id is not None and meta.get("model_id") != model_id:
         raise ArtifactModelMismatch(
             f"Artifact was collected from model_id {meta.get('model_id')!r}, but it is being used "
             f"with {model_id!r}."
