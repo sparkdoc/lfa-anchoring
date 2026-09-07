@@ -6,7 +6,7 @@ computed, at the tolerance each quantity deserves.
 
 The comparison is fixture-based. `capture_fixtures.py` runs **inside the research code's virtualenv**,
 records what the research code produces, and writes three `.pt` files into `fixtures/`;
-`test_equivalence.py` runs in the companion's own venv and replays each of them. Two tests
+`test_equivalence.py` runs in the companion's own venv and replays each of them. Three tests
 compare the two implementations directly in one process instead, where that is possible without
 a GPU.
 
@@ -24,8 +24,8 @@ pytest tests/equivalence -m "equivalence and not gpu" -q               # the fou
 ```
 
 Three of them import `src.*` from the the research code checkout in-process. `src.lra_distribution` imports
-`scipy` at module level, which is not a dependency of this package; without it those two skip
-with a message naming it (`uv pip install scipy -p .venv` to run them).
+`scipy` at module level, which is not a dependency of this package; without it the two that
+import it skip with a message naming it (`uv pip install scipy -p .venv` to run them).
 
 ## What each test proves
 
