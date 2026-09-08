@@ -17,6 +17,39 @@ instruments and are quoted in [concepts.md](concepts.md) as the paper's, not as 
 
 Measured 2026-09-07, re-checked 2026-09-08, on one RTX 3090.
 
+## One deliberate divergence, after the fact
+
+Everything below was measured against the loader as it stood on 2026-09-08. **Later that day the
+corpus loader was deliberately changed, and the training stream is no longer identical to the
+research code's for a corpus that contains documents longer than one chunk.** The claim is not
+withdrawn — it is dated, and it is conditioned.
+
+What changed: the per-epoch chunk offset used to be where each document *started*, so a document
+longer than `sequence_length` lost its first `offset` tokens in every epoch after the first — 42.6 %
+of a 600-token document in an average epoch, 25.0 % of a 1,024-token one, 5.1 % of a 5,000-token
+one. The offset now moves the chunk **boundaries** instead: the leading segment is emitted as a
+chunk of its own, and nothing is discarded. Corpora of book-length documents — the paper's, and
+this comparison's — sit in the harmless tail of that table, which is why the defect survived the
+port and this page; corpora of articles, documentation pages or chapters do not, and that is a
+public package's problem rather than the research record's.
+
+What that does to the numbers on this page:
+
+* **Unchanged.** Everything measured at offset 0, which both loaders share: the corpus counts
+  (training chunks, held-out chunks, held-out tokens — all taken when the corpus is built), the
+  first collated batch, and the run's **first** epoch.
+* **Diverged.** Every later epoch. Each document longer than one chunk now yields one additional
+  chunk per epoch, so the per-epoch optimizer-step counts and the per-epoch content and held-out
+  losses in the Tier-2 table would no longer land where they did — not by drifting, but because
+  the two loaders are now feeding different text.
+* **Recoverable.** The old stream is still reachable: `rotate_offset=False` on `ChunkedCorpus`,
+  `load_corpus`, `TrainConfig`, `Recipe.to_train_config` and `Workspace.train` restores it exactly,
+  and it is recorded per run as a frame field. Re-running this comparison means setting it.
+
+The divergence is deliberate and it is in the package's favour: a user's corpus is not silently
+trained on a fraction of itself. It is written down here because "bit-identical to the research
+code" is the kind of claim that has to say when it stopped being true.
+
 ## Tier 1 — the pieces, against captured reference values
 
 Each check below replays a value recorded from the research implementation, or runs both
@@ -46,7 +79,7 @@ nothing.
 | The same four, plus the total, replayed from a fixture captured on the real recipe adapter | agree to 1e-4 relative (reductions over bf16 forwards, so the last digits carry accumulation order) |
 | The weight-regularization term (`mu`) on its **fast path** — the LoRA-factored form, `‖s·BA‖²_F = s²·tr((BᵀB)(AAᵀ))` | agrees to 1e-4 relative with the research implementation's own factored path (both are exact arithmetic over the fp32 factors — no near-equal subtraction on either side) |
 | The layer schedule, `compute_layer_weights`, over **36 configurations** — {cosine, linear, exponential} × end-ratio {0.1, 0.5, 1.0} × normalize {on, off} × {2, 28} layers | **bit-identical** at every one |
-| The training stream: the corpus's chunk count and the first collated batch | **exact** (2,453 chunks on the paper's domain-A corpus at 512 tokens) |
+| The training stream: the corpus's chunk count and the first collated batch | **exact** (2,453 chunks on the paper's domain-A corpus at 512 tokens) — both are read at offset 0, which the loader change above leaves alone |
 | Blockwise int8 quantization of a real `pca_components` basis block | **bit-identical** |
 | The whole fidelity ladder on a synthetic artifact — full-covariance heads, whitened top-*m* heads with a Gaussian tail, PCA-only and moments-only sites, the frequency-weighted layer-0 lookup | **bit-identical** |
 | The artifact build's PCA basis on a real activation covariance | same component count and eigen-spectrum, to fp16 storage |
@@ -96,9 +129,9 @@ What is compared is the **deterministic** part of the run:
 | per-epoch content loss, all 15 epochs | worst epoch **0.191 %** | 0.5 % |
 | per-epoch held-out loss, all 15 epochs | worst epoch **0.0104 nats** | 0.03 nats |
 
-The step count is the tight one. It is a function of the document set, the split, the chunker, each
-epoch's chunk offset, the batch size and the accumulation window, so a difference in any of those
-lands there — as an integer, which no amount of floating-point drift can blur; and because the
+The step count is the tight one — and it is the row the loader change above moves, from the second
+epoch on. It is a function of the document set, the split, the chunker, each epoch's chunk offset,
+the batch size and the accumulation window, so a difference in any of those lands there — as an integer, which no amount of floating-point drift can blur; and because the
 learning-rate schedule is a function of the step, matching steps also mean matching learning rates.
 None of these is a *proof* of identity: equal chunk and token counts are arithmetically consistent
 with different text. What rules that out is at the source level — both loaders enumerate the corpus

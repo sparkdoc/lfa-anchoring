@@ -153,7 +153,11 @@ perplexity below base is still not by itself evidence that anything was preserve
 repository does not reproduce it and does not claim to.
 
 **This package's own measured point.** One full run of the bundled recipe was compared against a
-research-code run of the *identical* configuration. The anchor is a Monte-Carlo term — 16 hidden
+research-code run of the *identical* configuration. (Measured before the loader change of
+2026-09-08, which made the per-epoch chunk offset rotate the chunk boundaries rather than discard
+each document's leading tokens. The corpus counts below are read at offset 0 and are unaffected;
+the per-epoch series are, from the second epoch on, and `rotate_offset=False` restores the stream
+they were measured under. [verification.md](verification.md) says what that changes and why.) The anchor is a Monte-Carlo term — 16 hidden
 states drawn per site per step — and the two implementations draw from independent RNG streams, so
 two full runs are two draws of a stochastic objective. What is compared is therefore the
 deterministic part of the run, which is not resampled. Measured 2026-09-07:

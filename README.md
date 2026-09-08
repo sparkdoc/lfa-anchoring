@@ -150,6 +150,14 @@ checkpoints, artifacts and corpora that are not public, so it lives with the res
 not in this repository — it is available to a reviewer who asks. And agreement with another
 implementation is not correctness.
 
+It is also dated. Since it was measured the corpus loader has **deliberately diverged**: the
+per-epoch chunk offset now rotates the chunk boundaries instead of discarding each document's first
+`offset` tokens, which the old behaviour did in every epoch after the first — costing a 600-token
+document 42.6 % of its tokens in an average epoch, a 5,000-token one 5.1 %. Long documents are the
+harmless tail, which is why the paper's corpora never showed it. The epoch-0 stream, and therefore
+every corpus count on that page, is unchanged; the per-epoch series are not, and
+`rotate_offset=False` restores the old stream for anyone reproducing them.
+
 None of it is a reproduction of a published number either. The paper's own headline — domain
 perplexity 8.76 on Qwen3-0.6B at a seed ΔPPL of −10.0 %, i.e. seed-corpus perplexity 10 % *below*
 the base model's — is the paper's measurement on the paper's corpus and instruments, and is quoted

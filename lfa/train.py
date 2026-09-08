@@ -157,6 +157,11 @@ class TrainConfig:
     # -- data
     seed: int = 42
     keep_short_whole: bool = True
+    #: Whether the per-epoch chunk offset ROTATES the boundaries (the default) or truncates each
+    #: document's first ``offset`` tokens away, which is what the research loader does. A *frame*
+    #: field, read by whoever builds the corpus, recorded in ``config.json``, and worth setting to
+    #: ``False`` only to reproduce a stream produced under that loader.
+    rotate_offset: bool = True
     #: Share of DOCUMENTS held out of training, shuffled under ``seed``. :func:`lfa.train.train`
     #: is handed a corpus that is already built, so this field is read by whoever builds it --
     #: :meth:`lfa.workspace.Workspace.train` passes it to :func:`lfa.corpus.load_corpus`, and
@@ -361,9 +366,10 @@ def train_epoch(
     """One pass over ``dataloader`` with gradient accumulation.
 
     An epoch can legitimately be empty: :meth:`~lfa.corpus.ChunkedCorpus.rechunk` cuts every
-    document from a per-epoch offset, and with ``keep_short_whole=False`` a corpus of short
-    documents yields nothing at some offsets. That is skipped with a warning -- no optimizer
-    step, ``global_step`` unchanged -- rather than dividing by zero inside the sampler.
+    document at a per-epoch offset, and with ``keep_short_whole=False`` and ``rotate_offset=False``
+    a corpus of short documents yields nothing at some offsets. That is skipped with a warning --
+    no optimizer step, ``global_step`` unchanged -- rather than dividing by zero inside the
+    sampler.
 
     Returns:
         ``(metrics, global_step)``.

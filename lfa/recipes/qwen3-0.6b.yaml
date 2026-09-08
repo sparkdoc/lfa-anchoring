@@ -65,6 +65,14 @@ seed: 42
 # offset is past its end. The two settings show the model different amounts of the short documents,
 # so perplexity numbers measured under one are not comparable with numbers measured under the other.
 keep_short_whole: true
+# rotate_offset is the second frame field: with `true` the per-epoch chunk offset rotates the chunk
+# BOUNDARIES -- the leading segment [0, offset) is a chunk of its own -- so every token is trained
+# on in every epoch. With `false` (what the research loader does, and what the published
+# verification run was produced under) the offset is where each document STARTS, so its first
+# `offset` tokens are dropped that epoch: 42.6 % of a 600-token document in an average epoch, 5.1 %
+# of a 5,000-token one. The two settings train on different amounts of text, so perplexities are
+# not comparable across them.
+rotate_offset: true
 # a tenth of the documents are held out and scored after every epoch, so the domain number is a
 # measurement rather than a fit
 val_fraction: 0.1

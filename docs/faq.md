@@ -120,19 +120,28 @@ documents you have into the shape the loader reads, and the couplings in
 
 ## What is the "loader frame" the logs mention?
 
-`keep_short_whole` — whether a document that fits in a single chunk is present in **every** epoch
-(the default, `true`) or drops out of every epoch whose random chunk offset is past its end
-(`false`).
+Two fields, both about how the per-epoch chunk offset is applied, and both **frame** fields rather
+than tuning knobs: they change how much text the model sees, they are invisible in every metric a
+run reports, and λ is coupled to corpus composition. A perplexity produced under one setting is not
+comparable with one produced under the other. That is why a run says out loud which frame it used
+and records both settings in its history entry rather than only in the recipe.
 
-It is a **frame** field, not a tuning knob: realized exposure to the short documents differs by
-about threefold between the two settings, and λ is coupled to corpus composition. A perplexity
-produced under one setting is not comparable with one produced under the other. It is invisible in
-every metric, which is why a run says out loud which frame it used, and why the setting is recorded
-in each stage's history entry rather than only in the recipe.
+`keep_short_whole` — whether a document that fits in a single chunk is cut the same way in **every**
+epoch (the default, `true`) or is cut by the offset like any other document (`false`); under `false`
+*and* `rotate_offset: false` it drops out of every epoch whose offset is past its end.
 
-The default here is `true`. This package does not offer a switch for anything else on the command
-line; the field exists in `TrainConfig` and `Recipe` for a caller who must match an external
-frame exactly.
+`rotate_offset` — whether the epoch offset moves the chunk **boundaries** (the default, `true`: the
+leading segment `[0, offset)` becomes a chunk of its own, so every token is trained on in every
+epoch) or is where each document **starts** (`false`: its first `offset` tokens are not trained on
+that epoch). The second is what the research loader does, and what the numbers in
+[verification.md](verification.md) were produced under. It costs a 600-token document 42.6 % of its
+tokens in an average epoch and 85.2 % in the worst; a 1,024-token one 25.0 % / 50.0 %; a
+5,000-token one 5.1 %. Corpora of book-length documents sit in the harmless tail, which is why it
+went unnoticed; corpora of articles, documentation pages or chapters do not.
+
+The defaults here are `true` and `true`. This package does not offer a switch for either on the
+command line; the fields exist in `TrainConfig` and `Recipe`, and as `Workspace.train` arguments,
+for a caller who must match an external frame exactly.
 
 ## Is the learning-rate schedule exactly restored when I `--resume`?
 

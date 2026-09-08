@@ -6,9 +6,17 @@ different positions in different epochs; epoch 0 is always offset 0. Nothing is 
 the chunking is deterministic in ``(seed, epoch)`` — two runs with the same seed see the same
 stream.
 
-**One default deliberately differs from the research code**: ``keep_short_whole``
-defaults to ``True`` here. See :class:`ChunkedCorpus` for what the flag does and why the research
-code keeps the other default.
+The offset **rotates the chunk boundaries; it does not truncate the document**. The leading
+segment ``[0, offset)`` is emitted as a chunk of its own alongside the offset-aligned ones, so
+every token is trained on in every epoch while the boundaries still move between epochs.
+
+**Two defaults deliberately differ from the research code**, and both are recorded per run as
+*frame* fields: ``keep_short_whole`` defaults to ``True`` here, and ``rotate_offset`` defaults to
+``True``. Under the research code's ``rotate_offset=False`` the epoch offset discards each
+document's first ``offset`` tokens: a 600-token document keeps 57.4 % of its tokens in an average
+epoch and 14.8 % in the worst, and a 1,024-token one 75.0 % / 50.0 %. Long documents — the shape
+of the corpora the published runs used — sit in the harmless tail (5,000 tokens: 94.9 %), which is
+why the defect was invisible there. See :class:`ChunkedCorpus`.
 
 The only per-chunk targets are the inputs themselves (``labels == input_ids``); the model shifts
 them internally. There is no QA supplement in the companion, so there is no prompt masking and no
@@ -35,7 +43,9 @@ JSON_EXTENSIONS = (".json", ".jsonl")
 # JSON fields that carry a document, in preference order.
 _TEXT_FIELDS = ("text", "content", "body", "document", "passage")
 
-# A chunk shorter than this is not worth a training step; it is dropped.
+# A chunk shorter than this is not worth a training step; it is dropped. Only a document's
+# *final* segment can be this short: a leading segment below the minimum is folded away by
+# taking the epoch-0 cut for that document instead (:meth:`ChunkedCorpus._chunk_bounds`).
 MIN_CHUNK_TOKENS = 10
 
 
@@ -49,19 +59,28 @@ class ChunkedCorpus(Dataset):
         max_length: chunk length in tokens.
         stride: distance between chunk starts. ``0`` means ``max_length``, i.e. no overlap.
         keep_short_whole: if ``True`` (the companion's default), a document that fits in one
-            chunk (``<= max_length`` tokens) ignores the epoch offset and is therefore present in
-            EVERY epoch. ``False`` is the research default, under which the offset loop
-            ``range(offset, len(doc), stride)`` yields no chunk at all for a document shorter than
-            the epoch's offset — short documents drop out of most epochs. ``False`` is offered
-            only so a run can be matched deliberately to a corpus chunked that way; nothing in
-            this package sets it, and it is a frame field (:mod:`lfa.workspace`), so perplexities
-            are not comparable across the two settings.
+            chunk (``<= max_length`` tokens) ignores the epoch offset and is therefore cut the
+            same way in every epoch. Under ``False`` such a document is cut by the offset like
+            any other; combined with ``rotate_offset=False`` that is the research default, under
+            which the offset loop ``range(offset, len(doc), stride)`` yields no chunk at all for a
+            document shorter than the epoch's offset — short documents drop out of most epochs.
+            It is a frame field (:mod:`lfa.workspace`), so perplexities are not comparable across
+            the two settings.
+        rotate_offset: if ``True`` (the default), the epoch offset ROTATES the chunk boundaries:
+            the leading segment ``[0, offset)`` is emitted as a chunk of its own beside the
+            offset-aligned chunks, so no token is lost. ``False`` is the research behaviour, which
+            starts at ``offset`` and therefore **discards** each document's first ``offset``
+            tokens every epoch — 42.6 % of a 600-token document in an average epoch, 25.0 % of a
+            1,024-token one. It is offered only so a run can be matched deliberately to the stream
+            the published numbers were produced under; it is a frame field like the one above, and
+            nothing in this package sets it.
 
     Attributes:
         report: counts for the *current* chunking, refreshed on construction and on every
             :meth:`rechunk` — ``n_docs`` (documents kept), ``n_short_docs`` (documents of
             ``<= max_length`` tokens), ``n_dropped_short_chunks`` (short documents that produced
-            no chunk this epoch — only possible with ``keep_short_whole=False``), and
+            no chunk this epoch — only possible with ``keep_short_whole=False`` *and*
+            ``rotate_offset=False``, or for a document under the ten-token minimum), and
             ``n_chunks``. An epoch that chunks to nothing is reported here and logged at WARNING;
             it is never an error.
     """
@@ -73,11 +92,13 @@ class ChunkedCorpus(Dataset):
         max_length: int = 512,
         stride: int = 0,
         keep_short_whole: bool = True,
+        rotate_offset: bool = True,
     ):
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.stride = stride if stride > 0 else max_length
         self.keep_short_whole = keep_short_whole
+        self.rotate_offset = rotate_offset
 
         self.examples: list[dict[str, torch.Tensor]] = []
         self._docs: list[tuple[torch.Tensor, torch.Tensor]] = []   # (input_ids, attention_mask)
@@ -94,12 +115,46 @@ class ChunkedCorpus(Dataset):
 
     # -- chunking ----------------------------------------------------------------------
 
+    def _chunk_bounds(self, n_tokens: int, offset: int) -> list[tuple[int, int]]:
+        """The half-open ``[start, end)`` spans one document is cut into, in document order.
+
+        Under :attr:`rotate_offset` the offset moves the *boundaries* rather than the document's
+        starting point: the leading segment is cut first and the offset-aligned chunks follow, so
+        the spans tile the whole document. Under ``rotate_offset=False`` the leading segment is
+        never produced, and the document's first ``offset`` tokens are simply not trained on this
+        epoch — the historical behaviour, kept reachable and nothing else.
+
+        A leading segment below :data:`MIN_CHUNK_TOKENS` is folded away by giving the document the
+        epoch-0 cut (offset 0) rather than by dropping it. Dropping it would be the same defect in
+        miniature — nine tokens, on 9 of every 512 offsets — and the alternative costs nothing: an
+        offset of one to nine tokens moves the boundaries so little that the epoch-0 cut is the
+        same variety. The minimum-chunk rule itself is untouched: no chunk below it is ever
+        emitted, and the only segment that can still be dropped for being too short is a
+        document's final one, exactly as before.
+
+        With a ``stride`` below ``max_length`` the offset-aligned chunks overlap as they always
+        have; the leading segment does not overlap the one after it, so the seam is the one place
+        a token appears once rather than twice.
+        """
+        if self.rotate_offset and 0 < offset < MIN_CHUNK_TOKENS:
+            offset = 0
+
+        bounds: list[tuple[int, int]] = []
+        if self.rotate_offset and offset > 0:
+            # `min(..., offset)` matters only for a stride above max_length, where the leading
+            # segment is longer than one chunk; normally offset < stride <= max_length and this
+            # is the single span [0, offset).
+            bounds += [(start, min(start + self.max_length, offset))
+                       for start in range(0, offset, self.stride)]
+        bounds += [(start, start + self.max_length)
+                   for start in range(offset, n_tokens, self.stride)]
+        return bounds
+
     def _chunk_document(self, input_ids: torch.Tensor, attention_mask: torch.Tensor,
                         offset: int) -> int:
         """Append this document's chunks to ``self.examples``; return how many were appended."""
         n_appended = 0
-        for start in range(offset, len(input_ids), self.stride):
-            end = start + self.max_length
+        for start, end in self._chunk_bounds(len(input_ids), offset):
             chunk_ids = input_ids[start:end]
             if len(chunk_ids) < MIN_CHUNK_TOKENS:
                 continue
@@ -136,17 +191,21 @@ class ChunkedCorpus(Dataset):
         if not self.examples:
             logger.warning(
                 "Epoch %d chunked to 0 examples from %d document(s) at offset %d "
-                "(max_length=%d, stride=%d, keep_short_whole=%s). Every document is shorter than "
-                "the epoch offset or than the %d-token minimum; this epoch trains on nothing.",
+                "(max_length=%d, stride=%d, keep_short_whole=%s, rotate_offset=%s). Every "
+                "document is shorter than the %d-token minimum, or (under rotate_offset=False) "
+                "than the epoch offset; this epoch trains on nothing.",
                 epoch, len(self._docs), offset, self.max_length, self.stride,
-                self.keep_short_whole, MIN_CHUNK_TOKENS,
+                self.keep_short_whole, self.rotate_offset, MIN_CHUNK_TOKENS,
             )
 
     def rechunk(self, epoch: int, seed: int = 42) -> None:
-        """Re-cut every document from a per-epoch offset in ``[0, stride)``.
+        """Re-cut every document at a per-epoch offset in ``[0, stride)``.
 
         The offset is deterministic in ``(seed, epoch)``; epoch 0 uses offset 0, so it reproduces
-        the chunking a freshly constructed corpus starts with.
+        the chunking a freshly constructed corpus starts with. Under the default
+        :attr:`rotate_offset` the offset moves where the cuts fall and nothing is left out; under
+        ``rotate_offset=False`` it is where each document *starts*, and the tokens before it are
+        not seen this epoch.
         """
         rng = random.Random(seed + epoch)
         offset = rng.randint(0, self.stride - 1) if epoch > 0 else 0
@@ -252,6 +311,7 @@ def load_corpus(
     val_fraction: float = 0.0,
     seed: int = 42,
     keep_short_whole: bool = True,
+    rotate_offset: bool = True,
 ) -> tuple[ChunkedCorpus, ChunkedCorpus | None]:
     """Read ``path`` and build the training corpus, optionally holding documents out.
 
@@ -270,7 +330,7 @@ def load_corpus(
 
     def build(subset: list[str]) -> ChunkedCorpus:
         return ChunkedCorpus(subset, tokenizer, max_length=max_length, stride=stride,
-                             keep_short_whole=keep_short_whole)
+                             keep_short_whole=keep_short_whole, rotate_offset=rotate_offset)
 
     if val_fraction <= 0.0:
         return build(texts), None

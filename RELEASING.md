@@ -236,6 +236,13 @@ distributed. It lives with the research code, as `tests/lfa_port_verification/` 
 changes anything the two implementations share; step 2 above is the one part of it a release
 *always* re-runs, because a re-saved artifact is a new file.
 
+**One part of it no longer compares by default.** Since 2026-09-08 this package's per-epoch chunk
+offset rotates the chunk boundaries rather than discarding each document's leading tokens, so its
+training stream deliberately differs from the research code's for any corpus with documents longer
+than one chunk. The loader and full-run comparisons must set `rotate_offset=False` to be run at
+all; everything read at offset 0 (the corpus counts, the first collated batch) is unaffected either
+way. `docs/verification.md` opens with what that changes.
+
 ## 7. Publish
 
 Push the tag, publish the package release with the sdist and the wheel, and leave the artifacts

@@ -24,7 +24,7 @@ SHIPPED = dict(
     epochs=15, checkpoint_mode="rolling", checkpoint_every=5,
     learning_rate=3e-4, lr_schedule="cosine", batch_size=6, gradient_accumulation_steps=1,
     warmup_steps=50, weight_decay=0.01, sequence_length=512, seed=42, keep_short_whole=True,
-    val_fraction=0.1,
+    rotate_offset=True, val_fraction=0.1,
     stage2_lambda_multiplier=3.0, calibrated_rank=32,
     calibrated_artifact="qwen3-0.6b-gmm1543k-int8",
 )
@@ -53,6 +53,15 @@ def test_yaml_documents_the_couplings_a_reader_has_to_know():
     comments = "\n".join(line for line in text.splitlines() if line.lstrip().startswith("#")).lower()
     for phrase in ("rank", "artifact", "corpus composition", "full-weight", "re-tune"):
         assert phrase in comments, f"the recipe's comment block never mentions {phrase!r}"
+
+
+def test_yaml_discloses_rotate_offset_as_a_frame_field():
+    """The published operating point was measured under the other setting; the file has to say
+    which one it now ships and what the difference costs."""
+    comments = "\n".join(line for line in (BUNDLED_DIR / "qwen3-0.6b.yaml").read_text().splitlines()
+                         if line.lstrip().startswith("#")).lower()
+    assert "rotate_offset" in comments and "frame field" in comments
+    assert "not comparable" in comments
 
 
 def test_yaml_discloses_keep_short_whole_as_a_frame_field():
