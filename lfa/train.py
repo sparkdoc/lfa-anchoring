@@ -59,6 +59,7 @@ __all__ = [
     "train_step",
     "train_epoch",
     "validation_loss",
+    "held_out_turned_around",
     "train",
 ]
 
@@ -472,6 +473,35 @@ def train_epoch(
 _EMBEDDING_MODULE_NAMES = frozenset({"embed_tokens", "lm_head"})
 
 
+#: How much worse than its own minimum a held-out perplexity has to end before the run says so.
+#: Well above epoch-to-epoch wobble, well below the 2.5x an over-trained small corpus showed.
+OVERTRAINING_RATIO = 1.10
+
+
+def held_out_turned_around(history: list[dict]) -> tuple[int, float, float] | None:
+    """``(best_epoch, best_perplexity, final_perplexity)`` when a run trained past its optimum.
+
+    The trainer prints the held-out perplexity after every epoch, and on a small corpus that
+    number turns around long before the recipe's epoch count runs out -- the run then ships a
+    model materially worse on its own domain than one it passed through, and prints the evidence
+    epoch by epoch without ever drawing the conclusion. Reading the curve is the user's job;
+    noticing that it turned is not.
+
+    ``None`` when there is no held-out curve (``val_fraction=0``), when it is shorter than three
+    epochs, when the minimum is the last epoch, or when the end is within
+    :data:`OVERTRAINING_RATIO` of the minimum -- an ordinary wobble is not a finding.
+    """
+    curve = [(record["epoch"], record["val_perplexity"]) for record in history
+             if record.get("val_perplexity") is not None]
+    if len(curve) < 3:
+        return None
+    best_epoch, best = min(curve, key=lambda pair: pair[1])
+    final_epoch, final = curve[-1]
+    if best_epoch == final_epoch or not best or final < best * OVERTRAINING_RATIO:
+        return None
+    return best_epoch, best, final
+
+
 def _save_student(student: nn.Module, output_dir: Path) -> None:
     """Write a checkpoint: the LoRA adapter, or the full weights.
 
@@ -580,7 +610,10 @@ def _build_scheduler(
         return SequentialLR(optimizer, schedulers=[warmup, decay], milestones=[warmup_steps])
 
     constant = ConstantLR(optimizer, factor=1.0, total_iters=post_warmup_steps)
-    run_logger.info("LR schedule: warmup(%d) → constant(%d)", warmup_steps, post_warmup_steps)
+    # "constant(N)" once read as a constant learning rate of N; N is the number of steps the
+    # constant phase covers, which is what the cosine line's own number means too.
+    run_logger.info("LR schedule: warmup(%d steps) → constant for %d steps",
+                    warmup_steps, post_warmup_steps)
     return SequentialLR(optimizer, schedulers=[warmup, constant], milestones=[warmup_steps])
 
 
@@ -915,5 +948,19 @@ def train(
     history_path = output_dir / "training_history.json"
     history_path.write_text(json.dumps(state.history, indent=2))
     run_logger.info("Training history saved to %s", history_path)
+
+    turned_around = held_out_turned_around(state.history)
+    if turned_around is not None:
+        best_epoch, best, final = turned_around
+        run_logger.warning(
+            "This run trained past its own optimum: held-out perplexity was lowest at epoch %d "
+            "(%.3f) and ended at %.3f, epoch %d. The shipped recipe's epoch count was tuned on a "
+            "corpus of about 1,700 documents; a smaller one reaches its minimum in far fewer "
+            "epochs. `final_model` is the LAST epoch -- no best checkpoint is kept, by design "
+            "(docs/recipes.md says why) -- so to ship the better model, re-run with --epochs %d, "
+            "which lays the whole learning-rate schedule over that many epochs rather than "
+            "truncating this one.",
+            best_epoch, best, final, len(state.history), best_epoch,
+        )
 
     return state

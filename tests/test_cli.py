@@ -167,6 +167,52 @@ def test_full_weight_reaches_the_runs_config(tmp_path, registry, base_dir, corpu
 
 # -------------------------------------------------------------------------------------- errors
 
+def test_init_says_the_next_command_rather_than_repeating_the_library_line(tmp_path, registry,
+                                                                            base_dir, capsys):
+    """`Workspace.init` logs that it created the workspace and the CLI configures logging, so
+    printing the same sentence here showed the very first line the package emits twice."""
+    assert main(["init", str(tmp_path / "ws"), "--model", str(base_dir),
+                 "--artifact", "tiny"]) == 0
+
+    printed = capsys.readouterr().out.strip().splitlines()
+    assert len(printed) == 1
+    assert printed[0].startswith("Next: lfa train --workspace")
+
+
+def test_an_interrupted_command_says_how_to_continue_rather_than_printing_a_traceback(
+        trained, corpus_a, monkeypatch, capsys):
+    """Ctrl-C is how anyone stops an hour-long run, and a bare `KeyboardInterrupt` traceback
+    reads as a crash -- which the documented rule would then call a bug in this package."""
+    def interrupted(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(Workspace, "train", interrupted)
+
+    assert main(["train", "--workspace", str(trained), "--corpus", str(corpus_a),
+                 "--device", "cpu"]) == 130               # the shell's convention for SIGINT
+
+    captured = capsys.readouterr()
+    assert "Traceback" not in captured.err
+    assert "--resume" in captured.err and "interrupted" in captured.err
+
+
+def test_chain_passes_the_extension_knobs_it_advertises(tmp_path, registry, base_dir, monkeypatch):
+    """`--need` is the knob docs/faq.md tells a memory-constrained user to turn down, and a
+    chain runs an extension between every pair of domains."""
+    seen = {}
+    monkeypatch.setattr(Workspace, "chain",
+                        lambda self, spec, **kwargs: seen.update(kwargs) or [])
+    spec = tmp_path / "domains.yaml"
+    spec.write_text("domains: []\n")
+    workspace = tmp_path / "ws"
+    assert main(["init", str(workspace), "--model", str(base_dir), "--artifact", "tiny"]) == 0
+
+    assert main(["chain", str(spec), "--workspace", str(workspace),
+                 "--need", "1234", "--k-domain", "3"]) == 0
+
+    assert (seen["need"], seen["k_domain"]) == (1234, 3)
+
+
 def test_a_second_corpus_without_an_extend_exits_two_with_one_line(trained, corpus_b,
                                                                    recipe_path, capsys):
     code = main(["train", "--workspace", str(trained), "--corpus", str(corpus_b),

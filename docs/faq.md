@@ -31,9 +31,42 @@ Qwen3-0.6B artifact — 84 sites, of which 28 are 2048 wide and 56 are 1024 wide
 56 × 40,000 × 1024 × 4 B  +  28 × 40,000 × 2048 × 4 B  ≈  18 GB
 ```
 
-Halve `--need` to halve it. The fit's quality floor is `--k-domain` components at one per 200
-activations, so 40,000 is far above what 8 components need; it is chosen for coverage of the
+**Measured, on that exact configuration: 19.4 GiB peak resident** (`/usr/bin/time -v`, one RTX
+3090, 2026-09-08) — the arithmetic above plus about 1.4 GiB of interpreter, torch and model. Halve
+`--need` to halve the dominant term. The fit's quality floor is `--k-domain` components at one per
+200 activations, so 40,000 is far above what 8 components need; it is chosen for coverage of the
 domain, not for the fit's arithmetic.
+
+That agreement is recent: until 2026-09-08 the collection kept every chunk in a list and
+concatenated at the end, so a user measured **35.9 GiB** against this same paragraph — the chunks
+and the concatenations were resident at once, and freeing the chunks did not return their pages.
+Each site now fills one `--need × width` buffer in place, which is what makes the budget above the
+real bill. If you are on an older version, budget twice the number.
+
+**How long it takes.** About **five minutes** at the defaults on one RTX 3090 (measured 5 min 08 s:
+roughly one minute collecting activations through the fused model, then four minutes fitting 84
+mixtures). The fitting half logs its progress every ten sites, so a quiet minute is normal and a
+quiet five is not.
+
+## Why does the chunk count change from epoch to epoch?
+
+Because the chunker starts each epoch at a different random offset into every document (seeded by
+the run's `seed` and the epoch number), so the last partial chunk of a document falls differently
+each time and short documents can land in one chunk or two. `Epoch 1/15 (199 chunks)` followed by
+`Epoch 3/15 (160 chunks)` is that, not data being dropped: every epoch sees the whole corpus, cut
+in different places, which is the positional diversity the offset exists for. What does not move
+is the held-out split — it is chunked once, at offset 0, so the per-epoch held-out numbers compare
+like with like.
+
+## The anchor loss spikes by orders of magnitude on some steps. Is that a divergence?
+
+No. The anchor is a Monte-Carlo estimate: 16 hidden states are drawn per site per step from p(h),
+and an occasional draw lands far out in the distribution's tail, where the teacher and the student
+disagree most. A step reading `anchor=2.1e+02` against a steady `anchor≈4e-01` is one such draw,
+and the gradient it produces is real rather than spurious — it is exactly the case the anchor is
+there to price. Read the **per-epoch averages** the epoch summary prints (`loss_anchor` in
+`training_history.json`), not the per-step line: those should fall or hold, and a rising per-epoch
+anchor average across many epochs is the thing that would be worth investigating.
 
 ## Why is full-weight training flagged?
 

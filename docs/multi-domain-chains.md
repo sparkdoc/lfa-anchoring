@@ -85,9 +85,14 @@ domains:
 ```
 
 Every domain is folded in before the next one starts — that is what a chain *is*. A spec asking for
-anything else (`extend_between: false`) is rejected with the reason. To train several domains from
-the *same* starting point instead, run them as separate workspaces; that is a different experiment,
-not a chain.
+anything else (`extend_between: false`) is rejected with the reason, at the top level and inside a
+domain entry alike. To train several domains from the *same* starting point instead, run them as
+separate workspaces; that is a different experiment, not a chain.
+
+A domain entry takes exactly `name`, `corpus` and `epochs`; anything else is refused at load,
+naming the spec file and the field — the same rule a recipe file lives under, and for the same
+reason: a field nobody reads is worse than a refusal, because the run starts and does not do what
+the file says. Two domains may not share a `name` either, since the name *is* the run directory.
 
 [`examples/chain_three_domains.py`](../examples/chain_three_domains.py) runs the whole thing on
 three generated stand-in corpora, offline, so you can watch the sequence before spending a day of

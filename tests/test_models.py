@@ -12,6 +12,8 @@ from transformers import AutoModelForCausalLM
 from lfa.adapters import effective_weight, get_adapter
 from lfa.models import (
     DEFAULT_DEVICE,
+    TOOLCHAIN_CHECK_OFF,
+    MissingBuildToolchain,
     NoTrainableParameters,
     ShardingRefused,
     apply_lora,
@@ -20,6 +22,7 @@ from lfa.models import (
     load_adapter_for_training,
     load_student,
     load_teacher,
+    check_gpu_toolchain,
     load_tokenizer,
     resolve_device,
     resolve_model_path,
@@ -231,3 +234,67 @@ def test_fuse_leaves_an_untouched_projection_alone(base_dir, lora_setup, tmp_pat
     fused = AutoModelForCausalLM.from_pretrained(out, dtype=torch.float32)
     fused_k_proj = get_adapter(fused).qkv_modules(fused, 0)["k_proj"].weight
     assert torch.allclose(fused_k_proj, untouched, atol=1e-5)
+
+
+# ------------------------------------------------------- the CUDA build-toolchain preflight
+#
+# A distribution `python3` without its `-dev` package has no `Python.h`, and torch's triton
+# backend JIT-compiles a small CUDA shim at the first GPU kernel launch. Without this check the
+# failure arrives minutes into a run as a gcc error under sixty lines of somebody else's
+# traceback -- which the documented rule ("a traceback is a bug in this package") then
+# misattributes to us.
+
+
+@pytest.fixture
+def no_headers(tmp_path, monkeypatch):
+    """An interpreter whose include directory holds no `Python.h`."""
+    import sysconfig
+
+    empty = tmp_path / "include"
+    empty.mkdir()
+    monkeypatch.setattr(sysconfig, "get_paths", lambda: {"include": str(empty)})
+    monkeypatch.delenv(TOOLCHAIN_CHECK_OFF, raising=False)
+    return empty
+
+
+def test_a_cuda_run_without_python_headers_is_refused_before_anything_loads(no_headers):
+    with pytest.raises(MissingBuildToolchain) as refused:
+        check_gpu_toolchain("cuda:0")
+
+    message = str(refused.value)
+    assert "Python development headers" in message
+    assert "python3-dev" in message                      # the remedy, in the user's own terms
+    assert "not a defect in this package" in message     # what the traceback rule needs to know
+    assert TOOLCHAIN_CHECK_OFF in message                # and the way past it
+
+
+def test_the_preflight_also_wants_a_compiler(monkeypatch):
+    """Headers without a compiler is the other half of the same prerequisite."""
+    import lfa.models as models_module
+
+    monkeypatch.delenv(TOOLCHAIN_CHECK_OFF, raising=False)
+    # `shutil` is imported into `lfa.models`, so this reaches the module's own lookup.
+    monkeypatch.setattr(models_module.shutil, "which", lambda name: None)
+
+    with pytest.raises(MissingBuildToolchain, match="C compiler"):
+        check_gpu_toolchain({"": "cuda:0"})               # a single-device map, as workspaces use
+
+
+def test_a_cpu_run_needs_no_toolchain(no_headers):
+    check_gpu_toolchain("cpu")
+    assert resolve_device("cpu") == "cpu"                # and the resolver stays out of the way
+
+
+def test_the_preflight_can_be_switched_off_for_a_machine_that_never_compiles(no_headers,
+                                                                             monkeypatch):
+    monkeypatch.setenv(TOOLCHAIN_CHECK_OFF, "1")
+    check_gpu_toolchain("cuda:0")
+    assert resolve_device("cuda:0") == "cuda:0"
+
+
+def test_resolving_a_cuda_device_runs_the_preflight(no_headers):
+    """The one place every workspace operation passes through before it loads a model."""
+    with pytest.raises(MissingBuildToolchain):
+        resolve_device("cuda:0")
+    with pytest.raises(MissingBuildToolchain):
+        resolve_device(None)                             # the default device is a CUDA one

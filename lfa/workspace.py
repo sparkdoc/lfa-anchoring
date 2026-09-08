@@ -72,10 +72,14 @@ from .train import train as run_training
 logger = logging.getLogger("lfa.workspace")
 
 __all__ = ["Workspace", "StageOrderError", "WorkspaceNotReady", "WORKSPACE_FILE", "HISTORY_FILE",
-           "LOADER_FRAME_NOTICE", "code_identity", "source_digest"]
+           "LOADER_FRAME_NOTICE", "DOMAIN_FIELDS", "code_identity", "source_digest"]
 
 WORKSPACE_FILE = "workspace.json"
 HISTORY_FILE = "history.json"
+
+#: Every field a chain spec's domain entry may carry (see :meth:`Workspace.chain`). Anything
+#: else is refused at load, as an unknown field in a recipe file is.
+DOMAIN_FIELDS = frozenset({"name", "corpus", "epochs"})
 
 #: Logged once per run whose corpus loader keeps short documents in every epoch (the default).
 #: It is a *frame* field, not a tuning knob: under the other setting a document shorter than the
@@ -349,13 +353,15 @@ class Workspace:
         path = Path(path)
         if (path / WORKSPACE_FILE).exists():
             raise FileExistsError(
-                f"{path} is already an LFA workspace; open it with Workspace.open(path) rather "
-                "than re-initialising it (init would discard its history)."
+                f"{path} is already an LFA workspace: `lfa init` would discard its history. "
+                "Every other command takes it as it is -- `lfa train --workspace "
+                f"{path} --corpus <documents>`, `lfa evaluate --workspace {path}` -- or point "
+                "init at a different directory. From Python: Workspace.open(path)."
             )
-        path.mkdir(parents=True, exist_ok=True)
         artifacts_dir = path / "artifacts"
-        artifacts_dir.mkdir(exist_ok=True)
 
+        # Nothing is created until every argument is known to be good: a refused init used to
+        # leave `<path>/artifacts/` behind, which reads as a half-made workspace.
         # The registry is consulted first: a file that happens to be named like a published
         # artifact must not shadow the published artifact, which is the one the recipe's lambda
         # was calibrated against.
@@ -385,6 +391,8 @@ class Workspace:
                 f"({', '.join(sorted(ARTIFACTS))})."
             )
         destination = artifacts_dir / "v1.pt"
+        path.mkdir(parents=True, exist_ok=True)
+        artifacts_dir.mkdir(exist_ok=True)
 
         if source is not None:
             shutil.copyfile(source, destination)
@@ -505,7 +513,11 @@ class Workspace:
         """
         corpus_path = Path(corpus).expanduser().resolve()
         if not corpus_path.exists():
-            raise FileNotFoundError(f"Corpus path not found: {corpus_path}")
+            raise FileNotFoundError(
+                f"Corpus path not found: {corpus_path}. Point --corpus at a file or a directory "
+                "of documents; `lfa prepare-domain <your files> --out <dir>` builds one from "
+                ".txt/.md/.html/.pdf sources."
+            )
 
         repeat = bool(self.state["pending_extend"]) and (
             self.state["last_stage_corpus"] == str(corpus_path))
@@ -653,6 +665,37 @@ class Workspace:
             + (", or pass resume=True to continue the run that is there."
                if (output_dir / "training_state.pt").exists()
                else " (resume=True cannot help: there is no training_state.pt to continue from).")
+        )
+
+    @staticmethod
+    def _refuse_unknown_domain_keys(spec_path: Path, position: int, domain: dict) -> None:
+        """Refuse a domain entry carrying a field a domain does not have.
+
+        The same rule :class:`lfa.recipe.Recipe` applies to a recipe file, for the same reason: a
+        field that is read by nobody is silently ignored, and the user who wrote it believes it
+        took effect. ``extend_between`` is called out by name because it is refused at the spec's
+        top level with an explanation, and *between this domain and the next* is the more natural
+        place to try to put it -- so the near miss has to land as the same refusal rather than as
+        a multi-hour training run at the shipped recipe.
+        """
+        unknown = sorted(set(domain) - DOMAIN_FIELDS)
+        if not unknown:
+            return
+        named = ", ".join(repr(key) for key in unknown)
+        if "extend_between" in unknown:
+            raise ValueError(
+                f"{spec_path}: domain {position} carries {named}. A chain always folds each "
+                "domain into the model and into p(h) before the next one starts -- there is no "
+                "per-domain switch for it, any more than there is a top-level one; without that "
+                "fold the next domain would adapt this one's base model and anchor against a "
+                "p(h) that does not describe it. To train several domains from the same starting "
+                "point instead, run them as separate workspaces. A domain takes "
+                f"{', '.join(sorted(DOMAIN_FIELDS))}."
+            )
+        raise ValueError(
+            f"{spec_path}: domain {position} carries {named}, which a domain entry does not "
+            f"have. A domain takes {', '.join(sorted(DOMAIN_FIELDS))}. (A field nobody reads is "
+            "worse than a refusal: the run starts and does not do what the file says.)"
         )
 
     def _run_name(self, stage: int, repeat: bool, resume: bool) -> str:
@@ -858,10 +901,13 @@ class Workspace:
             return int(registry["n_samples_total"])
         raise ValueError(
             f"{self.state['current_artifact']} carries no per-site n_samples and no "
-            "__meta__.n_samples_total, and it did not come from the artifact registry, so the "
-            "new domain cannot be weighted by its sample share. Pass base_n by calling "
-            "lfa.artifact.extend.extend_artifact directly (the shipped qwen3-0.6b artifact was "
-            "collected over 1,543,040 vectors per site)."
+            "__meta__.n_samples_total, and this workspace does not know which published "
+            "artifact it is, so the new domain cannot be weighted by its sample share. Fix it "
+            "where it started: `lfa init <a new workspace> --model <model> --artifact <the same "
+            "file> --artifact-id qwen3-0.6b-gmm1543k-int8`, which records the id that supplies "
+            "the count (the shipped qwen3-0.6b artifact was collected over 1,543,040 vectors "
+            "per site). From Python you can instead pass base_n to "
+            "lfa.artifact.extend.extend_artifact directly."
         )
 
     # ------------------------------------------------------------------------------- evaluate
@@ -1004,7 +1050,8 @@ class Workspace:
                                          keep_short_whole=_stage_frame(entry))
         # Named after the run it controls, so a repeat of a stage gets its own control.
         output_dir = self.path / "runs" / f"{Path(entry['output_dir']).name}_unanchored"
-        logger.info("Unanchored control for stage %d -> %s", entry["stage"], output_dir)
+        logger.info("Unanchored control for stage %d -> %s: this is a SECOND full training "
+                    "run, as long as the first, with lambda = mu = 0", entry["stage"], output_dir)
         self._run_training(config, Path(entry["corpus"]), entry["base_model"], output_dir,
                            placement=placement, dtype=dtype, allow_sharding=False, resume=False,
                            anchored=False)
@@ -1087,7 +1134,8 @@ class Workspace:
 
         Raises:
             ValueError: the spec is not valid YAML, is not a mapping, has no non-empty
-                ``domains`` list, has a domain without a ``corpus``, gives two domains the same
+                ``domains`` list, has a domain without a ``corpus``, has a domain carrying a
+                field that is not one of :data:`DOMAIN_FIELDS`, gives two domains the same
                 ``name``, or asks not to extend between domains. Each names the spec file.
         """
         spec_path = Path(spec_path)
@@ -1128,6 +1176,7 @@ class Workspace:
         for position, domain in enumerate(domains, start=1):
             if not isinstance(domain, dict) or not domain.get("corpus"):
                 raise ValueError(f"{spec_path}: domain {position} has no 'corpus'.")
+            self._refuse_unknown_domain_keys(spec_path, position, domain)
             logger.info("Chain %d/%d: %s", position, len(domains),
                         domain.get("name") or domain["corpus"])
             entries.append(self.train(

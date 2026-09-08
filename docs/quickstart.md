@@ -6,15 +6,36 @@ number below is a perplexity computed on your own machine.
 ## Install
 
 ```bash
-pip install -e '.[dev]'          # add ,html or ,pdf if your documents are HTML or PDF
+pip install lfa-anchoring                       # once it is published; see ../RELEASING.md
+pip install -e '.[dev]'                         # from a checkout, with the test tools
 ```
 
-Python ≥ 3.11 and a CUDA card. The versions this was built and tested against are pinned in
+Add `[html]` or `[pdf]` if your documents are HTML or PDF; `[dev]` is the maintainer's set
+(pytest, coverage, build) and an end user does not need it.
+
+**Prerequisites: Python ≥ 3.11 *with its development headers*, a C compiler, and a CUDA card.**
+torch's triton backend compiles a small CUDA shim at the first GPU kernel launch, so a
+distribution `python3` installed without `python3-dev` / `python3.13-dev` (and
+`build-essential`) has no `Python.h` and cannot train — while a uv- or conda-managed interpreter
+ships its own headers and is fine. `lfa` checks for the headers and a compiler before it loads a
+model, and refuses in one line if either is missing; `LFA_SKIP_TOOLCHAIN_CHECK=1` turns that
+check off for a machine where your torch build never compiles.
+
+The versions this was built and tested against are pinned in
 [`constraints-tested.txt`](../constraints-tested.txt) (torch 2.10.0+cu128, transformers 4.57.6,
-accelerate 1.14.0, peft 0.18.1) — nothing here has been run below them. The package itself accepts
-`transformers>=4.56,<5` and `peft>=0.18,<1`; the transformers floor is where `from_pretrained`
-learned the `dtype=` spelling this package loads with, and below it a model would load in the
-checkpoint's own dtype without saying so.
+accelerate 1.14.0, peft 0.18.1) — nothing here has been run below them, and nothing above them
+either, so `pip install -c constraints-tested.txt lfa-anchoring` is the way to get exactly the
+tested stack. The package itself accepts `transformers>=4.56,<5` and `peft>=0.18,<1`; the
+transformers floor is where `from_pretrained` learned the `dtype=` spelling this package loads
+with, and below it a model would load in the checkpoint's own dtype without saying so.
+
+An installed wheel carries the two example scripts as well, so they can be run without a
+checkout:
+
+```bash
+python -m lfa.examples.quickstart --help
+python -m lfa.examples.chain_three_domains --help
+```
 
 ## Get a p(h) artifact
 
@@ -77,9 +98,13 @@ lfa fuse     --workspace runs/my_domain
    workspace will not find it again.
 2. **`train`** adapts the workspace's current model to the corpus with the anchor on. A tenth of
    the documents are held out and scored after every epoch, so the domain number is a measurement
-   rather than a fit. Use `--epochs` to shorten a run (the learning-rate schedule is laid over
-   whatever you say, so it changes the whole curve, not only where it stops) and `--resume` to
-   continue an interrupted one.
+   rather than a fit. **Watch that number.** The recipe's 15 epochs were tuned on ~1,700
+   documents; on a smaller corpus the held-out perplexity bottoms out early and then climbs, and
+   `final_model` is the last epoch by design (no best checkpoint is kept —
+   [recipes.md](recipes.md) says why). The trainer warns at the end if the curve turned around;
+   the fix is to re-run with `--epochs <the epoch it bottomed at>` — the learning-rate schedule is
+   laid over whatever you say, so that is a complete shorter run rather than a truncated long one.
+   `--resume` continues an interrupted run.
 3. **`evaluate`** scores the stage on both axes against the model it started from. Add
    `--compare-unanchored` for the λ = μ = 0 control, and `--n-windows none` on a machine with no
    network (the general axis reads WikiText-2 from the Hub).
@@ -119,8 +144,14 @@ The library raises rather than guesses, and the CLI prints those refusals as one
 a chain out of order, a workspace that is not there or already is or has not trained anything yet
 (what `fuse` and `evaluate` say), a workspace with no p(h) artifact, a device map that would shard,
 an artifact that is not published, a dataset that cannot be reached, and a recipe or chain spec
-that does not parse or does not validate. The message ends with what to do instead. Anything that
-comes back as a traceback is a bug in this package.
+that does not parse or does not validate. The message ends with what to do instead.
+
+A traceback whose last frames are in `lfa/` is a bug in this package — please report it. A
+traceback that ends inside somebody else's code is your environment rather than this package: a
+CUDA out-of-memory from torch, a compiler error from triton on a machine without Python headers
+(which `lfa` now checks for up front), a Hub timeout inside `datasets`. The last few frames say
+which of the two you have. Ctrl-C is neither: an interrupted command prints one line naming
+`--resume` and exits 130.
 
 One failure is deliberately *not* a refusal: if WikiText-2 cannot be fetched, `evaluate` says so
 and reports the general axis as unmeasured rather than losing the domain number you came for.

@@ -150,7 +150,11 @@ def fetch_artifact(
             f"Artifact {artifact_id!r} has no published release asset yet: its checksum in the "
             "registry is still the placeholder, so a download could not be verified. See "
             "RELEASING.md for how the assets are uploaded and the checksums filled in. Until "
-            "then, build an artifact locally (`lfa build-artifact`) or pass a local path."
+            "then, build an artifact locally (`lfa build-artifact`), or pass a copy of it as a "
+            f"path together with the id it is a copy of: `--artifact <file> --artifact-id "
+            f"{artifact_id}`. Pass both -- with the path alone the workspace knows the file only "
+            "by its name, warns at every stage that lambda was calibrated elsewhere, and cannot "
+            "extend, because the id is where the base sample count comes from."
         )
 
     dest_dir = Path(dest_dir)

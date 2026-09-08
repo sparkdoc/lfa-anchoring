@@ -12,6 +12,11 @@
 #   corpus  a file or directory of documents, resolved RELATIVE TO THIS FILE
 #   epochs  optional override of the recipe's epoch count for this stage
 #
+# Those three and nothing else: a domain entry carrying any other field is refused when the
+# spec is read, naming the file and the field, exactly as an unknown field in a recipe file is.
+# (`extend_between` is not a per-domain option any more than it is a top-level one -- folding
+# each domain in before the next is what a chain is.)
+#
 # Lambda is not a field here: stage 1 uses the recipe's value and every later stage multiplies it
 # by the recipe's `stage2_lambda_multiplier`, because a later stage anchors a model that already
 # carries a domain. See docs/multi-domain-chains.md.

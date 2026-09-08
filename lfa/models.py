@@ -21,6 +21,9 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
+import sys
+import sysconfig
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -45,6 +48,8 @@ __all__ = [
     "load_teacher",
     "load_student",
     "apply_lora",
+    "MissingBuildToolchain",
+    "check_gpu_toolchain",
     "assert_trainable_params",
     "load_adapter_for_training",
     "fuse",
@@ -65,6 +70,68 @@ class NoTrainableParameters(RuntimeError):
     """Raised when a model that is about to be trained has nothing with ``requires_grad``."""
 
 
+class MissingBuildToolchain(RuntimeError):
+    """Raised when a CUDA run would need to compile and this machine cannot.
+
+    torch's triton backend JIT-compiles a small CUDA shim at the first GPU kernel launch, which
+    needs ``Python.h`` and a C compiler. Interpreters that ship their own headers (uv- and
+    conda-managed ones, most Docker images) have both; a distribution ``python3`` without its
+    ``-dev`` package has neither, and the failure otherwise arrives as a gcc error and a
+    sixty-line traceback through torch, minutes into a run.
+    """
+
+
+#: Set to skip :func:`check_gpu_toolchain` on a machine where torch never JIT-compiles.
+TOOLCHAIN_CHECK_OFF = "LFA_SKIP_TOOLCHAIN_CHECK"
+
+
+def check_gpu_toolchain(device: str | dict) -> None:
+    """Refuse a CUDA run up front when the machine cannot compile triton's shim.
+
+    Called from :func:`resolve_device`, so it runs once per workspace operation, before a model
+    is loaded -- the point of it is to say this in one line at second zero rather than as
+    somebody else's traceback at minute five. It checks only what is cheap and decisive: the
+    presence of ``Python.h`` for the running interpreter, and a C compiler on ``PATH``.
+
+    Raises:
+        MissingBuildToolchain: naming what is missing, for this interpreter, with the remedy.
+    """
+    if os.environ.get(TOOLCHAIN_CHECK_OFF):
+        return
+    if not _single_device(device).startswith("cuda"):
+        return
+
+    header = Path(sysconfig.get_paths()["include"]) / "Python.h"
+    compiler = next((found for candidate in (os.environ.get("CC"), "gcc", "cc", "clang")
+                     if candidate and (found := shutil.which(candidate))), None)
+    missing = []
+    if not header.is_file():
+        missing.append(f"the Python development headers ({header} does not exist)")
+    if compiler is None:
+        missing.append("a C compiler on PATH (gcc, cc or clang)")
+    if not missing:
+        return
+
+    raise MissingBuildToolchain(
+        f"This machine cannot compile for the GPU, and a CUDA run needs to: {' and '.join(missing)}"
+        f" is missing for {sys.executable}. torch's triton backend compiles a small CUDA shim at "
+        "the first GPU kernel launch, so without them the run dies mid-training in gcc rather "
+        "than here. Install your distribution's development package for this interpreter "
+        "(`python3-dev` / `python3.13-dev`, plus `build-essential`), or use an interpreter that "
+        "ships its own headers (uv- or conda-managed). This is an environment prerequisite, not "
+        f"a defect in this package. Set {TOOLCHAIN_CHECK_OFF}=1 to skip this check on a machine "
+        "where your torch build never compiles."
+    )
+
+
+def _single_device(device: str | dict) -> str:
+    """The device string to test, for a plain device or a single-device map."""
+    if isinstance(device, dict):
+        values = set(device.values())
+        return str(next(iter(values))) if len(values) == 1 else "cuda"
+    return str(device)
+
+
 def resolve_device(device: str | dict | None = None, allow_sharding: bool = False) -> str | dict:
     """The device map to load a model with, defaulting to a single pinned card.
 
@@ -79,14 +146,20 @@ def resolve_device(device: str | dict | None = None, allow_sharding: bool = Fals
     to hop between cards). Pass ``allow_sharding=True`` deliberately, when the student and the
     frozen teacher together do not fit on a single card.
 
+    Every CUDA resolution also runs :func:`check_gpu_toolchain`, since this is the one place
+    every workspace operation passes through before it loads anything.
+
     Raises:
         ShardingRefused: for a sharding request without ``allow_sharding=True``.
+        MissingBuildToolchain: a CUDA device on a machine that cannot compile triton's shim.
     """
     if device is None:
+        check_gpu_toolchain(DEFAULT_DEVICE)
         return DEFAULT_DEVICE
 
     if isinstance(device, dict):
         if allow_sharding or len(set(device.values())) <= 1:
+            check_gpu_toolchain(device)
             return device
         raise ShardingRefused(
             f"Device map {device} spreads one model over {sorted(set(device.values()))}. "
@@ -103,6 +176,7 @@ def resolve_device(device: str | dict | None = None, allow_sharding: bool = Fals
             "allow_sharding=True if the student and the frozen teacher do not fit on one card."
         )
 
+    check_gpu_toolchain(device)
     return device
 
 

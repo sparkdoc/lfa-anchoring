@@ -187,7 +187,18 @@ def _wikitext2_tokens(tokenizer, n_windows: int, stride: int) -> torch.Tensor:
             "domain alone."
         ) from error
     text = "\n\n".join(dataset["text"])
-    input_ids = tokenizer(text, return_tensors="pt")["input_ids"].squeeze(0)
+    # The whole split is deliberately tokenized as one stream and then cut into windows below,
+    # so transformers' "Token indices sequence length is longer than the specified maximum ...
+    # will result in indexing errors" is wrong here and alarming in a run whose only job is to
+    # produce two trustworthy numbers. Silenced for this one call, by name, so that any other
+    # message from that logger still comes through.
+    tokenization = logging.getLogger("transformers.tokenization_utils_base")
+    previous = tokenization.level
+    tokenization.setLevel(max(previous, logging.ERROR) if previous else logging.ERROR)
+    try:
+        input_ids = tokenizer(text, return_tensors="pt")["input_ids"].squeeze(0)
+    finally:
+        tokenization.setLevel(previous)
 
     if n_windows > 0:
         n_tokens = n_windows * stride

@@ -29,7 +29,12 @@ Example::
     python examples/chain_three_domains.py \\
         --model Qwen/Qwen3-0.6B \\
         --artifact qwen3-0.6b-gmm1543k-int8 \\
+        --epochs 1 \\
         --out runs/three_domains
+
+``--epochs 1`` is what makes this a smoke run: without it every stage takes the recipe's fifteen
+epochs, which on real corpora is a day of GPU time rather than a few minutes. From an installed
+wheel the same script is ``python -m lfa.examples.chain_three_domains``.
 
 ``--artifact`` also takes a path, which is what to pass while the published assets do not exist
 yet: fetching by id refuses until the registry's checksums are filled in (see ``RELEASING.md``).
@@ -109,7 +114,11 @@ def materialise(spec_path: Path, out: Path, *, n_documents: int, n_sentences: in
         else:
             generated = synthesize(out / "corpora" / name, name, n_documents, n_sentences)
             domain["corpus"] = str(generated.resolve())
-            print(f"Generated {n_documents} filler documents for {name!r} in {generated}")
+            # Through `logging`, like everything else here: `print` is block-buffered when
+            # stdout is redirected, so in a log file these lines used to appear after the
+            # chain they precede.
+            logging.getLogger("lfa.examples").info(
+                "Generated %d filler documents for %r in %s", n_documents, name, generated)
         if epochs is not None:
             domain["epochs"] = epochs
 

@@ -27,11 +27,28 @@ dev = ["pytest>=8", "pytest-cov", "build"]
 [project.scripts]
 lfa = "lfa.cli:main"
 
-[tool.setuptools.packages.find]
-include = ["lfa*"]
+# `<org>` is the same placeholder `lfa/artifact/fetch.py::_RELEASE_BASE` carries, and RELEASING.md
+# step 4 fills all of them in one edit. Declared at all because the README is the PyPI long
+# description: without these a visitor there has no pointer to where the documentation lives.
+[project.urls]
+Homepage = "https://github.com/<org>/lfa-anchoring"
+Repository = "https://github.com/<org>/lfa-anchoring"
+Documentation = "https://github.com/<org>/lfa-anchoring/blob/main/docs/quickstart.md"
+Changelog = "https://github.com/<org>/lfa-anchoring/releases"
+
+# `lfa.examples` is the top-level `examples/` directory, installed inside the package. The docs
+# send a reader to those two scripts as the way in, and a wheel that ships neither them nor the
+# docs they link to leaves a pip-installed user with nothing to run. Mapped rather than moved so
+# that the repository keeps `examples/` where every document already points.
+[tool.setuptools]
+packages = ["lfa", "lfa.adapters", "lfa.artifact", "lfa.examples"]
+
+[tool.setuptools.package-dir]
+"lfa.examples" = "examples"
 
 [tool.setuptools.package-data]
 lfa = ["recipes/*.yaml"]
+"lfa.examples" = ["*.yaml"]
 
 [tool.pytest.ini_options]
 markers = ["gpu: needs CUDA", "equivalence: needs the research code checkout", "acceptance: ~1 GPU-hour on the Chalmers corpus", "slow: downloads data from the Hugging Face Hub"]

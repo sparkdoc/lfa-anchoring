@@ -145,6 +145,52 @@ def test_init_refuses_to_overwrite_an_existing_workspace(tmp_path, registry, bas
         new_workspace(tmp_path, base_dir)
 
 
+def test_a_refused_init_leaves_nothing_behind(tmp_path, base_dir, tiny_artifact):
+    """A refusal must not leave a directory that looks like a half-made workspace.
+
+    `init` used to create `<path>/` and `<path>/artifacts/` before it had checked its arguments,
+    so both refusals below left debris -- against the standard `fetch_artifact` is held to, which
+    downloads to `<name>.part` precisely so an interruption leaves nothing artifact-shaped.
+    """
+    unknown_id = tmp_path / "by_id"
+    with pytest.raises(ValueError, match="published artifact id"):
+        Workspace.init(unknown_id, str(base_dir), artifact="not-an-artifact")
+    assert not unknown_id.exists()
+
+    missing_file = tmp_path / "by_path"
+    with pytest.raises(ValueError):
+        Workspace.init(missing_file, str(base_dir), artifact=str(tmp_path / "nope.pt"))
+    assert not missing_file.exists()
+
+    _, path = tiny_artifact
+    conflicting = tmp_path / "conflict"
+    with pytest.raises(ValueError, match="artifact_id"):
+        Workspace.init(conflicting, str(base_dir), artifact=str(path), artifact_id="not-published")
+    assert not conflicting.exists()
+
+    # ...and a good one still creates exactly what it should.
+    good = Workspace.init(tmp_path / "good", str(base_dir), artifact=str(path))
+    assert (good.path / "artifacts" / "v1.pt").is_file()
+
+
+def test_re_initialising_a_workspace_names_a_command_a_cli_user_can_run(tmp_path, registry,
+                                                                       base_dir):
+    """The refusal used to offer `Workspace.open(path)` -- a Python call -- to a CLI user."""
+    new_workspace(tmp_path, base_dir)
+    with pytest.raises(FileExistsError) as refusal:
+        new_workspace(tmp_path, base_dir)
+
+    assert "lfa train --workspace" in str(refusal.value)
+    assert "Workspace.open(path)" in str(refusal.value)   # still there, for a Python caller
+
+
+def test_a_corpus_path_that_does_not_exist_says_what_to_do(tmp_path, registry, base_dir):
+    ws = new_workspace(tmp_path, base_dir)
+    with pytest.raises(FileNotFoundError, match="prepare-domain") as refusal:
+        ws.train(tmp_path / "typo_domain", recipe=tiny_recipe(base_dir), device="cpu")
+    assert "Corpus path not found" in str(refusal.value)
+
+
 def test_open_reads_back_what_init_wrote(tmp_path, registry, base_dir):
     created = new_workspace(tmp_path, base_dir)
     reopened = Workspace.open(tmp_path)
@@ -984,6 +1030,32 @@ def test_a_spec_that_asks_not_to_extend_between_domains_is_rejected(tmp_path, re
 
     with pytest.raises(ValueError, match="extend_between"):
         ws.chain(spec, device="cpu")
+
+
+@pytest.mark.parametrize("extra, expected", [
+    ({"extend_between": False}, "always folds each domain"),
+    ({"banana": 7}, "does not have"),
+])
+def test_a_domain_carrying_a_field_a_domain_does_not_have_is_refused(tmp_path, registry, base_dir,
+                                                                    corpus_a, extra, expected):
+    """The rule a recipe file already lives under, applied to a chain spec's domain entries.
+
+    `extend_between` is refused at the spec's TOP level with an explanation; per-domain -- the
+    more natural place to put a field about what happens between this domain and the next -- it
+    was accepted in silence and the chain started a full stage at the shipped recipe. An
+    invented key was likewise never looked at.
+    """
+    ws = _chain_workspace(tmp_path, base_dir)
+    spec = tmp_path / "domains.yaml"
+    spec.write_text(yaml.safe_dump({"domains": [{"name": "alpha", "corpus": str(corpus_a),
+                                                 **extra}]}))
+
+    with pytest.raises(ValueError, match=expected) as refusal:
+        ws.chain(spec, device="cpu", need=NEED, k_domain=K_DOMAIN)
+
+    assert str(spec) in str(refusal.value)
+    assert "corpus, epochs, name" in str(refusal.value)    # what a domain may carry
+    assert ws.history == [] and not (ws.path / "runs").exists()
 
 
 def test_a_spec_with_no_domains_is_rejected(tmp_path, registry, base_dir):

@@ -17,7 +17,7 @@ import pytest
 import torch
 from transformers import LlamaConfig, LlamaForCausalLM
 
-from lfa.artifact.extend import extend_artifact, fit_domain_gmm
+from lfa.artifact.extend import _collect_domain_activations, extend_artifact, fit_domain_gmm
 from lfa.artifact.schema import ArtifactModelMismatch, load_artifact
 from lfa.merge import alpha_from_counts, annotate_count, merge_stats
 from lfa.sampler import Sampler
@@ -341,6 +341,56 @@ def test_a_corpus_shorter_than_need_yields_what_there_is(tmp_path, tiny_artifact
     assert 0 < entry["n_samples"] - 1000 < 10_000
     assert entry["gmm_n_components"] == 3 + 1                    # one component per 200 samples
     assert any("Corpus exhausted" in record.message for record in caplog.records)
+
+
+def test_the_fitting_half_says_where_it_has_got_to(tmp_path, tiny_artifact, fused_dir,
+                                                   corpus_file, caplog):
+    """On the shipped artifact this half is 84 mixtures and about four minutes of silence, which
+    is indistinguishable from a hang -- a user timed it at four and a half."""
+    _, base_path = tiny_artifact
+
+    with caplog.at_level("INFO", logger="lfa.artifact.extend"):
+        _extend(tmp_path / "progress.pt", base_path, fused_dir, corpus_file)
+
+    progress = [record.getMessage() for record in caplog.records
+                if "Fitting the domain mixture" in record.getMessage()]
+    assert progress                                        # the first site and the last, at least
+    assert "site 1/6" in progress[0] and "site 6/6" in progress[-1]
+
+
+def test_the_collection_holds_exactly_the_activations_it_was_asked_for(tiny_model, fused_dir,
+                                                                       corpus_file):
+    """What the host-memory bill is made of, and the shape of the fix for it.
+
+    The collection used to keep every chunk in a list and concatenate at the end, so the process
+    held the chunks AND the concatenations at once -- 35.9 GiB measured against the ~18 GB
+    `docs/faq.md` budgets for the shipped artifact at `--need 40000`. Each site now writes into
+    one `need x width` buffer, so what is resident is what the arithmetic says, and a site that
+    could not be filled hands back a compact tensor rather than a view onto an unfilled buffer
+    (which would keep the whole allocation alive for the rest of the call).
+    """
+    from lfa.adapters import get_adapter
+    from lfa.models import load_teacher, load_tokenizer
+
+    model = load_teacher(str(fused_dir), device="cpu", dtype=torch.float32)
+    adapter = get_adapter(model)
+    keys = sorted(SITE_KEYS)
+
+    filled = _collect_domain_activations(model, load_tokenizer(str(fused_dir)), adapter,
+                                         corpus_file, keys, need=64, seq_len=64, seed=42,
+                                         device="cpu", keep_short_whole=True)
+    assert set(filled) == set(keys)
+    for key, tensor in filled.items():
+        assert tensor.shape[0] == 64, key                     # exactly `need`, never more
+        assert tensor.untyped_storage().nbytes() == tensor.numel() * tensor.element_size()
+
+    short = _collect_domain_activations(model, load_tokenizer(str(fused_dir)), adapter,
+                                        corpus_file, keys, need=1_000_000, seq_len=64, seed=42,
+                                        device="cpu", keep_short_whole=True)
+    for key, tensor in short.items():
+        assert 0 < tensor.shape[0] < 1_000_000, key
+        # Compact: the unfilled remainder of the buffer was released, not carried by a view.
+        assert tensor.untyped_storage().nbytes() == tensor.numel() * tensor.element_size()
 
 
 def test_a_corpus_that_chunks_to_nothing_says_so(tmp_path, tiny_artifact, fused_dir):

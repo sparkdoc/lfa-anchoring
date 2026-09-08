@@ -194,6 +194,41 @@ def test_wikitext2_perplexity_sliding_window(tiny_model):
     assert ppl > 1.0
 
 
+def test_the_tokenizer_length_warning_is_silenced_for_that_one_call(tiny_model, monkeypatch):
+    """The general axis tokenizes the whole split on purpose and then windows it.
+
+    transformers warns "Token indices sequence length is longer than the specified maximum ...
+    will result in indexing errors" whenever a tokenizer is handed more tokens than the model's
+    context. Here that is the design, not a mistake -- but the sentence is alarming in a run whose
+    only job is to produce two trustworthy numbers, and a user met it with nothing in the docs to
+    say it was harmless. It is silenced by name, for this call only.
+    """
+    import logging as logging_module
+
+    import datasets
+
+    from lfa.evaluate import _wikitext2_tokens
+
+    monkeypatch.setattr(datasets, "load_dataset",
+                        lambda *args, **kwargs: {"text": ["anchoring " * 200]})
+    _, tokenizer = tiny_model
+    noisy = logging_module.getLogger("transformers.tokenization_utils_base")
+    before = noisy.level
+    seen = []
+
+    class Recording:
+        """A tokenizer that reports the logger's level at the moment it is called."""
+
+        def __call__(self, *args, **kwargs):
+            seen.append(noisy.level)
+            return tokenizer(*args, **kwargs)
+
+    _wikitext2_tokens(Recording(), n_windows=2, stride=8)
+
+    assert seen == [logging_module.ERROR]                 # silenced while it tokenizes
+    assert noisy.level == before                          # and restored afterwards, always
+
+
 def test_an_unreachable_wikitext_split_names_the_way_out(tiny_model, monkeypatch):
     """No network is the ordinary case for the general axis, and it is not a bug.
 

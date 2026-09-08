@@ -23,9 +23,11 @@ from lfa.models import apply_lora
 from lfa.sampler import Sampler
 from lfa.train import (
     EMBED_ANCHOR_DISABLED_NOTICE,
+    OVERTRAINING_RATIO,
     ResumeSourceHasNoAdapter,
     TrainConfig,
     _build_scheduler,
+    held_out_turned_around,
     train,
     train_epoch,
     train_step,
@@ -292,6 +294,70 @@ def test_the_held_out_split_is_scored_after_every_epoch(setup, tiny_model, tmp_p
         assert record["val_perplexity"] == pytest.approx(math.exp(record["val_loss"]), rel=1e-6)
         assert record["val_tokens"] == history[0]["val_tokens"] > 0    # the same text every epoch
     assert state.history == history
+
+
+# --------------------------------------------------- the run that trained past its optimum
+#
+# The shipped recipe's epoch count was tuned on ~1,700 documents. On the small corpus a first
+# user actually brings, the held-out perplexity turns around early -- one measured run bottomed
+# at epoch 2 (6.67) and ended at epoch 15 (16.88), and `final_model` is the last epoch by
+# design. The trainer printed all fifteen numbers and drew no conclusion from them.
+
+def _curve(values):
+    return [{"epoch": i + 1, "val_perplexity": value} for i, value in enumerate(values)]
+
+
+@pytest.mark.parametrize("values, expected", [
+    # The measured over-training run: minimum at epoch 2, ending 2.5x worse.
+    ([6.91, 6.67, 6.78, 6.84, 7.53, 14.46, 16.88], (2, 6.67, 16.88)),
+    ([9.0, 8.0, 7.0, 6.0], None),                        # still falling: nothing to say
+    ([9.0, 8.0, 7.0, 7.0 * OVERTRAINING_RATIO * 1.01], (3, 7.0, 7.0 * OVERTRAINING_RATIO * 1.01)),
+    ([9.0, 8.0, 7.0, 7.2], None),                        # an ordinary wobble is not a finding
+    ([9.0, 8.0], None),                                  # too short to have a shape
+    ([], None),                                          # val_fraction=0: no curve at all
+])
+def test_the_turnaround_is_reported_only_when_it_is_one(values, expected):
+    assert held_out_turned_around(_curve(values)) == expected
+
+
+def test_a_history_without_validation_numbers_says_nothing(tiny_texts):
+    assert held_out_turned_around([{"epoch": 1, "loss_total": 2.0}] * 5) is None
+
+
+def test_a_run_that_trained_past_its_optimum_says_so_and_names_the_dose(setup, tmp_path,
+                                                                        monkeypatch, caplog):
+    """The wiring: the trainer reads its own curve at the end and turns it into one sentence."""
+    import lfa.train as train_module
+
+    teacher, fresh_student, dataset, sampler, adapter = setup
+    config = make_config(num_epochs=1)
+    student = apply_lora(fresh_student(), adapter, rank=config.lora_rank, alpha=config.lora_alpha)
+    monkeypatch.setattr(train_module, "held_out_turned_around", lambda history: (2, 6.67, 16.88))
+
+    with caplog.at_level(logging.WARNING, logger="lfa.train"):
+        train(teacher, student, dataset, sampler, adapter, config, tmp_path)
+
+    warned = [record.getMessage() for record in caplog.records
+              if record.levelname == "WARNING" and "past its own optimum" in record.getMessage()]
+    assert len(warned) == 1
+    assert "epoch 2 (6.670)" in warned[0] and "16.880" in warned[0]
+    assert "--epochs 2" in warned[0]                      # the dose to re-run at
+    assert "no best checkpoint is kept" in warned[0]      # why final_model is not that model
+
+
+def test_a_run_that_is_still_improving_says_nothing_about_its_dose(setup, tiny_model, tmp_path,
+                                                                   tiny_texts, caplog):
+    teacher, fresh_student, dataset, sampler, adapter = setup
+    _, tokenizer = tiny_model
+    holdout = ChunkedCorpus(tiny_texts[8:], tokenizer, max_length=64)
+    config = make_config()
+    student = apply_lora(fresh_student(), adapter, rank=config.lora_rank, alpha=config.lora_alpha)
+
+    with caplog.at_level(logging.WARNING, logger="lfa.train"):
+        train(teacher, student, dataset, sampler, adapter, config, tmp_path,
+              tokenizer=tokenizer, val_dataset=holdout)
+
+    assert not [r for r in caplog.records if "past its own optimum" in r.getMessage()]
 
 
 def test_without_a_held_out_split_the_history_carries_no_validation_columns(setup, tmp_path):

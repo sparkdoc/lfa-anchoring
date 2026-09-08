@@ -127,7 +127,11 @@ https://github.com/<org>/lfa-anchoring/releases/download/artifacts-v1/<file>.pt
 
 In `lfa/artifact/fetch.py::ARTIFACTS`, for both entries:
 
-* replace `<org>` in `_RELEASE_BASE` with the real organisation;
+* replace `<org>` in `_RELEASE_BASE` with the real organisation -- and in the same commit, the
+  same placeholder in `pyproject.toml`'s `[project.urls]` and in `README.md`'s links, which are
+  absolute because the README is the PyPI long description and PyPI does not rewrite relative
+  ones (`grep -rn "<org>" --include="*.toml" --include="*.md" --include="*.py" .` finds all of
+  them);
 * replace `"sha256": PLACEHOLDER_SHA256` with the digest from step 3;
 * check `size_mb` against the file you actually uploaded.
 
@@ -159,18 +163,30 @@ Check what the sdist carries (`MANIFEST.in` governs it): `lfa/`, `docs/`, `examp
 `LICENSE`, `README.md`, `RELEASING.md`, `constraints-tested.txt` — and **not**
 `tests/equivalence/fixtures/` (~12 MB of captured tensors, which belong in git, not in a source
 distribution) nor `tests/acceptance/_runs/` — which is why the two committed equivalence records
-travel in git only. Rehearsed 2026-09-07 from a pristine copy: **77 files, 260 KiB**
-(`tar -tzf dist/*.tar.gz | grep -v '/$' | wc -l`; the same listing is 88 lines with the directory
-entries counted). Re-measure rather than trusting the figure — the docs move. The wheel's metadata
-should read `License-Expression: Apache-2.0` with `dist-info/licenses/LICENSE` present, and should
-carry `lfa/recipes/qwen3-0.6b.yaml`.
+travel in git only. Rehearsed 2026-09-08 from a pristine copy: **78 files, 274 KiB**
+(`tar -tzf dist/*.tar.gz | grep -v '/$' | wc -l`; the same listing is 89 lines with the directory
+entries counted). Re-measure rather than trusting the figure — the docs move.
+
+The **wheel** is 34 files: the package, `lfa/recipes/qwen3-0.6b.yaml`, and `lfa/examples/` — the
+top-level `examples/` directory, mapped into the package by `[tool.setuptools.package-dir]` so
+that a pip-installed user has the two scripts the documentation sends them to
+(`python -m lfa.examples.quickstart`). Docs and tests are deliberately sdist-only; what carries
+them to a PyPI reader is `[project.urls]` and the README's absolute links. The metadata should
+read `License-Expression: Apache-2.0` with `dist-info/licenses/LICENSE` present, and should carry
+four `Project-URL:` lines with no `<org>` left in them.
 
 ## 6. Install clean and run everything
 
 ```bash
 python -m venv /tmp/lfa-release && /tmp/lfa-release/bin/pip install dist/lfa_anchoring-0.1.0-*.whl
 /tmp/lfa-release/bin/lfa --help
+/tmp/lfa-release/bin/python -m lfa.examples.quickstart --help     # the wheel ships these
 ```
+
+Build that venv on an interpreter with development headers, or install them: a CUDA run compiles
+triton's shim at the first kernel launch, and `lfa` refuses up front without `Python.h` and a
+compiler. A distribution `python3` without its `-dev` package is exactly the machine a new user
+brings, so it is worth rehearsing on one.
 
 Then, from a checkout with that venv:
 

@@ -140,12 +140,19 @@ def _collect_domain_activations(
     if len(dataset) == 0:
         raise ValueError(f"No training chunks in {corpus_path}: nothing to collect.")
 
-    store: dict[str, list[torch.Tensor]] = {key: [] for key in site_keys}
+    # One `need x width` float32 buffer per site, filled in place. The obvious implementation --
+    # a list of per-chunk tensors, concatenated at the end -- costs TWICE this, and not only
+    # transiently: the chunks are freed but glibc keeps their pages in the arena while every
+    # concatenation asks for fresh ones, so the process's resident peak is the sum of both. That
+    # is the 35.9 GiB a user measured against the ~18 GB docs/faq.md budgets. Allocating the
+    # destination up front makes the budget the arithmetic and the measurement agree on.
+    buffers: dict[str, torch.Tensor] = {}
     counts: dict[str, int] = {key: 0 for key in site_keys}
 
     def make_hook(key: str):
         def hook(module, args, kwargs):
-            if counts[key] >= need:
+            have = counts[key]
+            if have >= need:
                 return
             data = args[0] if args else next(iter(kwargs.values()))
             if isinstance(data, tuple):
@@ -153,8 +160,13 @@ def _collect_domain_activations(
             if not torch.is_tensor(data):
                 return
             flat = data.detach().reshape(-1, data.shape[-1]).float().cpu()
-            store[key].append(flat)
-            counts[key] += flat.shape[0]
+            buffer = buffers.get(key)
+            if buffer is None:
+                # The site's width is not known until the first activation arrives.
+                buffer = buffers[key] = torch.empty(need, flat.shape[1], dtype=torch.float32)
+            take = min(need - have, flat.shape[0])
+            buffer[have:have + take] = flat[:take]
+            counts[key] = have + take
         return hook
 
     handles = []
@@ -186,9 +198,13 @@ def _collect_domain_activations(
     if thinnest < need:
         logger.warning("Corpus exhausted at %d activations per site, %d were asked for",
                        thinnest, need)
-    logger.info("Collected %d+ activations at each of %d sites from %d chunks",
+    logger.info("Collected %d activations at each of %d sites from %d chunks",
                 thinnest, len(site_keys), n_chunks)
-    return {key: torch.cat(chunks)[:need] for key, chunks in store.items() if chunks}
+
+    # A site that filled its buffer hands the buffer over; a short one copies out its prefix, so
+    # the unfilled remainder is released rather than held by a view for the rest of the call.
+    return {key: buffer if counts[key] == need else buffer[:counts[key]].clone()
+            for key, buffer in buffers.items() if counts[key]}
 
 
 def gmm_site_keys(params: dict) -> list[str]:
@@ -317,8 +333,17 @@ def extend_artifact(
             f"tokens? ({corpus_path})"
         )
 
-    domain_stats = {key: fit_domain_gmm(H, base[key], k_domain, seed=seed, device=device)
-                    for key, H in activations.items()}
+    # Fitting is the long half of an extension and used to print nothing at all: on the shipped
+    # artifact it is 84 mixtures and several minutes, which is indistinguishable from a hang.
+    domain_stats = {}
+    total = len(activations)
+    # Insertion order, not sorted: each site's fit is seeded on its own, but changing the
+    # order of a stream of fits is exactly the kind of silent difference this package
+    # exists to avoid, and the equivalence fixtures were captured in this order.
+    for position, (key, H) in enumerate(activations.items(), start=1):
+        if position == 1 or position == total or position % 10 == 0:
+            logger.info("Fitting the domain mixture: site %d/%d (%s)", position, total, key)
+        domain_stats[key] = fit_domain_gmm(H, base[key], k_domain, seed=seed, device=device)
 
     if resolved_n is not None:
         annotate_count(base, resolved_n)

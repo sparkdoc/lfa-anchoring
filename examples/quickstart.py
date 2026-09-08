@@ -24,6 +24,9 @@ Example::
         --corpus data/my_domain \\
         --out runs/my_domain
 
+From an installed wheel, where there is no checkout to run a path from, the same script is
+``python -m lfa.examples.quickstart``.
+
 ``--artifact`` also takes a path, which is what to pass while the published assets do not exist
 yet: fetching by id refuses until the registry's checksums are filled in (see ``RELEASING.md``).
 Pass ``--artifact-id`` with it -- ``--artifact /path/to/distribution_stats.pt --artifact-id

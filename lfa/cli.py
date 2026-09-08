@@ -31,7 +31,8 @@ from .artifact.build import build_artifact
 from .artifact.fetch import (ArtifactNotPublished, ChecksumMismatch, fetch_artifact,
                              list_artifacts)
 from .evaluate import DatasetUnavailable
-from .models import DEFAULT_DEVICE, NoTrainableParameters, ShardingRefused
+from .models import (DEFAULT_DEVICE, MissingBuildToolchain, NoTrainableParameters,
+                     ShardingRefused)
 from .prepare_domain import prepare_domain
 from .seed_corpus import SourceUnavailable, prepare_seed_corpus
 from .train import ResumeSourceHasNoAdapter
@@ -54,7 +55,7 @@ __all__ = ["main"]
 USER_FACING_ERRORS = (
     StageOrderError, WorkspaceNotReady, ShardingRefused, ArtifactNotPublished, ChecksumMismatch,
     SourceUnavailable, DatasetUnavailable, ResumeSourceHasNoAdapter, NoTrainableParameters,
-    FileNotFoundError, FileExistsError, ValueError,
+    MissingBuildToolchain, FileNotFoundError, FileExistsError, ValueError,
 )
 
 
@@ -86,7 +87,9 @@ def _open(args) -> Workspace:
 def _init(args) -> int:
     workspace = Workspace.init(args.path, args.model, artifact=args.artifact,
                                recipe=args.recipe, artifact_id=args.artifact_id)
-    print(f"Workspace initialised at {workspace.path} over {args.model}")
+    # `Workspace.init` already LOGS that the workspace was created, and the CLI configures
+    # logging, so printing the same sentence here showed it twice. Say the next step instead.
+    print(f"Next: lfa train --workspace {workspace.path} --corpus <your documents>")
     return 0
 
 
@@ -133,7 +136,8 @@ def _fuse(args) -> int:
 
 def _chain(args) -> int:
     entries = _open(args).chain(args.spec, device=args.device,
-                                allow_sharding=args.allow_sharding)
+                                allow_sharding=args.allow_sharding,
+                                need=args.need, k_domain=args.k_domain)
     print(f"{len(entries)} stage(s) trained: "
           f"{', '.join(entry['output_dir'] for entry in entries)}")
     return 0
@@ -279,6 +283,14 @@ def build_parser() -> argparse.ArgumentParser:
         "chain", help="run a whole sequence of domains from a YAML spec: train, extend, train...")
     chain.add_argument("spec", metavar="domains.yaml", help="the chain spec")
     _add_workspace(chain)
+    # The same two knobs `lfa extend` takes, because a chain runs an extension between every
+    # pair of domains and `--need` is the one to turn down when host memory is tight.
+    chain.add_argument("--need", type=int, default=40_000, metavar="N",
+                       help="activations to collect per site at each extension "
+                            "(default: %(default)s)")
+    chain.add_argument("--k-domain", type=int, default=8, metavar="K",
+                       help="mixture components to fit per site at each extension "
+                            "(default: %(default)s)")
     _add_device(chain, sharding=True)
     chain.set_defaults(handler=_chain)
 
@@ -346,8 +358,9 @@ def main(argv: list[str] | None = None) -> int:
     """Parse ``argv`` (``sys.argv[1:]`` when ``None``), run the subcommand, return the status.
 
     Returns:
-        ``0``, or ``2`` for anything the library refused -- printed as a single line on stderr,
-        because those messages are written to be read rather than traced.
+        ``0``; ``2`` for anything the library refused -- printed as a single line on stderr,
+        because those messages are written to be read rather than traced; ``130`` for Ctrl-C,
+        the shell's convention for a command killed by SIGINT.
     """
     args = build_parser().parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -359,6 +372,14 @@ def main(argv: list[str] | None = None) -> int:
         # would put the instruction they end with out of sight.
         print(f"lfa: {' '.join(str(error).split())}", file=sys.stderr)
         return 2
+    except KeyboardInterrupt:
+        # Ctrl-C during training is the most ordinary way anyone stops a run, and a traceback
+        # ending in `KeyboardInterrupt` reads like a crash -- which the documented rule would
+        # then call a bug in this package. Say what happened and how to pick it up instead.
+        print("\nlfa: interrupted. A run that reached a checkpoint can be continued with the "
+              "same command plus --resume; one interrupted before its first checkpoint has "
+              "nothing saved and can simply be started again.", file=sys.stderr)
+        return 130
 
 
 if __name__ == "__main__":                                          # pragma: no cover

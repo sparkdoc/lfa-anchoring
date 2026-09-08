@@ -60,6 +60,21 @@ layer count, and λ absorbs it. The schedule is scale compensation rather than a
 the lowest training loss is chosen on one axis of a method whose whole point is the trade between
 two.
 
+> ⚠ **`epochs: 15` is a dose, and it was tuned on a corpus of about 1,700 documents (~1.8 M
+> training tokens). It is too long for a small one.** A first corpus is usually much smaller, and
+> a smaller corpus reaches its held-out minimum much earlier: on a measured 45-document,
+> ~106 k-token corpus the held-out perplexity bottomed at **epoch 2** (6.67) and ended the
+> fifteenth epoch at **16.88** — and since `final_model` is the last epoch, that run shipped a
+> model far worse on its own domain than one it had passed through. The anchor was doing its job
+> throughout (the unanchored control was worse still on both axes); the *dose* was wrong.
+>
+> **The rule.** The trainer prints `Held-out: loss=… perplexity=…` after every epoch, and warns at
+> the end if the curve turned around. Read that column: the epoch where the perplexity stops
+> falling is your dose, and you re-run at it — `lfa train … --epochs <that epoch>` — rather than
+> truncating the run you have, because the learning-rate schedule is laid over the epoch count
+> (`--epochs 3` is a complete three-epoch run, not the first three epochs of fifteen). Re-tuning
+> the dose does not re-tune λ: they are separate knobs, and λ's couplings are below.
+
 ### Optimization
 
 | field | value |
