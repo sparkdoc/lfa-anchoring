@@ -56,7 +56,7 @@ ARTIFACTS: dict[str, dict] = {
     "qwen3-0.6b-gmm1543k-int8": {
         "model_id": "Qwen/Qwen3-0.6B",
         "url": f"{_RELEASE_BASE}/qwen3-0.6b-gmm1543k-int8.pt",
-        "sha256": "acfbc0ecbae60e5806fe356004508fa26880feef6f948903c9c9959bb8cf4485",
+        "sha256": "67fadae76cf1dd36193cae06295fa78f2f4988a50f1ace5b468237556c11908e",
         "n_samples_total": 1_543_040,
         "kind": "correlated-linear + GMM K=32 MLP (int8)",
         "size_mb": 108,
@@ -64,7 +64,7 @@ ARTIFACTS: dict[str, dict] = {
     "qwen3-0.6b-diagonal": {
         "model_id": "Qwen/Qwen3-0.6B",
         "url": f"{_RELEASE_BASE}/qwen3-0.6b-diagonal.pt",
-        "sha256": "ae66b9513037abecbfa6ca71bf0db2f9f5e5cf7f36d62e8d0a3e923f4c943522",
+        "sha256": "2eaa34baa7719404f66147fcdb7d8a9a45119a3002df377adc706224c89e0815",
         "n_samples_total": 1_200_000,
         "kind": "diagonal (budget floor)",
         "size_mb": 1,
