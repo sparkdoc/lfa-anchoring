@@ -3,7 +3,7 @@
 The load-bearing behaviour is the chunking stream: a chunk is ``max_length`` tokens, the
 per-epoch offset is deterministic in ``(seed, epoch)``, and epoch 0 is always offset 0. The
 companion's default (``keep_short_whole=True``) keeps a document that fits in one chunk present
-in every epoch; the legacy default (``False``) is what the the research code record was produced under
+in every epoch; the legacy default (``False``) is what the research record was produced under
 and must stay reproducible, so both branches are exercised here.
 
 ``tiny_texts`` tokenizes to 69-280 tokens under the char-level fixture tokenizer, so

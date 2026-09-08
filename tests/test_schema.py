@@ -31,6 +31,7 @@ def test_make_meta_says_who_built_the_statistics_and_who_wrote_the_block():
     default = make_meta("m", 8, 2, ["pre_mlp"], 100)
     assert default["built_with"] == "lfa-anchoring"
 
-    added = make_meta("m", 8, 2, ["pre_mlp"], 100, built_with="the research code (research code)")
-    assert added["built_with"] == "the research code (research code)"
+    added = make_meta("m", 8, 2, ["pre_mlp"], 100,
+                      built_with="research code; meta block added by lfa-anchoring")
+    assert added["built_with"] == "research code; meta block added by lfa-anchoring"
     assert added["lfa_version"] == default["lfa_version"] == __version__

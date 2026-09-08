@@ -142,9 +142,9 @@ def resolve_device(device: str | dict | None = None, allow_sharding: bool = Fals
 
     Sharding is refused by default because it is the wrong tool for the usual case: it exists to
     fit a model that does not fit on one card, and at LFA's scale it costs speed rather than
-    buying it (~8% slower in the research code's measurement, since each anchored hidden state then has
-    to hop between cards). Pass ``allow_sharding=True`` deliberately, when the student and the
-    frozen teacher together do not fit on a single card.
+    buying it (~8% slower in the research code's measurement, since each anchored hidden state
+    then has to hop between cards). Pass ``allow_sharding=True`` deliberately, when the student
+    and the frozen teacher together do not fit on a single card.
 
     Every CUDA resolution also runs :func:`check_gpu_toolchain`, since this is the one place
     every workspace operation passes through before it loads anything.
@@ -293,9 +293,9 @@ def apply_lora(
     ``freeze_embed=False`` restores it, adding ``modules_to_save=["embed_tokens"]`` with
     ``ensure_weight_tying=True`` so PEFT wraps the LM head over a single shared weight tensor.
 
-    Sharded models are not gathered to one device first, as the research code's version had to do: PEFT
-    handles a ``device_map="auto"`` model itself in the pinned transformers/PEFT versions, and
-    LFA pins one device by default anyway (see :func:`resolve_device`).
+    Sharded models are not gathered to one device first, as the research code's version had to
+    do: PEFT handles a ``device_map="auto"`` model itself in the pinned transformers/PEFT
+    versions, and LFA pins one device by default anyway (see :func:`resolve_device`).
     """
     from peft import LoraConfig, TaskType, get_peft_model
 
@@ -337,7 +337,7 @@ def load_adapter_for_training(base_model: nn.Module, adapter_dir: str | Path) ->
     in *inference* mode with ``requires_grad=False`` on every LoRA parameter. Resuming that way
     is a silent no-op -- the loss still moves as the data reshuffles, but ``grad_norm`` is 0.0
     and every post-resume checkpoint is byte-identical to the one it resumed from. That bug
-    corrupted several the research code runs before it was caught, so this function both passes
+    corrupted several research runs before it was caught, so this function both passes
     ``is_trainable=True`` and asserts afterwards that something can actually train.
 
     Raises:

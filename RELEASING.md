@@ -47,15 +47,15 @@ from pathlib import Path
 from lfa.artifact.schema import (EMBEDDING_LOOKUP_KEY, LM_HEAD_SITE, META_KEY, SITES,
                                  load_artifact, make_meta, save_artifact)
 
-MR = Path("/path/to/the research code")
+SRC = Path("/path/to/research-repo")
 OUT = Path("release"); OUT.mkdir(exist_ok=True)
 
 # These statistics were collected by the research code, not by this package. `built_with` says so;
 # `lfa_version`, which make_meta fills in itself, records who wrote the block.
-RESEARCH_BUILT = "the research code (research code); meta block added by lfa-anchoring"
+RESEARCH_BUILT = "research code; meta block added by lfa-anchoring"
 
 # --- the recipe artifact: correlated basis + K=32 mixture per site, blockwise int8
-params = load_artifact(MR / "data/distributions/qwen3-0.6b-gmm1543k-int8/distribution_stats.pt")
+params = load_artifact(SRC / "data/distributions/qwen3-0.6b-gmm1543k-int8/distribution_stats.pt")
 params[META_KEY] = make_meta(model_id="Qwen/Qwen3-0.6B", hidden_size=1024, num_layers=28,
                              sites=list(SITES) + [LM_HEAD_SITE], n_samples_total=1_543_040,
                              built_with=RESEARCH_BUILT)
@@ -64,7 +64,7 @@ save_artifact(params, OUT / "qwen3-0.6b-gmm1543k-int8.pt", quantize=True)
 # --- the diagonal budget floor, WITHOUT its ~312 MB layer-0 lookup table: that table is
 #     input_layernorm(embed_tokens(id)), exactly reconstructible from the model, and the sampler
 #     rebuilds it. The token frequencies stay (~600 KB), so frequency-weighted L_embed still works.
-diagonal = load_artifact(MR / "data/distributions/qwen3-0.6b-1200k-10to1-uniform-simple"
+diagonal = load_artifact(SRC / "data/distributions/qwen3-0.6b-1200k-10to1-uniform-simple"
                             "/distribution_stats.pt")
 lookup = diagonal[EMBEDDING_LOOKUP_KEY]
 diagonal[EMBEDDING_LOOKUP_KEY] = {"token_frequencies": lookup["token_frequencies"]}
@@ -98,9 +98,10 @@ STAGE=$(mktemp -d)
 mkdir -p "$STAGE/data/distributions/qwen3-0.6b-gmm1543k-int8" "$STAGE/outputs/lra/qwen3-0.6b"
 ln -s /path/to/lfa-anchoring/release/qwen3-0.6b-gmm1543k-int8.pt \
       "$STAGE/data/distributions/qwen3-0.6b-gmm1543k-int8/distribution_stats.pt"
-ln -s /path/to/the research code/outputs/lra/qwen3-0.6b/original "$STAGE/outputs/lra/qwen3-0.6b/original"
+ln -s /path/to/research-repo/outputs/lra/qwen3-0.6b/original \
+      "$STAGE/outputs/lra/qwen3-0.6b/original"
 
-cd /path/to/the research code && source .venv/bin/activate
+cd /path/to/research-repo && source .venv/bin/activate
 CUDA_VISIBLE_DEVICES=0 LFA_RESEARCH_ROOT=$STAGE LFA_ANCHORING=/path/to/lfa-anchoring \
   pytest tests/lfa_port_verification/equivalence -m equivalence -k sampler_replays -q
 ```

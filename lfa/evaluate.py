@@ -3,7 +3,7 @@
 An LFA run is read on two axes at once, and one number alone says nothing:
 
 * **general** -- WikiText-2 test perplexity, the *preservation* axis. It is measured with the
-  sliding window the the research code record was produced under (window 2048, stride 512, labels
+  sliding window the research record was produced under (window 2048, stride 512, labels
   ``-100`` outside the stride so every token is scored exactly once with the most context
   available to it). A different window gives a different number, so the loop here is a
   deliberate port rather than a re-derivation: the paper's seed-drift figures are only
@@ -69,11 +69,11 @@ class DatasetUnavailable(RuntimeError):
     """
 
 
-#: Batch size for :func:`domain_perplexity`, as in the research code's plain-perplexity path. The result
-#: is token-weighted, so this trades memory against speed and not accuracy -- except that a batch
-#: mixing chunks of different lengths is left-padded, and a padded row's first real token is then
-#: predicted from a masked position. That is inherited from the source and is why the tail chunk
-#: of a document is worth exactly one slightly pessimistic token.
+#: Batch size for :func:`domain_perplexity`, as in the research code's plain-perplexity path.
+#: The result is token-weighted, so this trades memory against speed and not accuracy -- except
+#: that a batch mixing chunks of different lengths is left-padded, and a padded row's first real
+#: token is then predicted from a masked position. That is inherited from the source and is why
+#: the tail chunk of a document is worth exactly one slightly pessimistic token.
 DOMAIN_BATCH_SIZE = 4
 
 
@@ -214,8 +214,8 @@ def wikitext2_perplexity(model, tokenizer, n_windows: int = 100, stride: int = 5
     Each step feeds a window of up to ``max_length`` tokens but scores only the ``stride`` tokens
     that no earlier window scored, so every token is scored exactly once with as much left
     context as the window allows. The per-window mean NLL is weighted by that stride, matching
-    the research code's ``_run_perplexity_check`` term for term; do not "fix" the weighting, because the
-    published seed-drift figures are this quantity.
+    the research code's ``_run_perplexity_check`` term for term; do not "fix" the weighting,
+    because the published seed-drift figures are this quantity.
 
     Args:
         model: any causal LM; left where it is and restored to its previous train/eval mode.

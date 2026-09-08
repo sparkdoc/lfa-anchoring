@@ -6,7 +6,7 @@ different positions in different epochs; epoch 0 is always offset 0. Nothing is 
 the chunking is deterministic in ``(seed, epoch)`` — two runs with the same seed see the same
 stream.
 
-**One default deliberately differs from the the research code research code**: ``keep_short_whole``
+**One default deliberately differs from the research code**: ``keep_short_whole``
 defaults to ``True`` here. See :class:`ChunkedCorpus` for what the flag does and why the research
 code keeps the other default.
 
@@ -50,7 +50,7 @@ class ChunkedCorpus(Dataset):
         stride: distance between chunk starts. ``0`` means ``max_length``, i.e. no overlap.
         keep_short_whole: if ``True`` (the companion's default), a document that fits in one
             chunk (``<= max_length`` tokens) ignores the epoch offset and is therefore present in
-            EVERY epoch. ``False`` is the the research code research default, under which the offset loop
+            EVERY epoch. ``False`` is the research default, under which the offset loop
             ``range(offset, len(doc), stride)`` yields no chunk at all for a document shorter than
             the epoch's offset — short documents drop out of most epochs. ``False`` is offered
             only so a run can be matched deliberately to a corpus chunked that way; nothing in

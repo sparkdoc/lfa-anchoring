@@ -113,7 +113,7 @@ def test_stage_below_one_is_rejected(tmp_path):
 
 
 def test_keep_short_whole_defaults_to_the_recipe_and_can_be_overridden(tmp_path):
-    """The override exists so a comparison against the research code's historical loader can be run."""
+    """The override exists so a comparison against the historical research loader can be run."""
     recipe = Recipe.load("qwen3-0.6b")
     assert recipe.to_train_config(1, tmp_path / "s.pt").keep_short_whole is True
     assert recipe.to_train_config(1, tmp_path / "s.pt", keep_short_whole=False).keep_short_whole is False

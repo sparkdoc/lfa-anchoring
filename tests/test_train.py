@@ -605,7 +605,7 @@ def test_resume_inside_the_warmup_replays_the_schedule(setup, tmp_path):
 
 
 def _research_schedule(optimizer, learning_rate, warmup_steps, total_steps, lr_floor=0.0):
-    """the research code's scheduler, transcribed, at ``cosine_fraction=1.0, plateau_end_factor=1.0``.
+    """The research scheduler, transcribed, at ``cosine_fraction=1.0, plateau_end_factor=1.0``.
 
     From ``src/lra_training.py`` (the phase-boundary block that builds ``warmup → plateau →
     cosine``): with ``cosine_fraction=1.0`` the plateau is empty and the schedule is the
@@ -634,7 +634,7 @@ def _research_schedule(optimizer, learning_rate, warmup_steps, total_steps, lr_f
     (50, 3, 5, 0.0),           # warmup longer than the whole run
     (10, 20, 3, 0.05),         # a non-zero floor
 ])
-def test_the_cosine_schedule_matches_researchs_scheduler_step_for_step(
+def test_the_cosine_schedule_matches_the_research_scheduler_step_for_step(
     warmup_steps, steps_per_epoch, num_epochs, lr_floor
 ):
     """``lr_schedule="cosine"`` is the research code's schedule at ``cosine_fraction=1.0``, exactly.
@@ -654,7 +654,7 @@ def test_the_cosine_schedule_matches_researchs_scheduler_step_for_step(
 
     ours = _build_scheduler(ours_opt, config, total_steps, logging.getLogger("test"))
     theirs = _research_schedule(theirs_opt, config.learning_rate, warmup_steps, total_steps,
-                                 lr_floor)
+                                lr_floor)
 
     with warnings.catch_warnings():                # stepping a scheduler with no optimizer step
         warnings.filterwarnings("ignore", message=r".*before `optimizer\.step\(\)`.*")
