@@ -42,9 +42,14 @@ What that does to the numbers on this page:
   chunk per epoch, so the per-epoch optimizer-step counts and the per-epoch content and held-out
   losses in the Tier-2 table would no longer land where they did — not by drifting, but because
   the two loaders are now feeding different text.
-* **Recoverable.** The old stream is still reachable: `rotate_offset=False` on `ChunkedCorpus`,
-  `load_corpus`, `TrainConfig`, `Recipe.to_train_config` and `Workspace.train` restores it exactly,
-  and it is recorded per run as a frame field. Re-running this comparison means setting it.
+* **Not recoverable from this package.** The truncating stream was briefly kept reachable as
+  `rotate_offset=False`, and it has since been **removed**. Its only use was reproducing the
+  per-epoch series on this page, and a switch that silently discards up to 85 % of a document's
+  tokens in an epoch is not something to leave in a loader that strangers point at their own
+  corpora — the package exists to be used on new corpora, not to reproduce these numbers. Re-doing
+  the per-epoch half of this comparison means matching the two loaders deliberately: cut
+  `ChunkedCorpus._chunk_bounds` back to `range(offset, n_tokens, stride)` on a branch, or compare
+  at offset 0, where they still agree exactly.
 
 The divergence is deliberate and it is in the package's favour: a user's corpus is not silently
 trained on a fraction of itself. It is written down here because "bit-identical to the research

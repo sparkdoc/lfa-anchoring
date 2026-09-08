@@ -357,7 +357,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="drop a document shorter than this many characters after cleaning "
                              "(default: %(default)s)")
     domain.add_argument("--combine", action="store_true",
-                        help="write one combined file instead of one file per input")
+                        help="write one combined file instead of one file per input. The loader "
+                             "reads a file as one document, so a combined corpus is a single "
+                             "document contributing every chunk -- which training will warn "
+                             "about. Use it to inspect the cleaned text, not to train on")
     domain.set_defaults(handler=_prepare_domain)
 
     return parser

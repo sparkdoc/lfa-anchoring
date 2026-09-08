@@ -60,19 +60,12 @@ warmup_steps: 50
 weight_decay: 0.01
 sequence_length: 512
 seed: 42
-# keep_short_whole is a frame field, not a tuning knob: with `true` a document that fits in one
-# chunk is present in EVERY epoch, and with `false` it drops out of every epoch whose random chunk
-# offset is past its end. The two settings show the model different amounts of the short documents,
-# so perplexity numbers measured under one are not comparable with numbers measured under the other.
+# keep_short_whole is a choice about short documents, not a tuning knob: with `true` a document
+# that fits in one chunk is trained WHOLE in every epoch, and with `false` it is cut at the epoch's
+# chunk offset like a longer one -- into a chunk and a fragment that starts mid-sentence. Prefer
+# `false` only when the documents are themselves arbitrary slices of something longer, so that
+# keeping them whole preserves nothing and the positional variety is worth having.
 keep_short_whole: true
-# rotate_offset is the second frame field: with `true` the per-epoch chunk offset rotates the chunk
-# BOUNDARIES -- the leading segment [0, offset) is a chunk of its own -- so every token is trained
-# on in every epoch. With `false` (what the research loader does, and what the published
-# verification run was produced under) the offset is where each document STARTS, so its first
-# `offset` tokens are dropped that epoch: 42.6 % of a 600-token document in an average epoch, 5.1 %
-# of a 5,000-token one. The two settings train on different amounts of text, so perplexities are
-# not comparable across them.
-rotate_offset: true
 # a tenth of the documents are held out and scored after every epoch, so the domain number is a
 # measurement rather than a fit
 val_fraction: 0.1

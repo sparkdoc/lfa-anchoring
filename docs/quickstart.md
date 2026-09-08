@@ -87,6 +87,14 @@ lfa prepare-domain ~/papers ~/notes.md --out data/my_domain
 cleans down to less than `--min-length` characters (default 1000) is dropped — a page that
 extracted to a nav bar is not training data.
 
+Two things about the corpus that the run will tell you and it is cheaper to know now. The whole
+corpus is tokenized eagerly and held in host RAM at **about eight times its size on disk**, and a
+corpus too large for the machine is refused before it is tokenized rather than killed part-way
+through. And three corpus *shapes* train badly without failing — too few chunks for the batch, one
+document contributing most of the gradient, and more epochs than the amount of text can carry; the
+trainer names each one, with its numbers, before the first step. [faq.md](faq.md) has the
+thresholds and what to do about each.
+
 ## The four commands
 
 ```bash

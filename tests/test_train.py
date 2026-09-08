@@ -344,6 +344,36 @@ def test_a_run_shorter_than_its_own_warmup_says_the_corpus_is_too_small(setup, t
     assert "More documents is the fix" in warned[0]
 
 
+def test_the_corpus_shape_warnings_are_logged_before_the_first_step(setup, tmp_path, caplog):
+    """The wiring: whatever the corpus says about its own shape, the run says out loud, against
+    THIS run's batch size, accumulation and epoch count -- and before any of them are spent."""
+    teacher, fresh_student, dataset, sampler, adapter = setup
+    config = make_config(num_epochs=15)
+    student = apply_lora(fresh_student(), adapter, rank=config.lora_rank, alpha=config.lora_alpha)
+    expected = dataset.shape_warnings(batch_size=config.batch_size, epochs=config.num_epochs)
+    assert expected, "the eight-document fixture corpus is meant to be a shape worth warning about"
+
+    with caplog.at_level(logging.INFO, logger="lfa.train"):     # INFO: the epoch lines too
+        train(teacher, student, dataset, sampler, adapter, config, tmp_path)
+
+    logged = [r.getMessage() for r in caplog.records
+              if r.levelname == "WARNING" and r.getMessage().startswith("Corpus shape:")]
+    assert logged == expected
+    # Before the run, not after it: the first epoch line comes later in the same capture.
+    first_epoch = next(i for i, r in enumerate(caplog.records) if "Epoch 1/" in r.getMessage())
+    assert all(i < first_epoch for i, r in enumerate(caplog.records)
+               if r.getMessage().startswith("Corpus shape:"))
+
+
+def test_a_dataset_that_is_not_a_chunked_corpus_is_not_diagnosed(setup, tmp_path):
+    """A caller wiring LFA into their own framework may hand the trainer something else. The
+    diagnostic must not be the thing that refuses it."""
+    from lfa.train import _corpus_shape_warnings
+
+    _, _, dataset, _, _ = setup
+    assert _corpus_shape_warnings(list(dataset), make_config()) == []
+
+
 def test_an_ordinary_run_is_not_called_too_small(setup, tmp_path, caplog):
     teacher, fresh_student, dataset, sampler, adapter = setup
     config = make_config(num_epochs=1, warmup_steps=1)

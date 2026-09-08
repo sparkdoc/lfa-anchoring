@@ -129,15 +129,11 @@ def _collect_domain_activations(
 ) -> dict[str, torch.Tensor]:
     """Record ``need`` activations per site, from the stage's own chunked training stream.
 
-    The chunks are the ones training saw -- same loader, same length, same ``keep_short_whole``
-    frame, no validation split -- taken
+    The chunks are the ones training saw -- same loader, same length, same
+    ``keep_short_whole`` setting, no validation split -- taken
     in a seeded random order rather than in file order, so the sample spans the whole corpus at the
     proportions it is trained on. (The reference implementation's other mode, the first ~78 files
     each truncated to one chunk, is a thin order-dependent sample and is deliberately not ported.)
-
-    The other loader frame, ``rotate_offset``, is deliberately not a parameter here: collection
-    never calls :meth:`~lfa.corpus.ChunkedCorpus.rechunk`, so it reads the epoch-0 chunking, where
-    the offset is 0 and the two settings produce the identical stream.
     """
     dataset, _ = load_corpus(corpus_path, tokenizer, max_length=seq_len, stride=0,
                              val_fraction=0.0, seed=seed, keep_short_whole=keep_short_whole)

@@ -99,8 +99,7 @@ curve, not a truncation of this one.
 
 | field | value | what it does |
 |---|---|---|
-| `keep_short_whole` | `true` | a document that fits in one chunk is cut the same way in **every** epoch. A **frame** field: under `false` (with `rotate_offset: false`) such a document drops out of every epoch whose random chunk offset is past its end, so the model sees a different amount of the short documents and perplexities are not comparable across the two settings |
-| `rotate_offset` | `true` | the per-epoch chunk offset moves the chunk **boundaries** — the leading segment `[0, offset)` is a chunk of its own — so every token is trained on in every epoch. A **frame** field: under `false` (the research loader, and the frame the numbers in [verification.md](verification.md) were measured in) the offset is where each document *starts*, so its first `offset` tokens are dropped that epoch — 42.6 % of a 600-token document in an average epoch, 5.1 % of a 5,000-token one |
+| `keep_short_whole` | `true` | a document that fits in one chunk is trained **whole**, in every epoch, rather than being cut at the epoch's chunk offset into a chunk and a fragment that starts mid-sentence. It changes the training stream, so a run records which setting it used. Prefer `false` only when the documents are themselves arbitrary slices of something longer, so that keeping them whole preserves nothing and the extra positional variety is worth having |
 | `val_fraction` | 0.1 | share of *documents* (shuffled under `seed`) held out of training and scored after every epoch. Set it to `0.0` to train on everything — and then read the domain number as a fit |
 
 ### Calibration record
@@ -158,9 +157,12 @@ A recipe file must be a YAML mapping, may not carry a field `Recipe` does not ha
 
 ## Per-run overrides
 
-`Workspace.train` takes `epochs`, `full_weight`, `keep_short_whole`, `rotate_offset` and
-`output_name` per call
+`Workspace.train` takes `epochs`, `full_weight`, `keep_short_whole` and `output_name` per call
 (`--epochs`, `--full-weight` on the CLI); the recipe is otherwise used as written. Whatever
-actually ran — both λ values after the stage multiplier, the loader frame, the held-out fraction,
-the device and the dtype — is recorded in that stage's `history.json` entry, so a run says what it
-did rather than what it was asked for.
+actually ran — both λ values after the stage multiplier, the short-document setting, the held-out
+fraction, the device and the dtype — is recorded in that stage's `history.json` entry, so a run
+says what it did rather than what it was asked for.
+
+The chunk offset itself is not a setting: it rotates the chunk boundaries, so every token of every
+document is trained on in every epoch. A switch that reproduced the older, truncating stream
+existed briefly and was removed — see [verification.md](verification.md).

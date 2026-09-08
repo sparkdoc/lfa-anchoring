@@ -58,6 +58,11 @@ in different places, which is the positional diversity the offset exists for. Wh
 is the held-out split — it is chunked once, at offset 0, so the per-epoch held-out numbers compare
 like with like.
 
+The offset moves the chunk **boundaries** rather than each document's starting point: the leading
+segment `[0, offset)` is emitted as a chunk of its own beside the offset-aligned ones. That is why
+the chunk count rises with the offset while the token count stays flat — one extra chunk per
+multi-chunk document, not one extra pass over the text.
+
 ## The anchor loss spikes by orders of magnitude on some steps. Is that a divergence?
 
 No. The anchor is a Monte-Carlo estimate: 16 hidden states are drawn per site per step from p(h),
@@ -118,30 +123,83 @@ Nothing about the method depends on those particular corpora. `lfa prepare-domai
 documents you have into the shape the loader reads, and the couplings in
 [recipes.md](recipes.md) are what to re-check when your corpus differs in kind from theirs.
 
-## What is the "loader frame" the logs mention?
+## What is the "loader" line the logs print at the start of a run?
 
-Two fields, both about how the per-epoch chunk offset is applied, and both **frame** fields rather
-than tuning knobs: they change how much text the model sees, they are invisible in every metric a
-run reports, and λ is coupled to corpus composition. A perplexity produced under one setting is not
-comparable with one produced under the other. That is why a run says out loud which frame it used
-and records both settings in its history entry rather than only in the recipe.
+One setting, `keep_short_whole`, and it is about short documents rather than about matching anyone
+else's stream. Under the default, `true`, a document that fits in a single chunk is trained
+**whole** in every epoch: it ignores the epoch's chunk offset. Under `false` it is cut at the
+offset like a longer document, into a chunk and a fragment that begins mid-sentence with none of
+its own text in front of it.
 
-`keep_short_whole` — whether a document that fits in a single chunk is cut the same way in **every**
-epoch (the default, `true`) or is cut by the offset like any other document (`false`); under `false`
-*and* `rotate_offset: false` it drops out of every epoch whose offset is past its end.
+Neither setting loses any text — the offset rotates the chunk boundaries, so the leading segment is
+emitted either way. What changes is whether a short document arrives whole or in two pieces, and
+that changes the training stream, which is why a run says which it used and records it in its
+history entry rather than only in the recipe.
 
-`rotate_offset` — whether the epoch offset moves the chunk **boundaries** (the default, `true`: the
-leading segment `[0, offset)` becomes a chunk of its own, so every token is trained on in every
-epoch) or is where each document **starts** (`false`: its first `offset` tokens are not trained on
-that epoch). The second is what the research loader does, and what the numbers in
-[verification.md](verification.md) were produced under. It costs a 600-token document 42.6 % of its
-tokens in an average epoch and 85.2 % in the worst; a 1,024-token one 25.0 % / 50.0 %; a
-5,000-token one 5.1 %. Corpora of book-length documents sit in the harmless tail, which is why it
-went unnoticed; corpora of articles, documentation pages or chapters do not.
+**Prefer `false` only when the "documents" are themselves arbitrary slices of something longer** —
+a scrape cut every 3,000 characters, an export chunked by paragraph. Then keeping them whole
+preserves nothing that means anything, and the positional variety between epochs is worth having.
+When each document is a unit somebody wrote (an article, a page, a recipe), keep the default.
 
-The defaults here are `true` and `true`. This package does not offer a switch for either on the
-command line; the fields exist in `TrainConfig` and `Recipe`, and as `Workspace.train` arguments,
-for a caller who must match an external frame exactly.
+There is no setting for the chunk offset itself. It rotates the boundaries; that is what the loader
+does. A switch that reproduced an older, truncating stream was briefly offered and has been removed —
+[verification.md](verification.md) says why, and what it means for the numbers on that page.
+
+## How large a corpus can I train on?
+
+**Budget about 35 bytes of host RAM per token, or roughly eight times the corpus's size on disk**,
+resident for the whole run. Tokenization is eager: the entire corpus is held as token tensors from
+the moment the run starts. That is on the host and is unrelated to the ~9 GB on the GPU.
+
+Measured end to end through `load_corpus` (2026-09-08, one RTX 3090 host, the Qwen3 tokenizer,
+512-token chunks):
+
+| corpus | on disk | tokens | resident |
+|---|---|---|---|
+| 500 documents | 37.6 MB | 10.1 M | **282 MiB** (29.3 B/token, 7.5× the disk size) |
+| 2,000 documents | 150.4 MB | 40.4 M | **1,311 MiB** (34.1 B/token, 8.7× the disk size) |
+
+Twenty-four of those bytes a token are the tensors themselves — `input_ids` and `attention_mask` at
+eight bytes each, plus the eight-byte `labels` copy — and the rest is per-chunk object overhead and
+allocator retention. So a **1 GB corpus of text needs roughly 8 GB of RAM**, and on a 32 GB machine
+the practical ceiling is somewhere near **2 GB of text** (~500 M tokens) before the corpus alone is
+half the machine.
+
+A corpus estimated to exceed the memory actually available is **refused** (`CorpusTooLarge`) before
+a single document is tokenized, rather than becoming an out-of-memory kill part-way through with
+nothing written. The estimate is sized from characters at four characters a token, which
+under-counts for scripts that tokenize denser than English — so the guard sooner misses a corpus it
+should have caught than refuses one that would have fitted. It reads `MemAvailable` from
+`/proc/meminfo`, so on a platform without it (macOS, some containers) **the guard does not fire at
+all** and the budget above is all you have; the numbers are documented here for that reason as well
+as for planning. Override it with `LFA_CORPUS_MEMORY_LIMIT_GB=<GiB>`, or `LFA_CORPUS_MEMORY_LIMIT_GB=off`.
+
+If the corpus is too big, the answer this package prefers is not more RAM: **split it and train the
+parts as successive domains** ([multi-domain-chains.md](multi-domain-chains.md)). That is what LFA
+is for, and each stage then holds only its own share.
+
+## The run warned about my corpus's "shape". What do those mean?
+
+Three shapes train badly without failing — the losses fall, the counts look ordinary, and the model
+that comes out is quietly worse than the corpus could have made it. The trainer reads them off the
+corpus **before the first step** and names the numbers it read them from. None is a refusal.
+
+* **Too few chunks for the batch.** Under eight optimizer steps an epoch, each step's gradient
+  comes from more than an eighth of the corpus, so consecutive steps see nearly the same examples
+  and the shuffle buys almost nothing; at the recipe's 50-step warmup such a run also spends its
+  first six epochs or more below the learning rate the operating point was tuned at. Add documents,
+  lower `batch_size`, or lower `sequence_length` so each document yields more chunks.
+* **One document dominating.** A single document past half the chunks contributes more gradient
+  than the whole of the rest of the corpus, so the run is at least as much a fine-tune on that one
+  document. The warning names the document and its share. Split it at its own section boundaries.
+* **More epochs than the text can carry.** Under 500,000 training tokens (~2 MB of English) at more
+  than five epochs. The shipped 15 were tuned on about 6.6 MB; the two-domain walkthrough, at 164 k
+  tokens a stage, reached its held-out minimum at epoch 4 and was worse by epoch 8. Start nearer
+  five, keep `val_fraction` above 0, and let the held-out curve pick the dose — the trainer names
+  the epoch it bottomed at when the run ends.
+
+A sound corpus produces none of them. To read them without starting a run,
+`ChunkedCorpus.shape_warnings(batch_size=…, epochs=…)` returns them as a list of strings.
 
 ## Is the learning-rate schedule exactly restored when I `--resume`?
 

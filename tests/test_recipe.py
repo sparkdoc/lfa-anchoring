@@ -2,7 +2,8 @@
 
 A recipe is a *joint* operating point, so what these tests check is that the bundled Qwen3-0.6B
 file still carries exactly the shipped point, that turning it into a `TrainConfig` preserves the
-two settings a reader is most likely to lose (the loader frame and the held-out split), and that
+two settings a reader is most likely to lose (the short-document rule and the held-out split),
+and that
 a run which departs from the calibrated rank or artifact is told that lambda no longer means what
 it meant.
 """
@@ -24,7 +25,7 @@ SHIPPED = dict(
     epochs=15, checkpoint_mode="rolling", checkpoint_every=5,
     learning_rate=3e-4, lr_schedule="cosine", batch_size=6, gradient_accumulation_steps=1,
     warmup_steps=50, weight_decay=0.01, sequence_length=512, seed=42, keep_short_whole=True,
-    rotate_offset=True, val_fraction=0.1,
+    val_fraction=0.1,
     stage2_lambda_multiplier=3.0, calibrated_rank=32,
     calibrated_artifact="qwen3-0.6b-gmm1543k-int8",
 )
@@ -55,21 +56,21 @@ def test_yaml_documents_the_couplings_a_reader_has_to_know():
         assert phrase in comments, f"the recipe's comment block never mentions {phrase!r}"
 
 
-def test_yaml_discloses_rotate_offset_as_a_frame_field():
-    """The published operating point was measured under the other setting; the file has to say
-    which one it now ships and what the difference costs."""
-    comments = "\n".join(line for line in (BUNDLED_DIR / "qwen3-0.6b.yaml").read_text().splitlines()
-                         if line.lstrip().startswith("#")).lower()
-    assert "rotate_offset" in comments and "frame field" in comments
-    assert "not comparable" in comments
+def test_the_recipe_carries_no_reproduce_the_old_stream_switch():
+    """The loader has one chunking. A recipe field that reproduced a superseded one would be a
+    compatibility shim in a file of tuned values, and the tuned values would then depend on it."""
+    fields = {field.name for field in dataclasses.fields(Recipe)}
+    assert "rotate_offset" not in fields
+    assert "rotate_offset" not in (BUNDLED_DIR / "qwen3-0.6b.yaml").read_text()
 
 
-def test_yaml_discloses_keep_short_whole_as_a_frame_field():
-    """Two runs under different settings of it see different text; the file has to say so."""
+def test_yaml_says_what_keep_short_whole_chooses_between():
+    """Two runs under different settings of it see different text; the file has to say so, and
+    has to say it as a property of short documents rather than as a compatibility note."""
     comments = "\n".join(line for line in (BUNDLED_DIR / "qwen3-0.6b.yaml").read_text().splitlines()
                          if line.lstrip().startswith("#")).lower()
-    assert "keep_short_whole" in comments and "frame field" in comments
-    assert "not comparable" in comments
+    assert "keep_short_whole" in comments
+    assert "whole" in comments and "fragment" in comments
 
 
 # ==============================================================================================

@@ -156,12 +156,11 @@ class TrainConfig:
 
     # -- data
     seed: int = 42
+    #: Whether a document that fits in one chunk is trained whole in every epoch (the default)
+    #: or is cut at the epoch's chunk offset like a longer one. Read by whoever builds the corpus
+    #: -- :func:`lfa.corpus.load_corpus` -- and recorded in ``config.json``, because it changes
+    #: the stream. :class:`lfa.corpus.ChunkedCorpus` says which to want.
     keep_short_whole: bool = True
-    #: Whether the per-epoch chunk offset ROTATES the boundaries (the default) or truncates each
-    #: document's first ``offset`` tokens away, which is what the research loader does. A *frame*
-    #: field, read by whoever builds the corpus, recorded in ``config.json``, and worth setting to
-    #: ``False`` only to reproduce a stream produced under that loader.
-    rotate_offset: bool = True
     #: Share of DOCUMENTS held out of training, shuffled under ``seed``. :func:`lfa.train.train`
     #: is handed a corpus that is already built, so this field is read by whoever builds it --
     #: :meth:`lfa.workspace.Workspace.train` passes it to :func:`lfa.corpus.load_corpus`, and
@@ -365,10 +364,9 @@ def train_epoch(
 ) -> tuple[EpochMetrics, int]:
     """One pass over ``dataloader`` with gradient accumulation.
 
-    An epoch can legitimately be empty: :meth:`~lfa.corpus.ChunkedCorpus.rechunk` cuts every
-    document at a per-epoch offset, and with ``keep_short_whole=False`` and ``rotate_offset=False``
-    a corpus of short documents yields nothing at some offsets. That is skipped with a warning --
-    no optimizer step, ``global_step`` unchanged -- rather than dividing by zero inside the
+    An epoch can legitimately be empty -- a corpus whose every document is under
+    :data:`~lfa.corpus.MIN_CHUNK_TOKENS` tokens chunks to nothing. That is skipped with a warning
+    -- no optimizer step, ``global_step`` unchanged -- rather than dividing by zero inside the
     sampler.
 
     Returns:
@@ -732,6 +730,23 @@ def _measure_baseline(
     return baseline
 
 
+def _corpus_shape_warnings(dataset, config: TrainConfig) -> list[str]:
+    """The corpus-shape sentences for this run, or ``[]`` for a corpus with none.
+
+    A thin adapter over :meth:`lfa.corpus.ChunkedCorpus.shape_warnings`, which is where the
+    thresholds and their justifications live. It tolerates a caller who passes some other
+    ``Dataset``: the trainer needs ``rechunk`` from a :class:`~lfa.corpus.ChunkedCorpus` and would
+    fail later anyway, but it should not fail *here*, in a diagnostic.
+    """
+    if not hasattr(dataset, "shape_warnings"):
+        return []
+    return dataset.shape_warnings(
+        batch_size=config.batch_size,
+        gradient_accumulation_steps=config.gradient_accumulation_steps,
+        epochs=config.num_epochs,
+    )
+
+
 def train(
     teacher: nn.Module,
     student: nn.Module,
@@ -790,6 +805,13 @@ def train(
     if (config.lambda_qkv > 0 and sampler is not None and not config.freeze_embed
             and not sampler.has_embedding_lookup()):
         run_logger.warning(EMBED_ANCHOR_DISABLED_NOTICE)
+
+    # Before the first step rather than after the last: the three corpus shapes that train badly
+    # without failing are read off the corpus the caller built, against THIS run's batch and epoch
+    # count. The trainer's other corpus remarks are downstream of the run -- the warmup one needs
+    # the step count, `held_out_turned_around` needs the curve -- and by then the time is spent.
+    for note in _corpus_shape_warnings(dataset, config):
+        run_logger.warning(note)
 
     num_layers = adapter.num_layers(teacher)
     layer_weights = None

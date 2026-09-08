@@ -156,8 +156,9 @@ repository does not reproduce it and does not claim to.
 research-code run of the *identical* configuration. (Measured before the loader change of
 2026-09-08, which made the per-epoch chunk offset rotate the chunk boundaries rather than discard
 each document's leading tokens. The corpus counts below are read at offset 0 and are unaffected;
-the per-epoch series are, from the second epoch on, and `rotate_offset=False` restores the stream
-they were measured under. [verification.md](verification.md) says what that changes and why.) The anchor is a Monte-Carlo term — 16 hidden
+the per-epoch series are, from the second epoch on, and the stream they were measured under is no
+longer reachable from this package. [verification.md](verification.md) says what that changes and
+why.) The anchor is a Monte-Carlo term — 16 hidden
 states drawn per site per step — and the two implementations draw from independent RNG streams, so
 two full runs are two draws of a stochastic objective. What is compared is therefore the
 deterministic part of the run, which is not resampled. Measured 2026-09-07:

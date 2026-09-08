@@ -54,12 +54,11 @@ lfa extend --workspace runs/chain --need 40000 --k-domain 8
   [faq.md](faq.md).
 * `--k-domain` (default 8): components fitted per site, capped at one per 200 activations.
 
-The collection runs under the frame the stage trained under (`keep_short_whole`), because the new
-components have to describe the training stream the model actually saw. A caller using
+The collection runs under the same `keep_short_whole` setting the stage trained under, because
+the new components have to describe the training stream the model actually saw. A caller using
 `lfa.artifact.extend.extend_artifact` directly passes `keep_short_whole` itself; the workspace
-reads it off the stage's history entry. The other loader frame, `rotate_offset`, does not appear
-here: collection never re-chunks, so it reads the epoch-0 chunking, where the offset is 0 and both
-settings produce the same stream.
+reads it off the stage's history entry. Nothing else about the chunking is a setting: collection
+never re-chunks, so it reads the epoch-0 cut.
 
 ## λ from stage 2 on
 

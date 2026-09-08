@@ -29,7 +29,7 @@ from lfa.evaluate import domain_perplexity
 from lfa.models import ShardingRefused, load_teacher, load_tokenizer
 from lfa.sampler import Sampler
 from lfa.train import EMBED_ANCHOR_DISABLED_NOTICE
-from lfa.workspace import LOADER_FRAME_NOTICE, OFFSET_FRAME_NOTICE, StageOrderError
+from lfa.workspace import LOADER_FRAME_NOTICE, StageOrderError
 
 from conftest import make_corpus, tiny_recipe
 
@@ -419,10 +419,14 @@ def test_training_states_the_loader_frame_when_short_documents_are_kept(tmp_path
         ws.train(corpus_a, recipe=tiny_recipe(base_dir, keep_short_whole=True), device="cpu")
 
     assert any(r.message == LOADER_FRAME_NOTICE for r in caplog.records)
-    assert "not comparable" in LOADER_FRAME_NOTICE
+    # It has to say what the setting does, not merely that a setting exists: it changes the
+    # training stream and is invisible in every number the run goes on to report.
+    assert "trained whole in every epoch" in LOADER_FRAME_NOTICE
+    assert "keep_short_whole=False" in LOADER_FRAME_NOTICE
 
 
-def test_the_paper_loader_frame_says_nothing(tmp_path, registry, base_dir, corpus_a, caplog):
+def test_the_notice_is_silent_when_short_documents_are_cut_instead(tmp_path, registry, base_dir,
+                                                                   corpus_a, caplog):
     ws = new_workspace(tmp_path, base_dir)
 
     with caplog.at_level("INFO", logger="lfa.workspace"):
@@ -457,36 +461,17 @@ def test_keep_short_whole_can_be_overridden_per_run(tmp_path, registry, base_dir
     assert not any(record.message == LOADER_FRAME_NOTICE for record in caplog.records)
 
 
-def test_rotate_offset_can_be_overridden_per_run(tmp_path, registry, base_dir, corpus_a, caplog):
-    """The second loader frame, reachable the same way, and recorded the same way.
-
-    Under ``rotate_offset=False`` the epoch offset discards each document's leading tokens instead
-    of rotating the chunk boundaries -- the research loader, and the only reason to ask for it is
-    to reproduce a stream produced under it. So it is a per-run override that the run records, and
-    the notice that names the default is not printed when the run is not in it.
-    """
+def test_a_run_records_no_chunk_offset_setting_because_there_is_none(tmp_path, registry,
+                                                                      base_dir, corpus_a):
+    """The chunk offset rotates the boundaries, full stop: there is no setting for it, so a run
+    has nothing to record about it and `Workspace.train` has no argument for it."""
     ws = new_workspace(tmp_path, base_dir)
-    with caplog.at_level("INFO", logger="lfa.workspace"):
-        entry = ws.train(corpus_a, recipe=tiny_recipe(base_dir), rotate_offset=False,
-                         device="cpu")
+    entry = ws.train(corpus_a, recipe=tiny_recipe(base_dir), device="cpu")
 
     config = json.loads((Path(entry["output_dir"]) / "config.json").read_text())
-    assert config["rotate_offset"] is False
-    assert entry["rotate_offset"] is False
-    assert entry["recipe"]["rotate_offset"] is True               # the recipe is left as it is
-    assert not any(record.message == OFFSET_FRAME_NOTICE for record in caplog.records)
-
-
-def test_training_states_the_offset_frame(tmp_path, registry, base_dir, corpus_a, caplog):
-    """A run under the rotating offset says so: it is invisible in every metric it reports, and
-    it is the frame a research-code comparison has to be matched to."""
-    ws = new_workspace(tmp_path, base_dir)
-    with caplog.at_level("INFO", logger="lfa.workspace"):
-        entry = ws.train(corpus_a, recipe=tiny_recipe(base_dir), device="cpu")
-
-    assert entry["rotate_offset"] is True
-    assert any(record.message == OFFSET_FRAME_NOTICE for record in caplog.records)
-    assert "not comparable" in OFFSET_FRAME_NOTICE
+    assert "rotate_offset" not in config and "rotate_offset" not in entry
+    with pytest.raises(TypeError):
+        ws.train(corpus_a, recipe=tiny_recipe(base_dir), rotate_offset=False, device="cpu")
 
 
 def test_full_weight_can_be_overridden_per_run(tmp_path, registry, base_dir, corpus_a):

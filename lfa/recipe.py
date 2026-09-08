@@ -9,20 +9,14 @@ defaults, and it records *which* rank and *which* artifact it was calibrated at 
 departing from either can be told that lambda no longer means what it meant
 (:meth:`Recipe.warnings`).
 
-Three settings in the shipped point are easy to lose in a re-implementation and are carried
+Two settings in the shipped point are easy to lose in a re-implementation and are carried
 here deliberately:
 
-* ``keep_short_whole=True``: a document that fits in one chunk is cut the same way in every
-  epoch, rather than dropping out of the epochs whose random chunk offset is past its end. It is a
-  *frame* field -- realized exposure to short documents differs about threefold between the two
-  settings, and lambda is coupled to corpus composition -- so a run under one setting is not
-  comparable with a run under the other. Pass ``keep_short_whole=False`` to
-  :meth:`Recipe.to_train_config` for the other frame.
-* ``rotate_offset=True``: the per-epoch chunk offset moves the chunk *boundaries* instead of
-  discarding each document's first ``offset`` tokens. The research loader does the latter, which
-  costs a 600-token document 42.6 % of its tokens in an average epoch and a 5,000-token one 5.1 %;
-  the published runs were long documents, which is the harmless end. Also a frame field: pass
-  ``rotate_offset=False`` to :meth:`Recipe.to_train_config` to reproduce that stream.
+* ``keep_short_whole=True``: a document that fits in one chunk is trained whole in every epoch
+  rather than being cut at the epoch's chunk offset into a chunk and a context-free fragment. It
+  changes the stream, so it is recorded per run; pass ``keep_short_whole=False`` to
+  :meth:`Recipe.to_train_config` when the documents are themselves slices of something longer and
+  the positional variety is worth more than keeping them whole.
 * ``val_fraction=0.1``: a tenth of the *documents* (shuffled under the recipe's seed) are held out
   and never trained on, so the domain perplexity reported for a stage is a held-out measurement
   rather than a fit, and the per-epoch validation curve in ``training_history.json`` says when a
@@ -104,7 +98,6 @@ class Recipe:
     sequence_length: int = 512
     seed: int = 42
     keep_short_whole: bool = True
-    rotate_offset: bool = True
     val_fraction: float = 0.1
 
     # -- what the point was calibrated at
@@ -193,7 +186,6 @@ class Recipe:
 
     def to_train_config(
         self, stage: int, artifact_path: str | Path, *, keep_short_whole: bool | None = None,
-        rotate_offset: bool | None = None,
     ) -> TrainConfig:
         """The :class:`lfa.train.TrainConfig` for one stage of a run using this recipe.
 
@@ -203,13 +195,9 @@ class Recipe:
             artifact_path: The p(h) artifact to anchor against. It is passed through as given;
                 for stage 2 and beyond this is normally the *extended* artifact
                 (:mod:`lfa.artifact.extend`), not the one :attr:`artifact` names.
-            keep_short_whole: Override the recipe's corpus-chunking setting. ``None`` uses the
-                recipe's own value; ``False`` reproduces the historical loader, in which a
-                document shorter than the epoch's random chunk offset is dropped for that epoch.
-            rotate_offset: Override the recipe's chunk-offset setting. ``None`` uses the recipe's
-                own value; ``False`` reproduces the historical loader, in which the epoch offset
-                discards each document's first ``offset`` tokens instead of rotating the
-                boundaries.
+            keep_short_whole: Override the recipe's short-document setting. ``None`` uses the
+                recipe's own value; ``False`` cuts a document that fits in one chunk at the epoch
+                offset like any longer one.
         """
         if stage < 1:
             raise ValueError(f"stage must be at least 1, got {stage}")
@@ -241,7 +229,6 @@ class Recipe:
             full_weight=self.full_weight,
             seed=self.seed,
             keep_short_whole=self.keep_short_whole if keep_short_whole is None else keep_short_whole,
-            rotate_offset=self.rotate_offset if rotate_offset is None else rotate_offset,
             val_fraction=self.val_fraction,
         )
 

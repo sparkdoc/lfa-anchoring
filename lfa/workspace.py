@@ -72,7 +72,7 @@ from .train import train as run_training
 logger = logging.getLogger("lfa.workspace")
 
 __all__ = ["Workspace", "StageOrderError", "WorkspaceNotReady", "WORKSPACE_FILE", "HISTORY_FILE",
-           "LOADER_FRAME_NOTICE", "OFFSET_FRAME_NOTICE", "DOMAIN_FIELDS", "code_identity",
+           "LOADER_FRAME_NOTICE", "DOMAIN_FIELDS", "code_identity",
            "source_digest"]
 
 WORKSPACE_FILE = "workspace.json"
@@ -82,26 +82,13 @@ HISTORY_FILE = "history.json"
 #: else is refused at load, as an unknown field in a recipe file is.
 DOMAIN_FIELDS = frozenset({"name", "corpus", "epochs"})
 
-#: Logged once per run whose corpus loader keeps short documents in every epoch (the default).
-#: It is a *frame* field, not a tuning knob: under the other setting a document shorter than the
-#: epoch's random chunk offset drops out of that epoch, so the model sees a different amount of
-#: the short documents and a perplexity produced under one loader is not comparable with a
-#: perplexity produced under the other. Said out loud because it is invisible in every metric.
+#: Logged once per run whose corpus loader trains short documents whole (the default). Said out
+#: loud because it changes the training stream and is invisible in every metric a run reports: a
+#: document that fits in one chunk arrives whole here, and arrives as a chunk plus a mid-sentence
+#: fragment under ``keep_short_whole=False``.
 LOADER_FRAME_NOTICE = (
-    "loader frame: short documents are kept whole in every epoch; a run under "
-    "keep_short_whole=False sees them in fewer epochs, and perplexities are not comparable "
-    "across the two"
-)
-
-#: Logged once per run whose chunk offset rotates the boundaries (the default) rather than
-#: discarding each document's leading tokens. The second frame field, said out loud for the same
-#: reason: a run under ``rotate_offset=False`` trains on less of every document longer than one
-#: chunk -- 42.6 % less of a 600-token one in an average epoch -- and that is invisible in every
-#: metric a run reports.
-OFFSET_FRAME_NOTICE = (
-    "loader frame: the per-epoch chunk offset rotates the chunk boundaries, so every token is "
-    "trained on in every epoch; a run under rotate_offset=False loses each document's first "
-    "offset tokens each epoch, and perplexities are not comparable across the two"
+    "loader: a document that fits in one chunk is trained whole in every epoch; under "
+    "keep_short_whole=False it is cut at the epoch's chunk offset like a longer one"
 )
 
 
@@ -497,7 +484,6 @@ class Workspace:
         epochs: int | None = None,
         output_name: str | None = None,
         keep_short_whole: bool | None = None,
-        rotate_offset: bool | None = None,
         full_weight: bool | None = None,
         device: str | dict = DEFAULT_DEVICE,
         allow_sharding: bool = False,
@@ -522,12 +508,9 @@ class Workspace:
                 second run, not an overwrite of the first, and both stay readable. A name that
                 already holds a run is refused (``FileExistsError``) unless ``resume`` is set,
                 since writing over it would discard that run's config, curve and checkpoint.
-            keep_short_whole: override the recipe's corpus-chunking *frame*. Under ``False`` a
-                document shorter than the epoch's random chunk offset drops out of that epoch.
-            rotate_offset: override the recipe's chunk-offset *frame*. Under ``False`` the epoch
-                offset discards each document's first ``offset`` tokens instead of rotating the
-                boundaries -- the research loader's behaviour, and the stream the published
-                verification run was produced under.
+            keep_short_whole: override the recipe's short-document setting. Under ``False`` a
+                document that fits in one chunk is cut at the epoch's chunk offset like a longer
+                one, into a chunk and a fragment.
             full_weight: override the recipe's training mode. Full weight is outside the LFA
                 paper's validated envelope; the recipe's own warning says so.
             device: a single device, as :func:`lfa.models.resolve_device` reads it.
@@ -579,8 +562,7 @@ class Workspace:
             resolved = dataclasses.replace(resolved, **overrides)
 
         stage = self.state["stage"] if repeat else self.state["stage"] + 1
-        config = resolved.to_train_config(stage, artifact, keep_short_whole=keep_short_whole,
-                                          rotate_offset=rotate_offset)
+        config = resolved.to_train_config(stage, artifact, keep_short_whole=keep_short_whole)
 
         # Said before anything is loaded: an off-calibration lambda is not a refusal, but it is
         # also not the measured operating point, and a run is worth more than the warning is.
@@ -588,8 +570,6 @@ class Workspace:
             logger.warning(note)
         if config.keep_short_whole:
             logger.info(LOADER_FRAME_NOTICE)
-        if config.rotate_offset:
-            logger.info(OFFSET_FRAME_NOTICE)
 
         base_model = self.state["current_model"]
         output_dir = self.path / "runs" / (output_name or self._run_name(stage, repeat, resume))
@@ -622,10 +602,9 @@ class Workspace:
             "adapter": str(output_dir / "final_model"),
             "output_dir": str(output_dir),
             "epochs": config.num_epochs,
-            # The three frame/mode settings the run actually used, which a per-call override
+            # The two loader/mode settings the run actually used, which a per-call override
             # can move away from the recipe's own values.
             "keep_short_whole": config.keep_short_whole,
-            "rotate_offset": config.rotate_offset,
             "full_weight": config.full_weight,
             # What the stage was allowed to see. `evaluate` rebuilds the same split from the
             # corpus, the seed and this fraction, and scores the documents this run never trained
@@ -840,8 +819,7 @@ class Workspace:
             dataset, holdout = load_corpus(corpus_path, tokenizer,
                                            max_length=config.sequence_length,
                                            val_fraction=config.val_fraction, seed=config.seed,
-                                           keep_short_whole=config.keep_short_whole,
-                                           rotate_offset=config.rotate_offset)
+                                           keep_short_whole=config.keep_short_whole)
             # Documents AND chunks: the document counts say how the split fell, the chunk counts
             # say what the loader made of it, and only the second is comparable with another
             # implementation's loader (the research code logs exactly these two numbers per run).

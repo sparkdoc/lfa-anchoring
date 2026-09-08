@@ -8,15 +8,21 @@ stream.
 
 The offset **rotates the chunk boundaries; it does not truncate the document**. The leading
 segment ``[0, offset)`` is emitted as a chunk of its own alongside the offset-aligned ones, so
-every token is trained on in every epoch while the boundaries still move between epochs.
+every token is trained on in every epoch while the boundaries still move between epochs. That is
+simply what this loader does; there is no switch for it.
 
-**Two defaults deliberately differ from the research code**, and both are recorded per run as
-*frame* fields: ``keep_short_whole`` defaults to ``True`` here, and ``rotate_offset`` defaults to
-``True``. Under the research code's ``rotate_offset=False`` the epoch offset discards each
-document's first ``offset`` tokens: a 600-token document keeps 57.4 % of its tokens in an average
-epoch and 14.8 % in the worst, and a 1,024-token one 75.0 % / 50.0 %. Long documents — the shape
-of the corpora the published runs used — sit in the harmless tail (5,000 tokens: 94.9 %), which is
-why the defect was invisible there. See :class:`ChunkedCorpus`.
+``keep_short_whole`` is the one choice the chunker leaves open, and it is a choice about short
+documents rather than about matching anyone else's stream: see :class:`ChunkedCorpus`.
+
+Tokenization is **eager**. The whole corpus is held as token tensors for the whole run, at a
+measured ~35 bytes a token (:data:`BYTES_PER_TOKEN`) — about eight times its size on disk — so a
+corpus that cannot fit in host memory is refused here, as :class:`CorpusTooLarge`, rather than by
+the OOM killer part-way through tokenizing it.
+
+Three corpus shapes train badly without failing: too few chunks for the batch, one document
+contributing most of the gradient, and more epochs than the amount of text can carry.
+:meth:`ChunkedCorpus.shape_warnings` names them, with the measured numbers, and
+:func:`lfa.train.train` logs them before the first step.
 
 The only per-chunk targets are the inputs themselves (``labels == input_ids``); the model shifts
 them internally. There is no QA supplement in the companion, so there is no prompt masking and no
@@ -27,6 +33,8 @@ from __future__ import annotations
 
 import json
 import logging
+import math
+import os
 import random
 from functools import partial
 from pathlib import Path
@@ -48,6 +56,126 @@ _TEXT_FIELDS = ("text", "content", "body", "document", "passage")
 # taking the epoch-0 cut for that document instead (:meth:`ChunkedCorpus._chunk_bounds`).
 MIN_CHUNK_TOKENS = 10
 
+# ------------------------------------------------------------------------------------------
+# What a corpus costs, and what it is refused for
+# ------------------------------------------------------------------------------------------
+
+#: Host RAM per token of corpus, measured end to end through :func:`load_corpus` (2026-09-08, the
+#: Qwen3 tokenizer, 512-token chunks): **29.3 bytes a token** on a 10.1 M-token corpus and **34.1**
+#: on a 40.4 M-token one, i.e. about eight times the corpus's size on disk. Twenty-four of those
+#: bytes are the tensors themselves — ``input_ids`` and ``attention_mask`` at eight bytes a token
+#: each, plus the eight-byte ``labels`` clone — and the rest is per-chunk object overhead and
+#: allocator retention. This is HOST memory, resident for the whole run, and is unrelated to the
+#: ~9 GB the run needs on the GPU.
+BYTES_PER_TOKEN = 35
+
+#: Characters a token, English prose through a byte-level BPE tokenizer (measured 3.88). Used
+#: only to size a corpus *before* it is tokenized. Denser-tokenizing scripts get more tokens per
+#: character than this, so the estimate it feeds is an under-estimate: the guard below sooner
+#: misses a corpus it should have caught than refuses one that would have fitted.
+CHARS_PER_TOKEN = 4
+
+#: Environment variable that overrides the memory guard: a number of GiB to allow, or ``off``.
+MEMORY_LIMIT_ENV = "LFA_CORPUS_MEMORY_LIMIT_GB"
+
+# ------------------------------------------------------------------------------------------
+# Corpus shapes that train badly without failing (:meth:`ChunkedCorpus.shape_warnings`)
+# ------------------------------------------------------------------------------------------
+
+#: Fewer optimizer steps an epoch than this and every step's gradient is computed on more than an
+#: eighth of the corpus, so successive steps are near-copies of one another and of the full-batch
+#: gradient — the shuffle then buys almost nothing. Eight is also where the recipe's 50-step
+#: warmup stops being incidental: below it a 15-epoch run spends its first six epochs or more
+#: under the learning rate the operating point was tuned at.
+MIN_STEPS_PER_EPOCH = 8
+
+#: The batch size assumed when :meth:`ChunkedCorpus.shape_warnings` is not told the run's own
+#: (the shipped recipe's value). The message says when it is assuming.
+ASSUMED_BATCH_SIZE = 6
+
+#: A single document contributing more than this share of the chunks contributes more gradient
+#: than the whole of the rest of the corpus put together. Strictly more, so that an evenly split
+#: two-document corpus — where a document is half of it by arithmetic rather than by dominating
+#: — does not trip it.
+DOMINANT_DOCUMENT_SHARE = 0.5
+
+#: Training tokens below which the recipe's epoch count is too many for the amount of text. The
+#: shipped 15 epochs were tuned on a corpus of about 6.6 MB (~1.7 M tokens); this package's own
+#: two-domain walkthrough, at 164 k tokens a stage, reached its held-out minimum at epoch 4 and
+#: was worse by epoch 8. Half a million tokens (~2 MB of English) sits between the two, nearer
+#: the small end, which is the side to err on: the warning has to stay silent on a corpus that
+#: can carry the dose.
+SMALL_CORPUS_TOKENS = 500_000
+
+#: Epochs up to which a small corpus is not remarked on. The walkthrough's own answer, rounded up.
+SMALL_CORPUS_EPOCHS = 5
+
+
+class CorpusTooLarge(MemoryError):
+    """Raised when tokenizing a corpus would not fit in host memory (see :data:`BYTES_PER_TOKEN`)."""
+
+
+def _available_memory_bytes() -> int | None:
+    """Host memory a new allocation can actually get, or ``None`` where that is not readable.
+
+    ``MemAvailable`` rather than ``MemFree``: it is the kernel's own estimate of what is
+    obtainable without swapping, and it counts reclaimable page cache. Linux only — on a platform
+    without ``/proc/meminfo`` the guard does not fire at all, which is why the ceiling is
+    documented (``docs/faq.md``) as well as enforced.
+    """
+    try:
+        with open("/proc/meminfo", "r", encoding="ascii") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
+def _memory_budget_bytes() -> int | None:
+    """What the corpus is allowed to cost: :data:`MEMORY_LIMIT_ENV` if set, else what is free."""
+    raw = os.environ.get(MEMORY_LIMIT_ENV, "").strip()
+    if not raw:
+        return _available_memory_bytes()
+    if raw.lower() in {"off", "none", "0"}:
+        return None
+    try:
+        return int(float(raw) * 1024 ** 3)
+    except ValueError:
+        raise ValueError(
+            f"{MEMORY_LIMIT_ENV}={raw!r}: expected a number of GiB, or 'off' to disable the "
+            "corpus memory guard."
+        ) from None
+
+
+def _refuse_a_corpus_that_cannot_fit(texts: list[str]) -> None:
+    """Raise :class:`CorpusTooLarge` if tokenizing ``texts`` would not fit in host memory.
+
+    Sized from characters, before a single document is tokenized, because the failure it replaces
+    happens *during* tokenization: the tensors are about eight times the corpus's size on disk and
+    the process is killed part-way through, with no message of its own and nothing written. The
+    estimate leans towards letting a run start (see :data:`CHARS_PER_TOKEN`), and the guard is
+    silent when the budget cannot be read.
+    """
+    budget = _memory_budget_bytes()
+    if budget is None:
+        return
+    n_chars = sum(len(text) for text in texts)
+    n_tokens = n_chars // CHARS_PER_TOKEN
+    estimate = n_tokens * BYTES_PER_TOKEN
+    if estimate <= budget:
+        return
+    raise CorpusTooLarge(
+        f"This corpus is about {n_chars / 1e6:,.1f} M characters, which tokenizes to roughly "
+        f"{n_tokens:,} tokens and needs about {estimate / 1024 ** 3:.2f} GiB of host RAM to hold "
+        f"({BYTES_PER_TOKEN} bytes a token, measured); about {budget / 1024 ** 3:.2f} GiB is "
+        "available. The corpus is tokenized eagerly and stays resident for the whole run, so this "
+        "is an out-of-memory kill part-way through tokenizing rather than a slow run. Split it and "
+        "train the parts as successive domains — a chain is what LFA is for — or set "
+        f"{MEMORY_LIMIT_ENV}=<GiB>, or {MEMORY_LIMIT_ENV}=off, if this machine can take it."
+    )
+
 
 class ChunkedCorpus(Dataset):
     """Documents tokenized once, cut into ``max_length``-token chunks every epoch.
@@ -58,31 +186,30 @@ class ChunkedCorpus(Dataset):
             and never truncated (they are chunked instead).
         max_length: chunk length in tokens.
         stride: distance between chunk starts. ``0`` means ``max_length``, i.e. no overlap.
-        keep_short_whole: if ``True`` (the companion's default), a document that fits in one
-            chunk (``<= max_length`` tokens) ignores the epoch offset and is therefore cut the
-            same way in every epoch. Under ``False`` such a document is cut by the offset like
-            any other; combined with ``rotate_offset=False`` that is the research default, under
-            which the offset loop ``range(offset, len(doc), stride)`` yields no chunk at all for a
-            document shorter than the epoch's offset — short documents drop out of most epochs.
-            It is a frame field (:mod:`lfa.workspace`), so perplexities are not comparable across
-            the two settings.
-        rotate_offset: if ``True`` (the default), the epoch offset ROTATES the chunk boundaries:
-            the leading segment ``[0, offset)`` is emitted as a chunk of its own beside the
-            offset-aligned chunks, so no token is lost. ``False`` is the research behaviour, which
-            starts at ``offset`` and therefore **discards** each document's first ``offset``
-            tokens every epoch — 42.6 % of a 600-token document in an average epoch, 25.0 % of a
-            1,024-token one. It is offered only so a run can be matched deliberately to the stream
-            the published numbers were produced under; it is a frame field like the one above, and
-            nothing in this package sets it.
+        keep_short_whole: what to do with a document that fits in a single chunk
+            (``<= max_length`` tokens). Under ``True``, the default, it is trained **whole** in
+            every epoch: it ignores the epoch offset entirely. A document that is already one
+            chunk gains nothing from having its boundaries moved, and cutting it in two makes the
+            second piece a fragment that begins mid-sentence with none of its own text in front of
+            it. Under ``False`` it is cut at the offset like any longer document, which is the
+            only way a corpus of *exclusively* short documents gets any positional variety between
+            epochs at all — worth having when the "documents" are themselves arbitrary slices of
+            something longer, and not worth having when each one is a whole unit (an article, a
+            page, a recipe). Either way every token is trained on; what changes is whether a short
+            document arrives whole or in two pieces, and a piece under :data:`MIN_CHUNK_TOKENS` is
+            dropped as any other short piece is. It is recorded per run, because it changes the
+            stream.
+
+    Raises:
+        CorpusTooLarge: the corpus would not fit in host memory as token tensors.
 
     Attributes:
         report: counts for the *current* chunking, refreshed on construction and on every
             :meth:`rechunk` — ``n_docs`` (documents kept), ``n_short_docs`` (documents of
-            ``<= max_length`` tokens), ``n_dropped_short_chunks`` (short documents that produced
-            no chunk this epoch — only possible with ``keep_short_whole=False`` *and*
-            ``rotate_offset=False``, or for a document under the ten-token minimum), and
-            ``n_chunks``. An epoch that chunks to nothing is reported here and logged at WARNING;
-            it is never an error.
+            ``<= max_length`` tokens), ``n_dropped_short_chunks`` (documents that produced no
+            chunk at all, which can only mean they are under the ten-token minimum), and
+            ``n_chunks``. An epoch that chunks to nothing is reported here and
+            logged at WARNING; it is never an error.
     """
 
     def __init__(
@@ -92,17 +219,23 @@ class ChunkedCorpus(Dataset):
         max_length: int = 512,
         stride: int = 0,
         keep_short_whole: bool = True,
-        rotate_offset: bool = True,
     ):
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.stride = stride if stride > 0 else max_length
         self.keep_short_whole = keep_short_whole
-        self.rotate_offset = rotate_offset
 
         self.examples: list[dict[str, torch.Tensor]] = []
         self._docs: list[tuple[torch.Tensor, torch.Tensor]] = []   # (input_ids, attention_mask)
+        #: Chunks contributed by each kept document under the CURRENT chunking, and enough of its
+        #: opening to name it in a warning. Both are per-document, so `shape_warnings` can say
+        #: which document a lopsided corpus is lopsided towards.
+        self._doc_chunks: list[int] = []
+        self._excerpts: list[str] = []
         self.report: dict[str, int] = {}
+
+        # Before anything is tokenized: this is the allocation that gets a process killed.
+        _refuse_a_corpus_that_cannot_fit([t for t in texts if t.strip()])
 
         for text in texts:
             if not text.strip():
@@ -110,6 +243,7 @@ class ChunkedCorpus(Dataset):
             encoded = tokenizer(text, add_special_tokens=True, truncation=False,
                                 return_tensors="pt")
             self._docs.append((encoded["input_ids"][0], encoded["attention_mask"][0]))
+            self._excerpts.append(" ".join(text.split())[:60])
 
         self._chunk_all(offset=0, epoch=0)
 
@@ -118,11 +252,9 @@ class ChunkedCorpus(Dataset):
     def _chunk_bounds(self, n_tokens: int, offset: int) -> list[tuple[int, int]]:
         """The half-open ``[start, end)`` spans one document is cut into, in document order.
 
-        Under :attr:`rotate_offset` the offset moves the *boundaries* rather than the document's
-        starting point: the leading segment is cut first and the offset-aligned chunks follow, so
-        the spans tile the whole document. Under ``rotate_offset=False`` the leading segment is
-        never produced, and the document's first ``offset`` tokens are simply not trained on this
-        epoch — the historical behaviour, kept reachable and nothing else.
+        The offset moves the *boundaries* rather than the document's starting point: the leading
+        segment is cut first and the offset-aligned chunks follow, so the spans tile the whole
+        document and no token is left out of an epoch.
 
         A leading segment below :data:`MIN_CHUNK_TOKENS` is folded away by giving the document the
         epoch-0 cut (offset 0) rather than by dropping it. Dropping it would be the same defect in
@@ -136,11 +268,11 @@ class ChunkedCorpus(Dataset):
         have; the leading segment does not overlap the one after it, so the seam is the one place
         a token appears once rather than twice.
         """
-        if self.rotate_offset and 0 < offset < MIN_CHUNK_TOKENS:
+        if 0 < offset < MIN_CHUNK_TOKENS:
             offset = 0
 
         bounds: list[tuple[int, int]] = []
-        if self.rotate_offset and offset > 0:
+        if offset > 0:
             # `min(..., offset)` matters only for a stride above max_length, where the leading
             # segment is longer than one chunk; normally offset < stride <= max_length and this
             # is the single span [0, offset).
@@ -169,16 +301,19 @@ class ChunkedCorpus(Dataset):
     def _chunk_all(self, offset: int, epoch: int) -> None:
         """(Re)cut every document from ``offset`` and refresh :attr:`report`."""
         self.examples = []
+        self._doc_chunks = []
         n_short = 0
         n_dropped = 0
 
         for input_ids, attention_mask in self._docs:
             is_short = len(input_ids) <= self.max_length
             n_short += is_short
-            # A document that fits in one chunk gains nothing from a positional offset, so with
-            # keep_short_whole it ignores the offset and survives every epoch.
+            # A document that fits in one chunk gains nothing from a positional offset, and would
+            # only be split into a fragment by one, so with keep_short_whole it ignores the offset.
             doc_offset = 0 if (is_short and self.keep_short_whole) else offset
-            if self._chunk_document(input_ids, attention_mask, doc_offset) == 0 and is_short:
+            n_chunks = self._chunk_document(input_ids, attention_mask, doc_offset)
+            self._doc_chunks.append(n_chunks)
+            if n_chunks == 0 and is_short:
                 n_dropped += 1
 
         self.report = {
@@ -191,21 +326,18 @@ class ChunkedCorpus(Dataset):
         if not self.examples:
             logger.warning(
                 "Epoch %d chunked to 0 examples from %d document(s) at offset %d "
-                "(max_length=%d, stride=%d, keep_short_whole=%s, rotate_offset=%s). Every "
-                "document is shorter than the %d-token minimum, or (under rotate_offset=False) "
-                "than the epoch offset; this epoch trains on nothing.",
+                "(max_length=%d, stride=%d, keep_short_whole=%s). Every document is shorter than "
+                "the %d-token minimum, so this epoch trains on nothing.",
                 epoch, len(self._docs), offset, self.max_length, self.stride,
-                self.keep_short_whole, self.rotate_offset, MIN_CHUNK_TOKENS,
+                self.keep_short_whole, MIN_CHUNK_TOKENS,
             )
 
     def rechunk(self, epoch: int, seed: int = 42) -> None:
         """Re-cut every document at a per-epoch offset in ``[0, stride)``.
 
         The offset is deterministic in ``(seed, epoch)``; epoch 0 uses offset 0, so it reproduces
-        the chunking a freshly constructed corpus starts with. Under the default
-        :attr:`rotate_offset` the offset moves where the cuts fall and nothing is left out; under
-        ``rotate_offset=False`` it is where each document *starts*, and the tokens before it are
-        not seen this epoch.
+        the chunking a freshly constructed corpus starts with. It moves where the cuts fall, and
+        nothing is left out of an epoch by moving them.
         """
         rng = random.Random(seed + epoch)
         offset = rng.randint(0, self.stride - 1) if epoch > 0 else 0
@@ -216,6 +348,94 @@ class ChunkedCorpus(Dataset):
     def total_tokens(self) -> int:
         """Tokens in the current chunking (chunks overlap when ``stride < max_length``)."""
         return sum(len(ex["input_ids"]) for ex in self.examples)
+
+    # -- shapes that train badly ---------------------------------------------------------
+
+    def shape_warnings(self, *, batch_size: int | None = None,
+                       gradient_accumulation_steps: int = 1,
+                       epochs: int | None = None) -> list[str]:
+        """Corpus shapes that train badly without failing, as sentences; ``[]`` for a sound one.
+
+        Three of them, measured off the *current* chunking. None is an error and none is a
+        refusal: each names the numbers it was read from and what to change, because each is
+        invisible in everything else a run prints — the losses fall, the chunk counts look
+        ordinary, and the model that comes out is quietly worse than the corpus could have made
+        it.
+
+        1. **Too few chunks for the batch.** Below :data:`MIN_STEPS_PER_EPOCH` optimizer steps an
+           epoch each step's gradient comes from more than an eighth of the corpus, so successive
+           steps are near-copies of one another.
+        2. **One document dominating.** A document past :data:`DOMINANT_DOCUMENT_SHARE` of the
+           chunks contributes more gradient than the rest of the corpus together, so the run is at
+           least as much a fine-tune on that one document as on the corpus.
+        3. **More epochs than the text can carry.** Under :data:`SMALL_CORPUS_TOKENS` tokens the
+           recipe's dose over-trains; the trainer's held-out curve says so afterwards
+           (:func:`lfa.train.held_out_turned_around`), and this says it before the run.
+
+        Args:
+            batch_size: the run's batch size. Without it, :data:`ASSUMED_BATCH_SIZE` is used and
+                the message says that it was assumed.
+            gradient_accumulation_steps: the run's, since it is the *effective* batch that decides
+                how many optimizer steps an epoch holds.
+            epochs: the run's epoch count. Without it, check 3 is skipped — an epoch count is not
+                a property of a corpus.
+        """
+        notes: list[str] = []
+        n_chunks = len(self.examples)
+        if n_chunks == 0:
+            return notes                     # an empty chunking is already logged as such
+
+        # 1. too few chunks for the batch
+        assumed = batch_size is None
+        effective = (ASSUMED_BATCH_SIZE if assumed else batch_size) * max(
+            1, gradient_accumulation_steps)
+        steps = math.ceil(n_chunks / effective)
+        if steps < MIN_STEPS_PER_EPOCH:
+            batch_phrase = (f"the shipped batch of {ASSUMED_BATCH_SIZE} (this corpus was not told "
+                            f"the run's own)" if assumed else
+                            f"a batch of {effective:,} ({batch_size} x "
+                            f"{gradient_accumulation_steps} accumulation step(s))")
+            run_phrase = (f", {steps * epochs:,} in the whole {epochs}-epoch run"
+                          if epochs is not None else "")
+            notes.append(
+                f"Corpus shape: {n_chunks:,} chunk(s) at {batch_phrase} is {steps} optimizer "
+                f"step(s) an epoch{run_phrase}. Every step's gradient then comes from about "
+                f"{1 / steps:.0%} of the corpus, so consecutive steps see nearly the same "
+                f"examples and the shuffle buys little. Add documents, lower batch_size or "
+                f"gradient_accumulation_steps, or lower sequence_length ({self.max_length}) so "
+                f"that each document yields more chunks."
+            )
+
+        # 2. one document dominating
+        if len(self._doc_chunks) > 1:
+            worst = max(range(len(self._doc_chunks)), key=self._doc_chunks.__getitem__)
+            share = self._doc_chunks[worst] / n_chunks
+            if share > DOMINANT_DOCUMENT_SHARE:
+                notes.append(
+                    f"Corpus shape: one document is {share:.0%} of the {n_chunks:,} chunk(s) "
+                    f"({len(self._docs[worst][0]):,} of "
+                    f"{sum(len(ids) for ids, _ in self._docs):,} tokens), so most of every "
+                    f"epoch's gradient comes from it: document {worst + 1} of "
+                    f"{len(self._docs)}, beginning {self._excerpts[worst]!r}. Split it at its "
+                    f"own section boundaries, or add documents, so that the corpus is not one "
+                    f"document with company."
+                )
+
+        # 3. more epochs than the text can carry
+        n_tokens = self.total_tokens()
+        if (epochs is not None and epochs > SMALL_CORPUS_EPOCHS
+                and n_tokens < SMALL_CORPUS_TOKENS):
+            notes.append(
+                f"Corpus shape: {epochs} epochs over {n_tokens:,} training token(s) "
+                f"({n_chunks:,} chunk(s), {len(self._docs)} document(s)). The shipped 15 epochs "
+                f"were tuned on a corpus of about 6.6 MB (~1.7 M tokens); this package's own "
+                f"two-domain walkthrough, at 164 k tokens, reached its held-out minimum at epoch "
+                f"4 and was worse by epoch 8. Start nearer {SMALL_CORPUS_EPOCHS}, keep "
+                f"val_fraction above 0, and let the held-out perplexity in training_history.json "
+                f"choose the dose — the trainer names the epoch it bottomed at when the run ends."
+            )
+
+        return notes
 
     def __len__(self) -> int:
         return len(self.examples)
@@ -311,7 +531,6 @@ def load_corpus(
     val_fraction: float = 0.0,
     seed: int = 42,
     keep_short_whole: bool = True,
-    rotate_offset: bool = True,
 ) -> tuple[ChunkedCorpus, ChunkedCorpus | None]:
     """Read ``path`` and build the training corpus, optionally holding documents out.
 
@@ -330,7 +549,7 @@ def load_corpus(
 
     def build(subset: list[str]) -> ChunkedCorpus:
         return ChunkedCorpus(subset, tokenizer, max_length=max_length, stride=stride,
-                             keep_short_whole=keep_short_whole, rotate_offset=rotate_offset)
+                             keep_short_whole=keep_short_whole)
 
     if val_fraction <= 0.0:
         return build(texts), None
