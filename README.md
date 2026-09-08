@@ -70,9 +70,10 @@ holding a tenth of the documents out so the domain number is a measurement rathe
 domain adds one step — `lfa extend` — which folds the finished stage into both the model and
 `p(h)`; `lfa chain domains.yaml` runs a whole sequence.
 
-> **Before the release assets exist**, fetching an artifact by id refuses rather than downloading
-> something it cannot verify (`ArtifactNotPublished` — the registry's checksums are still
-> placeholders), so that first command fails as written. Pass a local artifact file instead —
+> **If the repository is private**, an anonymous download of the release asset 404s and the fetch
+> refuses rather than writing something it cannot verify. The assets are published and their
+> checksums are in the registry; this is a visibility problem, not a missing release. Pass a local
+> artifact file instead —
 > `--artifact /path/to/distribution_stats.pt --artifact-id qwen3-0.6b-gmm1543k-int8` — or build
 > one: [docs/rebuilding-the-artifact.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/rebuilding-the-artifact.md). Pass **both**: the id
 > says which published artifact that file is, which is what the recipe's λ is read against (a

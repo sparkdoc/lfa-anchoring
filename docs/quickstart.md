@@ -64,9 +64,9 @@ correlated basis plus a K = 32 mixture per site) and a ~1 MB diagonal one kept a
 The recipe's λ is calibrated against the first; the second is a known-inferior option that needs
 its own λ, not a cheaper equivalent.
 
-> **Before the release assets exist**, `fetch-artifact` refuses rather than downloading something
-> it cannot verify (`ArtifactNotPublished`: the registry's checksums are still placeholders). Until
-> then, either build one — [rebuilding-the-artifact.md](rebuilding-the-artifact.md) — or pass a
+> **If the repository is private**, an anonymous download 404s and `fetch-artifact` refuses rather
+> than writing something it cannot verify. The assets are published and the registry carries their
+> real checksums, so this is a visibility problem rather than a missing release. Either build one — [rebuilding-the-artifact.md](rebuilding-the-artifact.md) — or pass a
 > local file *with the id it is a copy of*:
 > `lfa init --artifact /path/to/distribution_stats.pt --artifact-id qwen3-0.6b-gmm1543k-int8`.
 > Without the id the workspace knows the file only by its path: every stage warns that λ was
