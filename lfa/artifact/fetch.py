@@ -49,14 +49,14 @@ __all__ = [
 #: The value a ``sha256`` carries until the release asset it names has been uploaded.
 PLACEHOLDER_SHA256 = "<filled at release>"
 
-_RELEASE_BASE = "https://github.com/<org>/lfa-anchoring/releases/download/artifacts-v1"
+_RELEASE_BASE = "https://github.com/sparkdoc/lfa-anchoring/releases/download/artifacts-v1"
 
 #: The published artifacts, by id. ``n_samples_total`` is per site; ``size_mb`` is the download.
 ARTIFACTS: dict[str, dict] = {
     "qwen3-0.6b-gmm1543k-int8": {
         "model_id": "Qwen/Qwen3-0.6B",
         "url": f"{_RELEASE_BASE}/qwen3-0.6b-gmm1543k-int8.pt",
-        "sha256": PLACEHOLDER_SHA256,
+        "sha256": "acfbc0ecbae60e5806fe356004508fa26880feef6f948903c9c9959bb8cf4485",
         "n_samples_total": 1_543_040,
         "kind": "correlated-linear + GMM K=32 MLP (int8)",
         "size_mb": 108,
@@ -64,7 +64,7 @@ ARTIFACTS: dict[str, dict] = {
     "qwen3-0.6b-diagonal": {
         "model_id": "Qwen/Qwen3-0.6B",
         "url": f"{_RELEASE_BASE}/qwen3-0.6b-diagonal.pt",
-        "sha256": PLACEHOLDER_SHA256,
+        "sha256": "ae66b9513037abecbfa6ca71bf0db2f9f5e5cf7f36d62e8d0a3e923f4c943522",
         "n_samples_total": 1_200_000,
         "kind": "diagonal (budget floor)",
         "size_mb": 1,

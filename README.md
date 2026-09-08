@@ -39,7 +39,7 @@ conda-managed interpreter ships what it needs. `lfa` checks for both before it l
 and says so in one line rather than failing inside gcc minutes into a run.
 
 Tested with the versions in
-[`constraints-tested.txt`](https://github.com/<org>/lfa-anchoring/blob/main/constraints-tested.txt) — torch 2.10.0+cu128, transformers 4.57.6,
+[`constraints-tested.txt`](https://github.com/sparkdoc/lfa-anchoring/blob/main/constraints-tested.txt) — torch 2.10.0+cu128, transformers 4.57.6,
 accelerate 1.14.0, peft 0.18.1. Nothing here has been run below those, and nothing above them.
 
 ## Four commands
@@ -74,13 +74,13 @@ domain adds one step — `lfa extend` — which folds the finished stage into bo
 > something it cannot verify (`ArtifactNotPublished` — the registry's checksums are still
 > placeholders), so that first command fails as written. Pass a local artifact file instead —
 > `--artifact /path/to/distribution_stats.pt --artifact-id qwen3-0.6b-gmm1543k-int8` — or build
-> one: [docs/rebuilding-the-artifact.md](https://github.com/<org>/lfa-anchoring/blob/main/docs/rebuilding-the-artifact.md). Pass **both**: the id
+> one: [docs/rebuilding-the-artifact.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/rebuilding-the-artifact.md). Pass **both**: the id
 > says which published artifact that file is, which is what the recipe's λ is read against (a
 > bare path warns on every stage that λ was calibrated elsewhere) and what supplies the base
 > sample count `lfa extend` needs, since the shipped file carries none of its own.
 
-Full walkthrough: [docs/quickstart.md](https://github.com/<org>/lfa-anchoring/blob/main/docs/quickstart.md). Same flow as Python:
-[`examples/quickstart.py`](https://github.com/<org>/lfa-anchoring/blob/main/examples/quickstart.py).
+Full walkthrough: [docs/quickstart.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/quickstart.md). Same flow as Python:
+[`examples/quickstart.py`](https://github.com/sparkdoc/lfa-anchoring/blob/main/examples/quickstart.py).
 
 Everything is computed locally. There is no judge, no API key, and nothing to configure.
 
@@ -88,14 +88,14 @@ Everything is computed locally. There is no judge, no API key, and nothing to co
 
 | | |
 |---|---|
-| [docs/quickstart.md](https://github.com/<org>/lfa-anchoring/blob/main/docs/quickstart.md) | install, the four commands, what a run costs |
-| [docs/concepts.md](https://github.com/<org>/lfa-anchoring/blob/main/docs/concepts.md) | what the anchor does, what λ and μ are, how a run is read |
-| [docs/recipes.md](https://github.com/<org>/lfa-anchoring/blob/main/docs/recipes.md) | the shipped operating point field by field, and its couplings |
-| [docs/multi-domain-chains.md](https://github.com/<org>/lfa-anchoring/blob/main/docs/multi-domain-chains.md) | second and third domains; what `extend` does |
-| [docs/adding-a-model.md](https://github.com/<org>/lfa-anchoring/blob/main/docs/adding-a-model.md) | a model that is not Qwen3: adapter, artifact, λ |
-| [docs/rebuilding-the-artifact.md](https://github.com/<org>/lfa-anchoring/blob/main/docs/rebuilding-the-artifact.md) | the seed corpus and the build |
-| [docs/faq.md](https://github.com/<org>/lfa-anchoring/blob/main/docs/faq.md) | GPU memory, full weights, reading the general axis, what is not shipped |
-| [RELEASING.md](https://github.com/<org>/lfa-anchoring/blob/main/RELEASING.md) | how the artifacts and a tag are cut |
+| [docs/quickstart.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/quickstart.md) | install, the four commands, what a run costs |
+| [docs/concepts.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/concepts.md) | what the anchor does, what λ and μ are, how a run is read |
+| [docs/recipes.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/recipes.md) | the shipped operating point field by field, and its couplings |
+| [docs/multi-domain-chains.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/multi-domain-chains.md) | second and third domains; what `extend` does |
+| [docs/adding-a-model.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/adding-a-model.md) | a model that is not Qwen3: adapter, artifact, λ |
+| [docs/rebuilding-the-artifact.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/rebuilding-the-artifact.md) | the seed corpus and the build |
+| [docs/faq.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/faq.md) | GPU memory, full weights, reading the general axis, what is not shipped |
+| [RELEASING.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/RELEASING.md) | how the artifacts and a tag are cut |
 
 ## What is in the box
 
@@ -133,7 +133,7 @@ pytest tests/test_gpu_smoke.py -m gpu -q     # bf16 placement, one stage on the 
 
 The equivalence suite replays captured fixtures: the sampler's draws are asserted **bit-identical**,
 the anchor's blocks and the loader's batch to tolerance. See
-[`tests/equivalence/README.md`](https://github.com/<org>/lfa-anchoring/blob/main/tests/equivalence/README.md).
+[`tests/equivalence/README.md`](https://github.com/sparkdoc/lfa-anchoring/blob/main/tests/equivalence/README.md).
 
 The acceptance suite is an **equivalence run**: it trains the bundled recipe end to end and
 compares the result against a research-code run of the identical configuration. What it compares is
@@ -143,7 +143,7 @@ independent RNG streams, so two full runs are two draws of a stochastic objectiv
 bit-equivalence between them is impossible by construction.
 
 The criterion, measured 2026-09-07 (the run's own records are committed at
-[`tests/acceptance/_runs/2026-09-07-equiv/`](https://github.com/<org>/lfa-anchoring/tree/main/tests/acceptance/_runs/2026-09-07-equiv/)):
+[`tests/acceptance/_runs/2026-09-07-equiv/`](https://github.com/sparkdoc/lfa-anchoring/tree/main/tests/acceptance/_runs/2026-09-07-equiv/)):
 
 | quantity | result | tolerance |
 |---|---|---|
@@ -165,7 +165,7 @@ None of this is a reproduction of a published number. The paper's own headline �
 8.76 on Qwen3-0.6B at a seed ΔPPL of −10.0 %, i.e. seed-corpus perplexity 10 % *below* the base
 model's — is the paper's measurement on the paper's corpus and instruments, and is quoted here only
 as such. See
-[`tests/acceptance/README.md`](https://github.com/<org>/lfa-anchoring/blob/main/tests/acceptance/README.md).
+[`tests/acceptance/README.md`](https://github.com/sparkdoc/lfa-anchoring/blob/main/tests/acceptance/README.md).
 
 ## Relationship to the research record
 
@@ -178,4 +178,4 @@ behind.
 *Layerwise Function Anchoring: Preserving Sub-Module Functions on Sampled Hidden States for
 Continual Domain Adaptation* — the LFA paper (2026); authors withheld for review.
 
-Licensed under Apache-2.0 (see [LICENSE](https://github.com/<org>/lfa-anchoring/blob/main/LICENSE)).
+Licensed under Apache-2.0 (see [LICENSE](https://github.com/sparkdoc/lfa-anchoring/blob/main/LICENSE)).

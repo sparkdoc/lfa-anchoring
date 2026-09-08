@@ -27,14 +27,14 @@ dev = ["pytest>=8", "pytest-cov", "build"]
 [project.scripts]
 lfa = "lfa.cli:main"
 
-# `<org>` is the same placeholder `lfa/artifact/fetch.py::_RELEASE_BASE` carries, and RELEASING.md
+# `sparkdoc` is the same placeholder `lfa/artifact/fetch.py::_RELEASE_BASE` carries, and RELEASING.md
 # step 4 fills all of them in one edit. Declared at all because the README is the PyPI long
 # description: without these a visitor there has no pointer to where the documentation lives.
 [project.urls]
-Homepage = "https://github.com/<org>/lfa-anchoring"
-Repository = "https://github.com/<org>/lfa-anchoring"
-Documentation = "https://github.com/<org>/lfa-anchoring/blob/main/docs/quickstart.md"
-Changelog = "https://github.com/<org>/lfa-anchoring/releases"
+Homepage = "https://github.com/sparkdoc/lfa-anchoring"
+Repository = "https://github.com/sparkdoc/lfa-anchoring"
+Documentation = "https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/quickstart.md"
+Changelog = "https://github.com/sparkdoc/lfa-anchoring/releases"
 
 # `lfa.examples` is the top-level `examples/` directory, installed inside the package. The docs
 # send a reader to those two scripts as the way in, and a wheel that ships neither them nor the

@@ -85,17 +85,32 @@ def test_an_unknown_id_lists_the_ones_there_are(tmp_path):
 
 # --------------------------------------------------------------------------- the release gate
 
-def test_fetching_before_release_names_the_artifact_and_the_release_doc(tmp_path, tiny_artifact):
-    """Every shipped entry still carries the placeholder digest, so every fetch must refuse."""
+def test_fetching_an_unpublished_artifact_names_it_and_the_release_doc(
+        tmp_path, tiny_artifact, monkeypatch):
+    """An entry still carrying the placeholder digest must refuse before downloading anything.
+
+    Written against a synthetic entry rather than a shipped one on purpose. The shipped entries
+    carry placeholders only until release, so a test keyed on their state passes for a while and
+    then fails on the day the artifacts go up -- which is what happened. The behaviour under test
+    is the refusal, and the refusal is what should be pinned.
+    """
     _, path = tiny_artifact
+    monkeypatch.setitem(ARTIFACTS, "not-yet-published", {
+        "model_id": "tiny",
+        "url": "https://example.invalid/artifacts-v1/not-yet-published.pt",
+        "sha256": PLACEHOLDER_SHA256,
+        "n_samples_total": 1000,
+        "kind": "test fixture",
+        "size_mb": 1,
+    })
     downloader = copier(path)
 
     with pytest.raises(ArtifactNotPublished) as excinfo:
-        fetch_artifact("qwen3-0.6b-gmm1543k-int8", tmp_path, downloader=downloader)
+        fetch_artifact("not-yet-published", tmp_path, downloader=downloader)
 
     assert issubclass(ArtifactNotPublished, RuntimeError)
     message = str(excinfo.value)
-    assert "qwen3-0.6b-gmm1543k-int8" in message and "RELEASING.md" in message
+    assert "not-yet-published" in message and "RELEASING.md" in message
     assert downloader.calls == []                       # refused before anything was downloaded
     assert not list(tmp_path.iterdir())
 
