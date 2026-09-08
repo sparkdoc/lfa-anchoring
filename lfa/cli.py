@@ -33,12 +33,19 @@ from .artifact.fetch import (ArtifactNotPublished, ChecksumMismatch, fetch_artif
 from .evaluate import DatasetUnavailable
 from .models import (DEFAULT_DEVICE, MissingBuildToolchain, NoTrainableParameters,
                      ShardingRefused)
-from .prepare_domain import prepare_domain
+from .prepare_domain import MissingExtra, prepare_domain
 from .seed_corpus import SourceUnavailable, prepare_seed_corpus
 from .train import ResumeSourceHasNoAdapter
 from .workspace import StageOrderError, Workspace, WorkspaceNotReady
 
 __all__ = ["main"]
+
+
+def _lfa_version() -> str:
+    """The installed package version, imported lazily so the CLI never depends on import order."""
+    from . import __version__
+
+    return __version__
 
 #: Every exception the library raises **at the user** rather than at a caller: a chain out of
 #: order, a workspace that is not there or is already there or is not ready for what was asked, a
@@ -55,7 +62,7 @@ __all__ = ["main"]
 USER_FACING_ERRORS = (
     StageOrderError, WorkspaceNotReady, ShardingRefused, ArtifactNotPublished, ChecksumMismatch,
     SourceUnavailable, DatasetUnavailable, ResumeSourceHasNoAdapter, NoTrainableParameters,
-    MissingBuildToolchain, FileNotFoundError, FileExistsError, ValueError,
+    MissingBuildToolchain, MissingExtra, FileNotFoundError, FileExistsError, ValueError,
 )
 
 
@@ -191,6 +198,10 @@ def build_parser() -> argparse.ArgumentParser:
                     "preserving what its sub-modules compute on the hidden states it actually "
                     "sees.",
     )
+    # The first thing anyone types into a bug report, and the version is the first thing anyone
+    # reading that report asks for.
+    parser.add_argument("--version", action="version",
+                        version=f"lfa-anchoring {_lfa_version()}")
     subcommands = parser.add_subparsers(dest="command", required=True, metavar="<subcommand>")
 
     # ---------------------------------------------------------------------------------- init

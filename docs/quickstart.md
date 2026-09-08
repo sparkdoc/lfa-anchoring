@@ -29,6 +29,8 @@ tested stack. The package itself accepts `transformers>=4.56,<5` and `peft>=0.18
 transformers floor is where `from_pretrained` learned the `dtype=` spelling this package loads
 with, and below it a model would load in the checkpoint's own dtype without saying so.
 
+`lfa --version` says which version you have, which is the first thing a bug report needs.
+
 An installed wheel carries the two example scripts as well, so they can be run without a
 checkout:
 
@@ -144,7 +146,8 @@ The library raises rather than guesses, and the CLI prints those refusals as one
 a chain out of order, a workspace that is not there or already is or has not trained anything yet
 (what `fuse` and `evaluate` say), a workspace with no p(h) artifact, a device map that would shard,
 an artifact that is not published, a dataset that cannot be reached, and a recipe or chain spec
-that does not parse or does not validate. The message ends with what to do instead.
+that does not parse or does not validate, and a document that needs an optional extra
+(`[html]`, `[pdf]`) you have not installed. The message ends with what to do instead.
 
 A traceback whose last frames are in `lfa/` is a bug in this package — please report it. A
 traceback that ends inside somebody else's code is your environment rather than this package: a

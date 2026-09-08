@@ -157,6 +157,8 @@ def fetch_artifact(
             "extend, because the id is where the base sample count comes from."
         )
 
+    # After the two refusals above, never before them: a destination directory created for a
+    # download that was then refused is debris that looks like a half-made workspace.
     dest_dir = Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / f"{artifact_id}.pt"

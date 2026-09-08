@@ -92,7 +92,12 @@ separate workspaces; that is a different experiment, not a chain.
 A domain entry takes exactly `name`, `corpus` and `epochs`; anything else is refused at load,
 naming the spec file and the field — the same rule a recipe file lives under, and for the same
 reason: a field nobody reads is worse than a refusal, because the run starts and does not do what
-the file says. Two domains may not share a `name` either, since the name *is* the run directory.
+the file says. Two domains may not share a `name` either, since the name *is* the run directory,
+and a `corpus` that is not there is refused rather than discovered later.
+
+**Every domain is checked before the first one trains**, not as the chain reaches it: a spec's
+cost is paid as a whole, so a typo in domain 3 that surfaced when domain 3 started would already
+have spent two stages and two extensions.
 
 [`examples/chain_three_domains.py`](../examples/chain_three_domains.py) runs the whole thing on
 three generated stand-in corpora, offline, so you can watch the sequence before spending a day of

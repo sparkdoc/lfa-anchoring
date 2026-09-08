@@ -51,8 +51,8 @@ lfa = ["recipes/*.yaml"]
 "lfa.examples" = ["*.yaml"]
 
 [tool.pytest.ini_options]
-markers = ["gpu: needs CUDA", "equivalence: needs the research code checkout", "acceptance: ~1 GPU-hour on the Chalmers corpus", "slow: downloads data from the Hugging Face Hub"]
-addopts = "-m 'not gpu and not equivalence and not acceptance and not slow'"
+markers = ["gpu: needs CUDA", "equivalence: needs the research code checkout", "acceptance: ~1 GPU-hour on the Chalmers corpus", "slow: downloads data from the Hugging Face Hub", "release: the end state of RELEASING.md (fails until the release steps are done)"]
+addopts = "-m 'not gpu and not equivalence and not acceptance and not slow and not release'"
 # `error` first, so a warning this package starts emitting fails the suite instead of joining a
 # pile of noise. The two exemptions below are torch's own, not ours: `lfa.corpus.make_dataloader`
 # pins memory when CUDA is available (a real throughput feature), and torch 2.10's pin path calls

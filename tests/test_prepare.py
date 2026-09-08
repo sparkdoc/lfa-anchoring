@@ -142,6 +142,38 @@ def test_a_second_combine_run_does_not_replace_the_first_corpus(tmp_path):
                                                      "combined_domain_data_1.txt"]
 
 
+def test_a_missing_extra_is_a_refusal_rather_than_a_traceback(tmp_path, monkeypatch):
+    """`lfa prepare-domain` on HTML without `[html]` printed 27 lines ending inside `lfa/`.
+
+    The message was already right; what was wrong is that it reached the user as a traceback,
+    and `docs/quickstart.md` defines a traceback whose last frames are in `lfa/` as a bug in this
+    package. `MissingExtra` is an `ImportError` subclass -- a Python caller catching `ImportError`
+    still catches it -- that the CLI knows to collapse to one line and exit 2.
+    """
+    import builtins
+
+    from lfa.cli import USER_FACING_ERRORS, main
+    from lfa.prepare_domain import MissingExtra, extract_html
+
+    real_import = builtins.__import__
+
+    def without_bs4(name, *args, **kwargs):
+        if name in {"bs4", "markdownify"}:
+            raise ImportError(f"No module named {name!r}")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", without_bs4)
+    page = tmp_path / "page.html"
+    page.write_text("<html><body><p>anchoring</p></body></html>", encoding="utf-8")
+
+    with pytest.raises(MissingExtra, match=r"lfa-anchoring\[html\]") as refusal:
+        extract_html(page)
+    assert isinstance(refusal.value, ImportError)             # a caller's `except ImportError`
+    assert issubclass(MissingExtra, USER_FACING_ERRORS)       # ...and the CLI's own list
+
+    assert main(["prepare-domain", str(page), "--out", str(tmp_path / "out")]) == 2
+
+
 def test_prepare_domain_recursive_flag(tmp_path):
     src, out = tmp_path / "src", tmp_path / "out"
     (src / "nested").mkdir(parents=True)

@@ -167,6 +167,17 @@ def test_full_weight_reaches_the_runs_config(tmp_path, registry, base_dir, corpu
 
 # -------------------------------------------------------------------------------------- errors
 
+def test_the_cli_reports_its_version(capsys):
+    """The first line of any bug report, and it did not exist."""
+    from lfa import __version__
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["--version"])
+
+    assert exit_info.value.code == 0
+    assert capsys.readouterr().out.strip() == f"lfa-anchoring {__version__}"
+
+
 def test_init_says_the_next_command_rather_than_repeating_the_library_line(tmp_path, registry,
                                                                             base_dir, capsys):
     """`Workspace.init` logs that it created the workspace and the CLI configures logging, so

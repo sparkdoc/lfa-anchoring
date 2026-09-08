@@ -313,11 +313,46 @@ def _curve(values):
     ([9.0, 8.0, 7.0, 6.0], None),                        # still falling: nothing to say
     ([9.0, 8.0, 7.0, 7.0 * OVERTRAINING_RATIO * 1.01], (3, 7.0, 7.0 * OVERTRAINING_RATIO * 1.01)),
     ([9.0, 8.0, 7.0, 7.2], None),                        # an ordinary wobble is not a finding
-    ([9.0, 8.0], None),                                  # too short to have a shape
+    # Two points are enough: the shortest runs are exactly where a small corpus turns early.
+    ([6.6, 305.9], (1, 6.6, 305.9)),
+    ([9.0, 8.0], None),                                  # two points, still falling
     ([], None),                                          # val_fraction=0: no curve at all
 ])
 def test_the_turnaround_is_reported_only_when_it_is_one(values, expected):
     assert held_out_turned_around(_curve(values)) == expected
+
+
+def test_a_run_shorter_than_its_own_warmup_says_the_corpus_is_too_small(setup, tmp_path,
+                                                                        caplog):
+    """Three documents, two optimizer steps, a much worse model, and not a word about it.
+
+    Said in the recipe's own terms rather than as a corpus-size rule of thumb: a run with fewer
+    optimizer steps than its warmup never reaches the learning rate the operating point was tuned
+    at, so whatever comes out is not that operating point.
+    """
+    teacher, fresh_student, dataset, sampler, adapter = setup
+    config = make_config(num_epochs=1, warmup_steps=500)
+    student = apply_lora(fresh_student(), adapter, rank=config.lora_rank, alpha=config.lora_alpha)
+
+    with caplog.at_level(logging.WARNING, logger="lfa.train"):
+        train(teacher, student, dataset, sampler, adapter, config, tmp_path)
+
+    warned = [record.getMessage() for record in caplog.records
+              if "very small for this recipe" in record.getMessage()]
+    assert len(warned) == 1
+    assert "against a warmup of 500" in warned[0]
+    assert "More documents is the fix" in warned[0]
+
+
+def test_an_ordinary_run_is_not_called_too_small(setup, tmp_path, caplog):
+    teacher, fresh_student, dataset, sampler, adapter = setup
+    config = make_config(num_epochs=1, warmup_steps=1)
+    student = apply_lora(fresh_student(), adapter, rank=config.lora_rank, alpha=config.lora_alpha)
+
+    with caplog.at_level(logging.WARNING, logger="lfa.train"):
+        train(teacher, student, dataset, sampler, adapter, config, tmp_path)
+
+    assert not [r for r in caplog.records if "very small for this recipe" in r.getMessage()]
 
 
 def test_a_history_without_validation_numbers_says_nothing(tiny_texts):

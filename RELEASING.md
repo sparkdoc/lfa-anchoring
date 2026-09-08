@@ -140,6 +140,18 @@ something it cannot verify, and `lfa list-artifacts` says `not published yet` �
 correct behaviour for every commit before this one. Do not paste digests for files you have not
 run step 2 against.
 
+**The gate for this step is a test, not a memory.** It fails until both halves are done:
+
+```bash
+pytest -m release -q          # <org> anywhere that ships, and placeholder checksums
+```
+
+It is deselected from the default suite on purpose — the repository is *supposed* to carry the
+placeholder before a release — and it is in step 6's list below as well, so nothing is published
+without it having been run. `tests/test_release.py::test_the_scan_has_teeth` runs in the default
+suite and proves the scanner can actually see, since the gate itself is expected to be red until
+today.
+
 Verify:
 
 ```bash
@@ -163,8 +175,8 @@ Check what the sdist carries (`MANIFEST.in` governs it): `lfa/`, `docs/`, `examp
 `LICENSE`, `README.md`, `RELEASING.md`, `constraints-tested.txt` — and **not**
 `tests/equivalence/fixtures/` (~12 MB of captured tensors, which belong in git, not in a source
 distribution) nor `tests/acceptance/_runs/` — which is why the two committed equivalence records
-travel in git only. Rehearsed 2026-09-08 from a pristine copy: **78 files, 274 KiB**
-(`tar -tzf dist/*.tar.gz | grep -v '/$' | wc -l`; the same listing is 89 lines with the directory
+travel in git only. Rehearsed 2026-09-08 from a pristine copy: **79 files, 282 KiB**
+(`tar -tzf dist/*.tar.gz | grep -v '/$' | wc -l`; the same listing is 90 lines with the directory
 entries counted). Re-measure rather than trusting the figure — the docs move.
 
 The **wheel** is 34 files: the package, `lfa/recipes/qwen3-0.6b.yaml`, and `lfa/examples/` — the
@@ -192,6 +204,7 @@ Then, from a checkout with that venv:
 
 ```bash
 pytest -q                                      # the default suite
+pytest -m release -q                           # <org> filled in, checksums real (step 4's gate)
 CUDA_VISIBLE_DEVICES=0 pytest tests/test_gpu_smoke.py -m gpu -q
 CUDA_VISIBLE_DEVICES=0 pytest tests/equivalence -m equivalence -q
 CUDA_VISIBLE_DEVICES=0 pytest tests/acceptance -m acceptance -q -s
@@ -224,5 +237,6 @@ the checksum rather than by their tags.
 |---|---|
 | `license = "Apache-2.0"` + `license-files` (PEP 639), `setuptools>=77` | the wheel's `METADATA` says `License-Expression: Apache-2.0` |
 | `MANIFEST.in`, including `constraints-tested.txt` and pruning the fixtures | `tar tzf dist/*.tar.gz` |
+| no `<org>` placeholder left in anything that ships, and real artifact checksums | `pytest -m release -q` |
 | `LICENSE` is the canonical Apache 2.0 text | the `diff` in step 0 |
 | the `[html]` extra installed in the dev venv | `pytest -q -rs` shows no `needs the [html] extra` skip |

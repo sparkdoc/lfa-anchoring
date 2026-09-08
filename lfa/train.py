@@ -487,13 +487,17 @@ def held_out_turned_around(history: list[dict]) -> tuple[int, float, float] | No
     epoch by epoch without ever drawing the conclusion. Reading the curve is the user's job;
     noticing that it turned is not.
 
-    ``None`` when there is no held-out curve (``val_fraction=0``), when it is shorter than three
-    epochs, when the minimum is the last epoch, or when the end is within
+    ``None`` when there is no held-out curve (``val_fraction=0``), when it is shorter than two
+    epochs (one point cannot turn), when the minimum is the last epoch, or when the end is within
     :data:`OVERTRAINING_RATIO` of the minimum -- an ordinary wobble is not a finding.
+
+    Two points are enough on purpose. A small corpus is exactly where the turn comes early, and
+    the previous three-epoch floor meant the shortest runs -- the ones a first user makes while
+    finding their footing -- were the ones that could not be told.
     """
     curve = [(record["epoch"], record["val_perplexity"]) for record in history
              if record.get("val_perplexity") is not None]
-    if len(curve) < 3:
+    if len(curve) < 2:
         return None
     best_epoch, best = min(curve, key=lambda pair: pair[1])
     final_epoch, final = curve[-1]
@@ -846,8 +850,22 @@ def train(
     # Ceiling division: a trailing partial accumulation window takes an optimizer step too.
     steps_per_epoch = ((len(dataloader) + config.gradient_accumulation_steps - 1)
                        // config.gradient_accumulation_steps)
-    scheduler = _build_scheduler(optimizer, config, steps_per_epoch * config.num_epochs,
-                                 run_logger)
+    total_steps = steps_per_epoch * config.num_epochs
+    scheduler = _build_scheduler(optimizer, config, total_steps, run_logger)
+    if total_steps <= config.warmup_steps:
+        # A run shorter than its own warmup never reaches the learning rate it was tuned at, so
+        # whatever comes out is not the operating point in the recipe. Said in the recipe's own
+        # terms rather than as a corpus-size rule of thumb: this is the one threshold the config
+        # itself supplies. The measured case was three documents -- two optimizer steps against a
+        # warmup of fifty -- which trained to a much worse model without a word.
+        run_logger.warning(
+            "This corpus is very small for this recipe: %d optimizer step(s) in the whole run "
+            "(%d chunk(s) over %d epoch(s)), against a warmup of %d. The learning rate never "
+            "reaches the value the recipe was tuned at, so the run is not that operating point "
+            "and the result can be much worse than the model it started from. More documents is "
+            "the fix; more epochs on the same few is not.",
+            total_steps, len(dataset), config.num_epochs, config.warmup_steps,
+        )
 
     if resume:
         # torch's LR schedulers are chainable: each step multiplies the group's CURRENT lr rather

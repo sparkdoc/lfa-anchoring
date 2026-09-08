@@ -391,18 +391,33 @@ class Workspace:
                 f"({', '.join(sorted(ARTIFACTS))})."
             )
         destination = artifacts_dir / "v1.pt"
+        # Remembered so that a failure below can put the directory tree back as it found it: the
+        # arguments being good does not mean the artifact will arrive, and today the likeliest
+        # refusal of all is `ArtifactNotPublished` from the fetch three lines down.
+        created = [directory for directory in (path, artifacts_dir) if not directory.exists()]
         path.mkdir(parents=True, exist_ok=True)
         artifacts_dir.mkdir(exist_ok=True)
 
-        if source is not None:
-            shutil.copyfile(source, destination)
-            logger.info("Artifact %s copied to %s", source, destination)
-        elif destination.exists():
-            logger.info("Artifact %s already present at %s", artifact_id, destination)
-        elif fetch:
-            fetched = fetch_artifact(artifact_id, artifacts_dir)
-            fetched.replace(destination)
-        else:
+        try:
+            if source is not None:
+                shutil.copyfile(source, destination)
+                logger.info("Artifact %s copied to %s", source, destination)
+            elif destination.exists():
+                logger.info("Artifact %s already present at %s", artifact_id, destination)
+            elif fetch:
+                fetched = fetch_artifact(artifact_id, artifacts_dir)
+                fetched.replace(destination)
+        except BaseException:
+            # Only what this call made, and only while still empty: `rmdir` refuses a directory
+            # with anything in it, which is the guard that keeps this from touching a workspace
+            # that was already there.
+            for directory in reversed(created):
+                try:
+                    directory.rmdir()
+                except OSError:
+                    pass
+            raise
+        if not fetch and source is None and not destination.exists():
             destination = None
             logger.warning(
                 "No p(h) artifact in this workspace: %r was not fetched (fetch=False). Run "
@@ -666,6 +681,47 @@ class Workspace:
                if (output_dir / "training_state.pt").exists()
                else " (resume=True cannot help: there is no training_state.pt to continue from).")
         )
+
+    @classmethod
+    def _validate_domains(cls, spec_path: Path, domains: list) -> None:
+        """Check every domain in a chain spec before any of them trains.
+
+        Four things, in the order a reader would find them: that the entry is a mapping with a
+        ``corpus``, that the corpus is actually there, that it carries no field a domain does not
+        have, and that no two domains share a ``name`` (the name IS the run directory, so the
+        later stage would write over the earlier one).
+
+        All of it up front. The alternative -- checking each domain as the loop reaches it -- is
+        how a misspelt key on domain 2 gets reported after domain 1 has trained and been folded
+        in, which on the shipped recipe is about two hours before the sentence appears.
+
+        Raises:
+            ValueError: naming the spec file and the domain's position, for each of the four.
+            FileNotFoundError: a corpus path that is not there, with the same remedy
+                :meth:`train` gives.
+        """
+        for position, domain in enumerate(domains, start=1):
+            if not isinstance(domain, dict) or not domain.get("corpus"):
+                raise ValueError(f"{spec_path}: domain {position} has no 'corpus'.")
+            cls._refuse_unknown_domain_keys(spec_path, position, domain)
+            # Resolved as the chain will resolve it: relative to the spec file, not to the
+            # working directory. `train` would raise the same thing, an hour or two later.
+            corpus = (spec_path.parent / str(domain["corpus"])).expanduser()
+            if not corpus.exists():
+                raise FileNotFoundError(
+                    f"{spec_path}: domain {position} names a corpus that is not there: {corpus}. "
+                    "Paths in a chain spec resolve against the spec file. "
+                    "`lfa prepare-domain <your files> --out <dir>` builds one."
+                )
+
+        named = [domain.get("name") for domain in domains if domain.get("name")]
+        repeated = sorted({name for name in named if named.count(name) > 1})
+        if repeated:
+            raise ValueError(
+                f"{spec_path}: {', '.join(repr(name) for name in repeated)} names more than one "
+                "domain, and a name is the run directory -- the later stage would write over the "
+                "earlier one's config, curve and checkpoint. Give each domain its own name."
+            )
 
     @staticmethod
     def _refuse_unknown_domain_keys(spec_path: Path, position: int, domain: dict) -> None:
@@ -1137,6 +1193,10 @@ class Workspace:
                 ``domains`` list, has a domain without a ``corpus``, has a domain carrying a
                 field that is not one of :data:`DOMAIN_FIELDS`, gives two domains the same
                 ``name``, or asks not to extend between domains. Each names the spec file.
+            FileNotFoundError: a domain names a corpus that is not there.
+
+            Every one of these is raised before the first stage trains, for every domain in the
+            spec -- not as the chain reaches each domain.
         """
         spec_path = Path(spec_path)
         try:
@@ -1159,24 +1219,13 @@ class Workspace:
                 "starting point instead, run them as separate workspaces."
             )
 
-        # Checked before the first stage trains, because the symptom otherwise arrives hours in:
-        # the run directory IS the name, so two domains sharing one would have the second stage
-        # write over the first (`Workspace.train` refuses, but only once it gets there).
-        named = [domain.get("name") for domain in domains
-                 if isinstance(domain, dict) and domain.get("name")]
-        repeated = sorted({name for name in named if named.count(name) > 1})
-        if repeated:
-            raise ValueError(
-                f"{spec_path}: {', '.join(repr(name) for name in repeated)} names more than one "
-                "domain, and a name is the run directory -- the later stage would write over the "
-                "earlier one's config, curve and checkpoint. Give each domain its own name."
-            )
+        # EVERY domain, before the FIRST one trains. A spec is checked as a whole because its
+        # cost is paid as a whole: a typo in domain 3 that surfaces when domain 3 starts has
+        # already spent two stages and two extensions -- at the shipped recipe, most of a day.
+        self._validate_domains(spec_path, domains)
 
         entries = []
         for position, domain in enumerate(domains, start=1):
-            if not isinstance(domain, dict) or not domain.get("corpus"):
-                raise ValueError(f"{spec_path}: domain {position} has no 'corpus'.")
-            self._refuse_unknown_domain_keys(spec_path, position, domain)
             logger.info("Chain %d/%d: %s", position, len(domains),
                         domain.get("name") or domain["corpus"])
             entries.append(self.train(

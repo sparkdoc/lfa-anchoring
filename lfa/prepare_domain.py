@@ -12,7 +12,7 @@ paragraph is one line. A document shorter than ``min_length`` *characters after 
 dropped: a page that extracted to a nav bar and a cookie notice is not training data.
 
 HTML and PDF support are optional extras (``pip install 'lfa-anchoring[html]'`` /
-``'lfa-anchoring[pdf]'``); a missing one raises :class:`ImportError` naming the extra rather than
+``'lfa-anchoring[pdf]'``); a missing one raises :class:`MissingExtra` naming the extra rather than
 silently skipping the files, so a corpus is never quietly half-prepared.
 """
 
@@ -24,6 +24,17 @@ from collections.abc import Iterable
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+class MissingExtra(ImportError):
+    """Raised when a document needs an optional extra that is not installed.
+
+    An ``ImportError`` subclass, so a caller that catches ``ImportError`` still catches it -- but
+    a *named* one, so :data:`lfa.cli.USER_FACING_ERRORS` can collapse it to the single line it
+    already is without also swallowing every other import failure in the process, which is what
+    listing bare ``ImportError`` there would do. The message names the file and the extra to
+    install; nothing about it is a defect in this package, so a traceback would only bury it.
+    """
 
 TEXT_EXTENSIONS = {".txt", ".md"}
 HTML_EXTENSIONS = {".html", ".htm"}
@@ -46,13 +57,13 @@ def extract_html(path: Path) -> str:
     survives.
 
     Raises:
-        ImportError: if the ``[html]`` extra is not installed.
+        MissingExtra: if the ``[html]`` extra is not installed.
     """
     try:
         import markdownify
         from bs4 import BeautifulSoup
     except ImportError as exc:
-        raise ImportError(
+        raise MissingExtra(
             f"Reading {path.name} needs BeautifulSoup and markdownify: "
             "pip install 'lfa-anchoring[html]'"
         ) from exc
@@ -70,14 +81,14 @@ def make_pdf_converter():
     Build it once and pass it to every :func:`extract_pdf` call, as :func:`prepare_domain` does.
 
     Raises:
-        ImportError: if the ``[pdf]`` extra is not installed.
+        MissingExtra: if the ``[pdf]`` extra is not installed.
     """
     try:
         from marker.config.parser import ConfigParser
         from marker.converters.pdf import PdfConverter
         from marker.models import create_model_dict
     except ImportError as exc:
-        raise ImportError(
+        raise MissingExtra(
             "Reading PDFs needs marker: pip install 'lfa-anchoring[pdf]'"
         ) from exc
 
@@ -235,7 +246,7 @@ def prepare_domain(
 
     Raises:
         ValueError: if no supported file is found under ``inputs``.
-        ImportError: if a found file needs the ``[html]`` or ``[pdf]`` extra and it is missing.
+        MissingExtra: if a found file needs the ``[html]`` or ``[pdf]`` extra and it is missing.
     """
     out_dir = Path(out_dir)
     files = find_input_files(inputs, recursive=recursive)

@@ -74,6 +74,12 @@ two.
 > truncating the run you have, because the learning-rate schedule is laid over the epoch count
 > (`--epochs 3` is a complete three-epoch run, not the first three epochs of fifteen). Re-tuning
 > the dose does not re-tune λ: they are separate knobs, and λ's couplings are below.
+>
+> **The other end of the same axis.** A corpus so small that the whole run takes fewer optimizer
+> steps than `warmup_steps` (50 here) never reaches the learning rate this operating point was
+> tuned at — a handful of documents can be two or three steps in total. The trainer says so at the
+> start of such a run. More epochs will not fix it, because the schedule is laid over the epochs:
+> more documents will.
 
 ### Optimization
 

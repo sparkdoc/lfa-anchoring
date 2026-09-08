@@ -145,6 +145,50 @@ def test_init_refuses_to_overwrite_an_existing_workspace(tmp_path, registry, bas
         new_workspace(tmp_path, base_dir)
 
 
+def test_an_artifact_that_cannot_be_fetched_leaves_no_workspace_behind(tmp_path, base_dir,
+                                                                       monkeypatch):
+    """Today's most likely refusal of all: the README's flagship command, before the assets exist.
+
+    The argument checks were hoisted above the `mkdir`s in the last round, but the *fetch* still
+    happened after them, so this one refusal left `<path>/artifacts/` behind -- a directory that
+    reads as a half-made workspace.
+    """
+    import lfa.workspace as workspace_module
+    from lfa.artifact.fetch import ArtifactNotPublished
+
+    def unpublished(artifact_id, dest_dir):
+        raise ArtifactNotPublished(f"Artifact {artifact_id!r} has no published release asset yet")
+
+    monkeypatch.setattr(workspace_module, "fetch_artifact", unpublished)
+    workspace = tmp_path / "flagship"
+
+    with pytest.raises(ArtifactNotPublished):
+        Workspace.init(workspace, str(base_dir), artifact="qwen3-0.6b-gmm1543k-int8")
+
+    assert not workspace.exists()
+
+
+def test_a_workspace_that_was_already_there_survives_a_failed_init(tmp_path, base_dir,
+                                                                   monkeypatch):
+    """The cleanup removes only what this call made, and only while it is still empty."""
+    import lfa.workspace as workspace_module
+    from lfa.artifact.fetch import ArtifactNotPublished
+
+    def unpublished(artifact_id, dest_dir):
+        raise ArtifactNotPublished("not published")
+
+    monkeypatch.setattr(workspace_module, "fetch_artifact", unpublished)
+    existing = tmp_path / "already_here"
+    (existing / "artifacts").mkdir(parents=True)
+    (existing / "notes.txt").write_text("mine")
+
+    with pytest.raises(ArtifactNotPublished):
+        Workspace.init(existing, str(base_dir), artifact="qwen3-0.6b-gmm1543k-int8")
+
+    assert (existing / "notes.txt").read_text() == "mine"
+    assert (existing / "artifacts").is_dir()
+
+
 def test_a_refused_init_leaves_nothing_behind(tmp_path, base_dir, tiny_artifact):
     """A refusal must not leave a directory that looks like a half-made workspace.
 
@@ -1030,6 +1074,42 @@ def test_a_spec_that_asks_not_to_extend_between_domains_is_rejected(tmp_path, re
 
     with pytest.raises(ValueError, match="extend_between"):
         ws.chain(spec, device="cpu")
+
+
+@pytest.mark.parametrize("position", [1, 2, 3])
+@pytest.mark.parametrize("broken, error, expected", [
+    ({"extend_between": False}, ValueError, "always folds each domain"),
+    ({"banana": 7}, ValueError, "does not have"),
+    ({"corpus": None}, ValueError, "has no 'corpus'"),
+    ({"corpus": "not_a_corpus_that_exists"}, FileNotFoundError, "not there"),
+])
+def test_every_domain_is_validated_before_the_first_one_trains(tmp_path, registry, base_dir,
+                                                               corpus_a, corpus_b, position,
+                                                               broken, error, expected):
+    """The half of this that the first fix missed: the checks ran inside the training loop.
+
+    A typo on domain 2 was therefore reported *after* domain 1 had trained and been folded in --
+    at the shipped recipe, about two hours of GPU time before the sentence appeared. The
+    duplicate-name check twenty lines above had already been hoisted for exactly that reason;
+    this test is the rest of the spec it was written to.
+    """
+    ws = _chain_workspace(tmp_path, base_dir)
+    domains = [{"name": f"d{i}", "corpus": str(corpus_a if i % 2 else corpus_b)}
+               for i in range(1, 4)]
+    domains[position - 1].update(broken)
+    if broken.get("corpus") is None and "corpus" in broken:
+        domains[position - 1].pop("corpus")
+    spec = tmp_path / "domains.yaml"
+    spec.write_text(yaml.safe_dump({"domains": domains}))
+
+    with pytest.raises(error, match=expected) as refusal:
+        ws.chain(spec, device="cpu", need=NEED, k_domain=K_DOMAIN)
+
+    assert f"domain {position}" in str(refusal.value)
+    assert str(spec) in str(refusal.value)
+    # Nothing trained: not the broken domain, and not the good ones before it either.
+    assert ws.history == [] and not (ws.path / "runs").exists()
+    assert ws.state["stage"] == 0
 
 
 @pytest.mark.parametrize("extra, expected", [
