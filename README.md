@@ -127,7 +127,7 @@ from:
 
 ```bash
 pytest tests/equivalence -m equivalence -q   # sampler, losses and loader, against the research code
-pytest tests/acceptance -m acceptance -q -s  # one full run, against a matched the research code run
+pytest tests/acceptance -m acceptance -q -s  # one full run, against a matched research run
 pytest tests/test_gpu_smoke.py -m gpu -q     # bf16 placement, one stage on the card, TorchGMM
 ```
 
@@ -154,8 +154,8 @@ The criterion, measured 2026-09-07 (the run's own records are committed at
 
 Two end-of-run perplexities are **reported** beside those and asserted by nothing. They are the
 *research* instrument's numbers, on different text from the table above -- that domain row is this
-package's own `evaluate` on the stage's held-out documents, while these come from the research code's
-scorer on a held-out chat-formatted Q&A set, which is why one run has two domain perplexities and
+package's own `evaluate` on the stage's held-out documents, while these come from the research
+code's scorer on a held-out chat-formatted Q&A set, which is why one run has two domain perplexities and
 neither is wrong. Domain direct-QA perplexity 10.6996 against the reference's 10.9122 (−1.95 %) and WikiText-2 drift −8.202 % against
 −7.898 % (0.304 points). Each is a single draw of a sampled objective whose spread across seeds has
 never been measured, so there is no calibrated band to hold them to — a gap there is something to
@@ -169,9 +169,9 @@ as such. See
 
 ## Relationship to the research record
 
-`the research code` is the research record — every arm, every ladder, every retraction. This package is the
-method: what survived, ported, tested, and documented, with the research-only scaffolding left
-behind.
+The research code behind the paper is a private record of every arm, every ladder and every
+retraction. It is not distributed. This package is the method itself: what survived, ported,
+tested and documented, with the research-only scaffolding left behind.
 
 ## Citing
 

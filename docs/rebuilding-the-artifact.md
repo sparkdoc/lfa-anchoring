@@ -151,8 +151,8 @@ change of that size, and the reason it is written down here instead.
 
 ## One known difference from the research code
 
-`the research code` accumulates its running variance with `old_mean` computed **after** the batch has
-already been folded into the running sum (`src/lra_distribution.py:1227-1240`: `self.sum_x +=` then
+The research code accumulates its running variance with `old_mean` computed **after** the batch has
+already been folded into the running sum (`self.sum_x +=` and only then
 `old_mean = self.sum_x / self.n`), so its `std` is slightly off. This package's accumulator takes
 `old_mean` before folding, which is the correct Chan update. The consequence is small but real: an
 artifact built here has slightly different `std` values from the shipped one, and `std` enters the

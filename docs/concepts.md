@@ -183,9 +183,10 @@ number it reports is a perplexity computed locally.
 
 ## Where this sits
 
-`the research code` is the research record — every arm, every retraction, every ladder. This package is the
-method: the training loop, the artifact, the recipe and the chain, ported and checked against that
-record (`tests/equivalence/README.md`), with the research-only scaffolding left behind.
+The research code behind the paper is a private record of every arm, every retraction and every
+ladder. It is not distributed. This package is the method itself: the training loop, the artifact,
+the recipe and the chain, ported and checked against that record
+(`tests/equivalence/README.md`), with the research-only scaffolding left behind.
 
 Citation: *Layerwise Function Anchoring: Preserving Sub-Module Functions on Sampled Hidden States
 for Continual Domain Adaptation* — the LFA paper (2026), authors withheld for review.
