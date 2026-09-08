@@ -15,3 +15,8 @@ tests/acceptance/_runs/**
 !tests/acceptance/_runs/2026-09-07-equiv/
 !tests/acceptance/_runs/2026-09-07-equiv/results.json
 !tests/acceptance/_runs/2026-09-07-equiv/reference.json
+
+# Agent-harness scratch, created by whatever tool a contributor happens to use.
+# Not part of the package and not something a user should inherit.
+.claude/
+.mcp.json
