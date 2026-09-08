@@ -22,7 +22,10 @@ dependencies = ["torch>=2.2", "transformers>=4.56,<5", "accelerate>=0.26", "peft
 pdf = ["marker-pdf"]
 html = ["beautifulsoup4", "markdownify"]
 sklearn = ["scikit-learn>=1.3"]
-dev = ["pytest>=8", "pytest-cov", "build"]
+# nbformat/nbclient/ipykernel are what `tests/test_notebook.py` reads and runs
+# `examples/two_domain_walkthrough.ipynb` with; a user who only wants the library
+# needs none of them.
+dev = ["pytest>=8", "pytest-cov", "build", "nbformat>=5.9", "nbclient>=0.9", "ipykernel>=6.29"]
 
 [project.scripts]
 lfa = "lfa.cli:main"
@@ -48,11 +51,11 @@ packages = ["lfa", "lfa.adapters", "lfa.artifact", "lfa.examples"]
 
 [tool.setuptools.package-data]
 lfa = ["recipes/*.yaml"]
-"lfa.examples" = ["*.yaml"]
+"lfa.examples" = ["*.yaml", "*.ipynb"]
 
 [tool.pytest.ini_options]
-markers = ["gpu: needs CUDA", "slow: downloads data from the Hugging Face Hub", "release: the end state of RELEASING.md (fails until the release steps are done)"]
-addopts = "-m 'not gpu and not slow and not release'"
+markers = ["gpu: needs CUDA", "slow: downloads data from the Hugging Face Hub", "release: the end state of RELEASING.md (fails until the release steps are done)", "notebook: executes examples/two_domain_walkthrough.ipynb end to end (a GPU, the network, ~21 minutes on an RTX 3090)"]
+addopts = "-m 'not gpu and not slow and not release and not notebook'"
 # `error` first, so a warning this package starts emitting fails the suite instead of joining a
 # pile of noise. The two exemptions below are torch's own, not ours: `lfa.corpus.make_dataloader`
 # pins memory when CUDA is available (a real throughput feature), and torch 2.10's pin path calls

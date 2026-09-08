@@ -101,7 +101,15 @@ have spent two stages and two extensions.
 
 [`examples/chain_three_domains.py`](../examples/chain_three_domains.py) runs the whole thing on
 three generated stand-in corpora, offline, so you can watch the sequence before spending a day of
-GPU time on it.
+GPU time on it. Its corpora are filler and teach the model nothing — the script says so — so it
+exercises the machinery and nothing else.
+
+For a chain on text that means something, with numbers you can read,
+[`examples/two_domain_walkthrough.ipynb`](../examples/two_domain_walkthrough.ipynb) runs two real
+domains — two public-domain books it downloads itself — with each stage repeated at λ = μ = 0, so
+what `extend` and the stage-2 λ actually bought is measured rather than asserted — including at
+each control's own best number of epochs, which is not the same answer. 21 minutes on one RTX 3090,
+at demo scale rather than the recipe's.
 
 ## Reading a chain
 

@@ -82,6 +82,12 @@ domain adds one step — `lfa extend` — which folds the finished stage into bo
 Full walkthrough: [docs/quickstart.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/quickstart.md). Same flow as Python:
 [`examples/quickstart.py`](https://github.com/sparkdoc/lfa-anchoring/blob/main/examples/quickstart.py).
 
+**To watch the method work rather than read about it**, run
+[`examples/two_domain_walkthrough.ipynb`](https://github.com/sparkdoc/lfa-anchoring/blob/main/examples/two_domain_walkthrough.ipynb): two domains in sequence on real public-domain
+text, with the same two runs repeated with the anchor switched off, so the control is beside
+every number. Measured at 21 minutes on one RTX 3090, no API keys, and everything it needs is
+downloaded by the notebook itself.
+
 Everything is computed locally. There is no judge, no API key, and nothing to configure.
 
 ## Documentation
@@ -89,6 +95,7 @@ Everything is computed locally. There is no judge, no API key, and nothing to co
 | | |
 |---|---|
 | [docs/quickstart.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/quickstart.md) | install, the four commands, what a run costs |
+| [`examples/two_domain_walkthrough.ipynb`](https://github.com/sparkdoc/lfa-anchoring/blob/main/examples/two_domain_walkthrough.ipynb) | the runnable demonstration: two domains, and the same runs unanchored |
 | [docs/concepts.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/concepts.md) | what the anchor does, what λ and μ are, how a run is read |
 | [docs/recipes.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/recipes.md) | the shipped operating point field by field, and its couplings |
 | [docs/multi-domain-chains.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/multi-domain-chains.md) | second and third domains; what `extend` does |

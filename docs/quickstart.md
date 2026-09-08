@@ -31,12 +31,18 @@ with, and below it a model would load in the checkpoint's own dtype without sayi
 
 `lfa --version` says which version you have, which is the first thing a bug report needs.
 
-An installed wheel carries the two example scripts as well, so they can be run without a
-checkout:
+An installed wheel carries the examples as well, so they can be run without a checkout:
 
 ```bash
 python -m lfa.examples.quickstart --help
 python -m lfa.examples.chain_three_domains --help
+```
+
+The walkthrough notebook ships in the same place. It is data rather than a module, so open it by
+path instead of with `-m`:
+
+```bash
+python -c "import lfa.examples, pathlib; print(pathlib.Path(lfa.examples.__file__).parent / 'two_domain_walkthrough.ipynb')"
 ```
 
 ## Get a p(h) artifact
@@ -116,6 +122,16 @@ lfa fuse     --workspace runs/my_domain
 The same flow as Python is [`examples/quickstart.py`](../examples/quickstart.py); nothing in the
 CLI is decided differently from the way the library decides it for a caller who imports it.
 
+For the whole thing worked through on real text — two domains one after the other, on two
+public-domain books the notebook downloads itself, with **each stage run a second time with the
+anchor off** so the control sits beside every number — open
+[`examples/two_domain_walkthrough.ipynb`](../examples/two_domain_walkthrough.ipynb). It is the
+runnable version of this page plus [multi-domain-chains.md](multi-domain-chains.md), it needs no
+API key, and it ran end to end in 21 minutes on one RTX 3090 (six training runs, four of them
+controls), plus whatever the model, the artifact and WikiText-2 cost you on a cold cache. Its corpora and epoch count are demo
+scale — a tenth of the documents the recipe was tuned on, a third of its epochs — and the notebook
+says so beside every table, so do not read its settings as the recommended ones.
+
 ## What it prints
 
 ```
@@ -165,5 +181,6 @@ and reports the general axis as unmeasured rather than losing the domain number 
 * [concepts.md](concepts.md) — what the anchor actually does, and what λ and μ are.
 * [recipes.md](recipes.md) — the shipped operating point, field by field, and how to depart from it.
 * [multi-domain-chains.md](multi-domain-chains.md) — a second and third domain.
+* [`examples/two_domain_walkthrough.ipynb`](../examples/two_domain_walkthrough.ipynb) — all of it end to end, with the unanchored control.
 * [adding-a-model.md](adding-a-model.md) — a model that is not Qwen3.
 * [faq.md](faq.md) — memory, full weights, reading the general axis, what is not shipped.
