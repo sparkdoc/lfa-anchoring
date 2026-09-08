@@ -49,7 +49,7 @@ __all__ = [
 #: The value a ``sha256`` carries until the release asset it names has been uploaded.
 PLACEHOLDER_SHA256 = "<filled at release>"
 
-_RELEASE_BASE = "https://github.com/<org>/lfa-anchoring/releases/download/artifacts-v1"
+_RELEASE_BASE = "https://github.com/sparkdoc/lfa-anchoring/releases/download/artifacts-v1"
 
 #: The published artifacts, by id. ``n_samples_total`` is per site; ``size_mb`` is the download.
 ARTIFACTS: dict[str, dict] = {
