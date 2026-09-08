@@ -190,10 +190,25 @@ four `Project-URL:` lines with no `<org>` left in them.
 ## 6. Install clean and run everything
 
 ```bash
-python -m venv /tmp/lfa-release && /tmp/lfa-release/bin/pip install dist/lfa_anchoring-0.1.0-*.whl
+python -m venv /tmp/lfa-release
+/tmp/lfa-release/bin/pip install -c constraints-tested.txt dist/lfa_anchoring-0.1.0-*.whl
 /tmp/lfa-release/bin/lfa --help
 /tmp/lfa-release/bin/python -m lfa.examples.quickstart --help     # the wheel ships these
 ```
+
+**Install with `-c constraints-tested.txt`**, which is what the README and the quickstart tell a
+user to do, and which this step omitted until the 0.1.0 release rehearsal caught it. Without it pip
+resolves the newest torch and peft it can, and the **equivalence tier then fails**: those tests
+compare against streams the research code produced under a specific build, so they are exact by
+design and a minor version change moves them. Measured on 2026-09-08: an unconstrained venv drew
+torch 2.14.0 and peft 0.20.0 against the tested 2.10.0 and 0.18.1, and
+`test_the_domain_mixture_is_the_reference_fit_at_a_matched_initialization` failed there while
+passing at the pinned versions. That is the constraints file doing its job, not a defect — but a
+release verified in an unpinned venv proves less than it looks like it does.
+
+Verifying the equivalence tier against *newer* dependencies is a separate and worthwhile exercise.
+It answers "does the port still match the research code on today's torch", which is a real
+question. It is not what step 6 is for, and its failures are not release blockers.
 
 Build that venv on an interpreter with development headers, or install them: a CUDA run compiles
 triton's shim at the first kernel launch, and `lfa` refuses up front without `Python.h` and a
