@@ -645,8 +645,8 @@ def validation_loss(student: nn.Module, dataloader: DataLoader) -> dict[str, flo
     the causal-LM loss averages over, since the labels are shifted inside the model. That is
     deliberate parity with the research code's ``evaluate_holdout`` (``scripts/lra_run_experiment.py``),
     which weights the same way: it is what makes the two implementations' held-out losses and
-    token counts the same quantity, and the equivalence harness compares both. Do not "fix" the
-    arithmetic without saying so there.
+    token counts the same quantity, and the port verification compares both (``docs/
+    verification.md``). Do not "fix" the arithmetic without saying so there.
 
     Returns:
         ``{"loss": ..., "perplexity": ..., "tokens": ...}``; an empty split gives loss ``0.0``.

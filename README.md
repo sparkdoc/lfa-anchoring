@@ -95,6 +95,7 @@ Everything is computed locally. There is no judge, no API key, and nothing to co
 | [docs/adding-a-model.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/adding-a-model.md) | a model that is not Qwen3: adapter, artifact, λ |
 | [docs/rebuilding-the-artifact.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/rebuilding-the-artifact.md) | the seed corpus and the build |
 | [docs/faq.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/faq.md) | GPU memory, full weights, reading the general axis, what is not shipped |
+| [docs/verification.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/verification.md) | what was checked against the research code, how, and what came out |
 | [RELEASING.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/RELEASING.md) | how the artifacts and a tag are cut |
 
 ## What is in the box
@@ -120,52 +121,31 @@ From a checkout (the wheel ships the package and the examples, not the tests):
 
 ```bash
 pytest -q
-```
-
-Two suites are opt-in, because they need a GPU and the research checkout this package was ported
-from:
-
-```bash
-pytest tests/equivalence -m equivalence -q   # sampler, losses and loader, against the research code
-pytest tests/acceptance -m acceptance -q -s  # one full run, against a matched research run
 pytest tests/test_gpu_smoke.py -m gpu -q     # bf16 placement, one stage on the card, TorchGMM
 ```
 
-The equivalence suite replays captured fixtures: the sampler's draws are asserted **bit-identical**,
-the anchor's blocks and the loader's batch to tolerance. See
-[`tests/equivalence/README.md`](https://github.com/sparkdoc/lfa-anchoring/blob/main/tests/equivalence/README.md).
+That suite is about this package on its own: the loop, the artifact, the recipe, the workspace and
+the CLI. The default run needs no GPU, no corpus and no network; the second line is the `gpu`
+marker, which the default deselects.
 
-The acceptance suite is an **equivalence run**: it trains the bundled recipe end to end and
-compares the result against a research-code run of the identical configuration. What it compares is
-the *deterministic* part of the run, because the objective itself is not deterministic: both
-implementations estimate the anchor from 16 hidden states drawn per site per step, out of
-independent RNG streams, so two full runs are two draws of a stochastic objective and
-bit-equivalence between them is impossible by construction.
+## Was the port checked against the research code?
 
-The criterion, measured 2026-09-07 (the run's own records are committed at
-[`tests/acceptance/_runs/2026-09-07-equiv/`](https://github.com/sparkdoc/lfa-anchoring/tree/main/tests/acceptance/_runs/2026-09-07-equiv/)):
+Yes, and [docs/verification.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/verification.md)
+is the report: the sampler's 85 draws per anchoring step replayed **bit-for-bit** (with a negative
+control that fails), all four anchor blocks and the layer schedule bit-identical, and one full run
+of the bundled recipe against a research-code run of the identical configuration agreeing on every
+deterministic series — optimizer steps and corpus counts exact, per-epoch content loss within
+0.191 %, per-epoch held-out loss within 0.0104 nats.
 
-| quantity | result | tolerance |
-|---|---|---|
-| optimizer steps, every epoch | **exact** (603 … 8,969) | integer equality |
-| corpus: training chunks / held-out chunks / held-out tokens | **exact** (3,614 / 435 / 157,366) | integer equality |
-| per-epoch content loss, all 15 epochs | worst 0.191 % | 0.5 % |
-| per-epoch held-out loss, all 15 epochs | worst 0.0104 nats | 0.03 nats |
+That page **reports; it does not prove.** The harness needs both implementations plus gigabytes of
+checkpoints, artifacts and corpora that are not public, so it lives with the research code and is
+not in this repository — it is available to a reviewer who asks. And agreement with another
+implementation is not correctness.
 
-Two end-of-run perplexities are **reported** beside those and asserted by nothing. They are the
-*research* instrument's numbers, on different text from the table above -- that domain row is this
-package's own `evaluate` on the stage's held-out documents, while these come from the research
-code's scorer on a held-out chat-formatted Q&A set, which is why one run has two domain perplexities and
-neither is wrong. Domain direct-QA perplexity 10.6996 against the reference's 10.9122 (−1.95 %) and WikiText-2 drift −8.202 % against
-−7.898 % (0.304 points). Each is a single draw of a sampled objective whose spread across seeds has
-never been measured, so there is no calibrated band to hold them to — a gap there is something to
-investigate with a second seed, which is also what would earn them a band back.
-
-None of this is a reproduction of a published number. The paper's own headline — domain perplexity
-8.76 on Qwen3-0.6B at a seed ΔPPL of −10.0 %, i.e. seed-corpus perplexity 10 % *below* the base
-model's — is the paper's measurement on the paper's corpus and instruments, and is quoted here only
-as such. See
-[`tests/acceptance/README.md`](https://github.com/sparkdoc/lfa-anchoring/blob/main/tests/acceptance/README.md).
+None of it is a reproduction of a published number either. The paper's own headline — domain
+perplexity 8.76 on Qwen3-0.6B at a seed ΔPPL of −10.0 %, i.e. seed-corpus perplexity 10 % *below*
+the base model's — is the paper's measurement on the paper's corpus and instruments, and is quoted
+here only as such.
 
 ## Relationship to the research record
 

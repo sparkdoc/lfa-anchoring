@@ -8,8 +8,4 @@ recursive-include lfa/recipes *.yaml
 recursive-include docs *.md
 recursive-include examples *.py *.yaml
 recursive-include tests *.py *.md *.json
-# The equivalence fixtures are ~12 MB of captured tensors: they are in git, and a source
-# distribution is not where they belong.
-prune tests/equivalence/fixtures
-prune tests/acceptance/_runs
 global-exclude __pycache__ *.py[cod]

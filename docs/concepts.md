@@ -152,13 +152,11 @@ perplexity below base is still not by itself evidence that anything was preserve
 [faq.md](faq.md).) That is the paper's measurement, on the paper's corpus and instruments; this
 repository does not reproduce it and does not claim to.
 
-**This package's own measured point.** The acceptance test trains the bundled recipe end to end
-and compares it against a research-code run of the *identical* configuration. The anchor is a
-Monte-Carlo term — 16 hidden states drawn per site per step — and the two implementations draw from
-independent RNG streams, so two full runs are two draws of a stochastic objective. What is compared
-is therefore the deterministic part of the run, which is not resampled. Measured 2026-09-07, from
-the run's own artifacts, which are committed at
-`tests/acceptance/_runs/2026-09-07-equiv/results.json` and `reference.json`:
+**This package's own measured point.** One full run of the bundled recipe was compared against a
+research-code run of the *identical* configuration. The anchor is a Monte-Carlo term — 16 hidden
+states drawn per site per step — and the two implementations draw from independent RNG streams, so
+two full runs are two draws of a stochastic objective. What is compared is therefore the
+deterministic part of the run, which is not resampled. Measured 2026-09-07:
 
 | quantity | result | tolerance |
 |---|---|---|
@@ -170,7 +168,9 @@ the run's own artifacts, which are committed at
 Two end-of-run perplexities sit beside those as *reported* numbers rather than as checks — domain
 direct-QA 10.6996 against 10.9122, WikiText-2 drift −8.202 % against −7.898 % — each being one draw
 of a sampled objective, and nothing asserts them: the spread of that draw has never been measured,
-so any band on it would be a guess. See `tests/acceptance/README.md`.
+so any band on it would be a guess. The full report, including what was checked piece by piece, is
+[verification.md](verification.md); the harness that produced it lives with the research code,
+because it needs both implementations at once.
 
 **After a third domain.** The paper reports that in a three-domain chain perplexity on the earlier
 domains keeps accumulating — it does not degrade — while *judged answering* on those earlier
@@ -186,7 +186,7 @@ number it reports is a perplexity computed locally.
 The research code behind the paper is a private record of every arm, every retraction and every
 ladder. It is not distributed. This package is the method itself: the training loop, the artifact,
 the recipe and the chain, ported and checked against that record
-(`tests/equivalence/README.md`), with the research-only scaffolding left behind.
+([verification.md](verification.md)), with the research-only scaffolding left behind.
 
 Citation: *Layerwise Function Anchoring: Preserving Sub-Module Functions on Sampled Hidden States
 for Continual Domain Adaptation* — the LFA paper (2026), authors withheld for review.

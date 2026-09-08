@@ -339,7 +339,7 @@ def extend_artifact(
     total = len(activations)
     # Insertion order, not sorted: each site's fit is seeded on its own, but changing the
     # order of a stream of fits is exactly the kind of silent difference this package
-    # exists to avoid, and the equivalence fixtures were captured in this order.
+    # exists to avoid, and the port-verification fixtures were captured in this order.
     for position, (key, H) in enumerate(activations.items(), start=1):
         if position == 1 or position == total or position % 10 == 0:
             logger.info("Fitting the domain mixture: site %d/%d (%s)", position, total, key)

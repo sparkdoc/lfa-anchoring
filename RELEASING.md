@@ -85,23 +85,24 @@ at ~300 MB the table did not get dropped.
 
 ## 2. Prove the meta block changed nothing ✅
 
-The sampler is the one thing checked at zero tolerance
-(`tests/equivalence/test_equivalence.py::test_the_sampler_replays_every_reference_draw_bit_for_bit`,
-T16.1): 85 draws of one anchoring step, replayed against the research implementation's recorded
-stream. Run it **against the re-saved file**.
+The sampler is the one thing checked at zero tolerance: 85 draws of one anchoring step, replayed
+against the research implementation's recorded stream (`docs/verification.md`). Run it **against
+the re-saved file**.
 
-The fixture stores its paths relative to the the research code root, so stage a root that has the re-saved
-artifact where the fixture expects one, and point `LFA_RESEARCH_ROOT` at it:
+That check is in the port-verification harness, which lives with the research code because it needs
+both implementations — this repository has the report, not the suite. Run it from the research
+checkout, staging a root that carries the re-saved artifact where the fixture expects one:
 
 ```bash
 STAGE=$(mktemp -d)
 mkdir -p "$STAGE/data/distributions/qwen3-0.6b-gmm1543k-int8" "$STAGE/outputs/lra/qwen3-0.6b"
-ln -s "$PWD/release/qwen3-0.6b-gmm1543k-int8.pt" \
+ln -s /path/to/lfa-anchoring/release/qwen3-0.6b-gmm1543k-int8.pt \
       "$STAGE/data/distributions/qwen3-0.6b-gmm1543k-int8/distribution_stats.pt"
 ln -s /path/to/the research code/outputs/lra/qwen3-0.6b/original "$STAGE/outputs/lra/qwen3-0.6b/original"
 
-CUDA_VISIBLE_DEVICES=0 LFA_RESEARCH_ROOT=$STAGE \
-  pytest tests/equivalence -m equivalence -k sampler_replays -q
+cd /path/to/the research code && source .venv/bin/activate
+CUDA_VISIBLE_DEVICES=0 LFA_RESEARCH_ROOT=$STAGE LFA_ANCHORING=/path/to/lfa-anchoring \
+  pytest tests/lfa_port_verification/equivalence -m equivalence -k sampler_replays -q
 ```
 
 Rehearsed: **1 passed**. And it is a real check, not a vacuous one — pointing the same staged path
@@ -172,12 +173,10 @@ python -m build            # sdist + wheel
 ```
 
 Check what the sdist carries (`MANIFEST.in` governs it): `lfa/`, `docs/`, `examples/`, `tests/`,
-`LICENSE`, `README.md`, `RELEASING.md`, `constraints-tested.txt` — and **not**
-`tests/equivalence/fixtures/` (~12 MB of captured tensors, which belong in git, not in a source
-distribution) nor `tests/acceptance/_runs/` — which is why the two committed equivalence records
-travel in git only. Rehearsed 2026-09-08 from a pristine copy: **79 files, 282 KiB**
-(`tar -tzf dist/*.tar.gz | grep -v '/$' | wc -l`; the same listing is 90 lines with the directory
-entries counted). Re-measure rather than trusting the figure — the docs move.
+`LICENSE`, `README.md`, `RELEASING.md`, `constraints-tested.txt`. Rehearsed 2026-09-08:
+**73 files, 240 KiB** (`tar -tzf dist/*.tar.gz | grep -v '/$' | wc -l`; the same listing is 82
+lines with the directory entries counted). Re-measure rather than trusting the figure — the docs
+move.
 
 The **wheel** is 34 files: the package, `lfa/recipes/qwen3-0.6b.yaml`, and `lfa/examples/` — the
 top-level `examples/` directory, mapped into the package by `[tool.setuptools.package-dir]` so
@@ -198,17 +197,18 @@ python -m venv /tmp/lfa-release
 
 **Install with `-c constraints-tested.txt`**, which is what the README and the quickstart tell a
 user to do, and which this step omitted until the 0.1.0 release rehearsal caught it. Without it pip
-resolves the newest torch and peft it can, and the **equivalence tier then fails**: those tests
-compare against streams the research code produced under a specific build, so they are exact by
-design and a minor version change moves them. Measured on 2026-09-08: an unconstrained venv drew
-torch 2.14.0 and peft 0.20.0 against the tested 2.10.0 and 0.18.1, and
-`test_the_domain_mixture_is_the_reference_fit_at_a_matched_initialization` failed there while
-passing at the pinned versions. That is the constraints file doing its job, not a defect — but a
-release verified in an unpinned venv proves less than it looks like it does.
+resolves the newest torch and peft it can, and the numbers in `docs/verification.md` stop holding:
+that harness compares against streams the research code produced under a specific build, so it is
+exact by design and a minor version change moves it. Measured on 2026-09-08: an unconstrained venv
+drew torch 2.14.0 and peft 0.20.0 against the tested 2.10.0 and 0.18.1, and the extension's
+matched-initialization check failed there while passing at the pinned versions. That is the
+constraints file doing its job, not a defect — but a release verified in an unpinned venv proves
+less than it looks like it does.
 
-Verifying the equivalence tier against *newer* dependencies is a separate and worthwhile exercise.
-It answers "does the port still match the research code on today's torch", which is a real
-question. It is not what step 6 is for, and its failures are not release blockers.
+Re-running the port verification against *newer* dependencies is a separate and worthwhile
+exercise. It answers "does the port still match the research code on today's torch", which is a
+real question. It is not what step 6 is for, it happens in the research checkout rather than here,
+and its failures are not release blockers.
 
 Build that venv on an interpreter with development headers, or install them: a CUDA run compiles
 triton's shim at the first kernel launch, and `lfa` refuses up front without `Python.h` and a
@@ -221,22 +221,19 @@ Then, from a checkout with that venv:
 pytest -q                                      # the default suite
 pytest -m release -q                           # <org> filled in, checksums real (step 4's gate)
 CUDA_VISIBLE_DEVICES=0 pytest tests/test_gpu_smoke.py -m gpu -q
-CUDA_VISIBLE_DEVICES=0 pytest tests/equivalence -m equivalence -q
-CUDA_VISIBLE_DEVICES=0 pytest tests/acceptance -m acceptance -q -s
 ```
 
-Two of those need things this package does not distribute, and skip (naming what is missing)
-rather than failing without them:
+That is the whole of what this repository can run, and it is deliberate: everything here needs only
+this package, a CPU and (for the last line) a card. A user who has nothing else gets a clean
+`pytest -q`.
 
-* **equivalence** needs the the research code checkout the fixtures were captured against — the base model,
-  the recipe adapter, the corpus and the fused base+A model. `LFA_RESEARCH_ROOT` points at it.
-* **acceptance** needs all of that *plus the reference run itself* on disk:
-  `outputs/lra/qwen3-0.6b/chalmers/judge_search/gmm_r32_lam100000_e15cos_keepshort`, produced by
-  the research code's `scripts/_lfa_companion_reference.sh`, and the research code's own virtualenv (it scores
-  through the research instrument). It is over an hour of GPU time. Without the reference run there
-  is nothing to be equivalent *to*, and the suite says so.
-
-Both suites are opt-in markers, so a user who has none of that gets a clean `pytest -q`.
+**The port verification is not in this repository and is not a gate on this step.** It compares this
+package against the research implementation, so it needs both at once plus the base model, the
+recipe adapter, the corpora, the artifacts and a matched reference run — gigabytes that are not
+distributed. It lives with the research code, as `tests/lfa_port_verification/` there, and
+[`docs/verification.md`](docs/verification.md) is its report. Re-run it there when the release
+changes anything the two implementations share; step 2 above is the one part of it a release
+*always* re-runs, because a re-saved artifact is a new file.
 
 ## 7. Publish
 
@@ -251,7 +248,7 @@ the checksum rather than by their tags.
 | | how to verify |
 |---|---|
 | `license = "Apache-2.0"` + `license-files` (PEP 639), `setuptools>=77` | the wheel's `METADATA` says `License-Expression: Apache-2.0` |
-| `MANIFEST.in`, including `constraints-tested.txt` and pruning the fixtures | `tar tzf dist/*.tar.gz` |
+| `MANIFEST.in`, including `constraints-tested.txt` | `tar tzf dist/*.tar.gz` |
 | no `<org>` placeholder left in anything that ships, and real artifact checksums | `pytest -m release -q` |
 | `LICENSE` is the canonical Apache 2.0 text | the `diff` in step 0 |
 | the `[html]` extra installed in the dev venv | `pytest -q -rs` shows no `needs the [html] extra` skip |

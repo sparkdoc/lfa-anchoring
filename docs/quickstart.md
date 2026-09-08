@@ -125,13 +125,13 @@ CLI is decided differently from the way the library decides it for a caller who 
 | domain               |  23.30 | 12.78 | -45.1% |
 ```
 
-That table is from this package's own acceptance run on Qwen3-0.6B (2026-09-07): the domain moved
-a long way, the general axis moved a little. Read both. A general number *below* the base model's
-is not a win — [faq.md](faq.md) says why.
+That table is from this package's own verification run on Qwen3-0.6B (2026-09-07,
+[verification.md](verification.md)): the domain moved a long way, the general axis moved a little.
+Read both. A general number *below* the base model's is not a win — [faq.md](faq.md) says why.
 
 ## What it costs
 
-The acceptance run — the bundled recipe, 1,673 documents at 512 tokens, 15 epochs, rank 32 — took
+That run — the bundled recipe, 1,673 documents at 512 tokens, 15 epochs, rank 32 — took
 **about 1 h 48 m on one RTX 3090** (432 s per epoch) and about 9 GB of GPU memory. LFA pins a
 single card by default and refuses a sharded device map unless you pass `--allow-sharding`:
 sharding buys memory, not speed, and costs about 8 % here because every anchored hidden state then

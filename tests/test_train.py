@@ -184,7 +184,7 @@ def test_a_run_over_a_hub_id_base_saves_offline_without_warning(setup, tmp_path,
 
     `PeftModel.save_pretrained` resolves `save_embedding_layers="auto"` by asking the Hub whether
     the base model's config exists. With a Hub-id base and no network -- exactly the case the
-    acceptance harness creates, since it sets `HF_HUB_OFFLINE=1` itself -- that check cannot
+    port-verification harness creates, since it sets `HF_HUB_OFFLINE=1` itself -- that check cannot
     answer and PEFT warns. Under this repo's `filterwarnings = ["error", ...]` that warning aborts
     training at the first checkpoint, so this is a two-second stand-in for the two-hour run that
     would otherwise be the only thing to catch it.

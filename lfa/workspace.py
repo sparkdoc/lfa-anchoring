@@ -138,10 +138,10 @@ def code_identity() -> dict:
     package, no ``git`` on PATH, a detached export). It is for a human reading a record, not for
     a comparison.
 
-    Recorded in every history entry so that a later reader -- in particular the acceptance
-    harness, which may re-score a run it kept from an earlier session -- can say whether the
-    numbers it is about to quote were produced by the code in front of it. Without it, a kept run
-    and a changed objective look exactly alike.
+    Recorded in every history entry so that a later reader -- in particular the port-verification
+    harness (``docs/verification.md``), which may re-score a run it kept from an earlier session --
+    can say whether the numbers it is about to quote were produced by the code in front of it.
+    Without it, a kept run and a changed objective look exactly alike.
     """
     root = Path(__file__).resolve().parent
     return {"code_digest": source_digest(root), "git_revision": _git_revision(root)}

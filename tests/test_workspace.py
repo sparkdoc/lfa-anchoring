@@ -645,10 +645,10 @@ def test_a_chain_spec_that_names_two_domains_alike_is_refused_before_anything_tr
 def test_a_stage_records_which_implementation_trained_it(flow):
     """Which CODE produced a run, not merely which release.
 
-    The acceptance harness may re-score a run it kept from an earlier session; without this field
-    a kept run and a changed objective look exactly alike, and the equivalence criterion then
-    certifies an implementation that never executed. A version string cannot do it: two commits
-    of one version share it.
+    The port-verification harness (`docs/verification.md`, and it lives with the research code)
+    may re-score a run it kept from an earlier session; without this field a kept run and a changed
+    objective look exactly alike, and its criterion then certifies an implementation that never
+    executed. A version string cannot do it: two commits of one version share it.
     """
     _, first, _, second = flow
     identity = workspace_module.code_identity()
