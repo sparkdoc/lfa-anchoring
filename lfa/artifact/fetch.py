@@ -41,6 +41,7 @@ __all__ = [
     "PLACEHOLDER_SHA256",
     "ArtifactNotPublished",
     "ChecksumMismatch",
+    "DownloadFailed",
     "list_artifacts",
     "sha256_file",
     "fetch_artifact",
@@ -73,6 +74,15 @@ ARTIFACTS: dict[str, dict] = {
 
 #: Read size for hashing and for streaming a download.
 _CHUNK = 1 << 20
+
+
+class DownloadFailed(RuntimeError):
+    """Raised when the release asset could not be fetched: the network, or the host, said no.
+
+    Separate from :class:`ChecksumMismatch`, which means bytes arrived and were wrong. This one
+    means the bytes did not arrive, which is usually transient and usually fixed by retrying --
+    a freshly uploaded release asset can serve a 500 for a minute while the host finishes with it.
+    """
 
 
 class ArtifactNotPublished(RuntimeError):
@@ -136,6 +146,8 @@ def fetch_artifact(
     Raises:
         ValueError: no such artifact id (the message lists the ones there are).
         ArtifactNotPublished: the release asset does not exist yet.
+        DownloadFailed: the asset could not be fetched at all (network, or the host said no).
+            Nothing is written; retrying is the usual remedy.
         ChecksumMismatch: the downloaded (or already-present) file is not what the registry
             records. A failed download is removed; a pre-existing file is left alone, since
             deleting a user's file on a mismatch is not this function's call.
@@ -180,7 +192,15 @@ def fetch_artifact(
     logger.info("Fetching artifact %s (~%s MB) from %s", artifact_id, entry["size_mb"],
                 entry["url"])
     try:
-        download(entry["url"], part)
+        try:
+            download(entry["url"], part)
+        except Exception as exc:                       # noqa: BLE001 -- any downloader, any cause
+            raise DownloadFailed(
+                f"Could not download artifact {artifact_id!r} from {entry['url']}: "
+                f"{type(exc).__name__}: {exc}. Nothing was written. This is usually transient -- "
+                "retry, and if a release asset was uploaded in the last few minutes give it one. "
+                "If it persists, check the URL in the registry against the release."
+            ) from exc
         digest = sha256_file(part)
         if digest != entry["sha256"]:
             raise ChecksumMismatch(

@@ -11,6 +11,7 @@ import pytest
 
 import lfa.artifact.fetch as fetch_module
 from lfa.artifact.fetch import (
+    DownloadFailed,
     ARTIFACTS,
     PLACEHOLDER_SHA256,
     ArtifactNotPublished,
@@ -219,3 +220,35 @@ def test_sha256_file_matches_hashlib(tmp_path):
     path = tmp_path / "blob"
     path.write_bytes(b"anchoring on sampled hidden states" * 1000)
     assert sha256_file(path) == hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_a_download_that_fails_is_named_not_tracebacked(tmp_path, published):
+    """A transient host or network failure is a refusal, not a stack trace.
+
+    The path that produced this: a freshly uploaded release asset served HTTP 500 for about a
+    minute while the host finished processing it, and the raw `requests` exception reached the
+    user -- against the documented rule that any traceback is a bug in this package. The bytes
+    never arrived, so this is distinct from ChecksumMismatch, and nothing must be left behind.
+    """
+    def failing(url, path):
+        raise ConnectionError("500 Server Error: Internal Server Error")
+
+    with pytest.raises(DownloadFailed) as excinfo:
+        fetch_artifact("tiny", tmp_path, downloader=failing)
+
+    message = str(excinfo.value)
+    assert "tiny" in message                       # which artifact
+    assert "500 Server Error" in message           # what actually went wrong
+    assert "retry" in message.lower()              # what to do about it
+    assert excinfo.value.__cause__ is not None     # the original is kept for a debugger
+    assert not list(tmp_path.glob("*.pt")) and not list(tmp_path.glob("*.part"))
+
+
+def test_a_download_failure_is_not_reported_as_a_checksum_problem(tmp_path, published):
+    """The two failures are different diagnoses and must not be confused."""
+    def failing(url, path):
+        raise TimeoutError("read timed out")
+
+    with pytest.raises(DownloadFailed) as excinfo:
+        fetch_artifact("tiny", tmp_path, downloader=failing)
+    assert not isinstance(excinfo.value, ChecksumMismatch)

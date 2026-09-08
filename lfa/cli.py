@@ -28,7 +28,8 @@ import logging
 import sys
 
 from .artifact.build import build_artifact
-from .artifact.fetch import (ArtifactNotPublished, ChecksumMismatch, fetch_artifact,
+from .artifact.fetch import (ArtifactNotPublished, ChecksumMismatch, DownloadFailed,
+                            fetch_artifact,
                              list_artifacts)
 from .evaluate import DatasetUnavailable
 from .models import (DEFAULT_DEVICE, MissingBuildToolchain, NoTrainableParameters,
@@ -61,6 +62,7 @@ def _lfa_version() -> str:
 #: their traceback rather than be collapsed to a line.
 USER_FACING_ERRORS = (
     StageOrderError, WorkspaceNotReady, ShardingRefused, ArtifactNotPublished, ChecksumMismatch,
+    DownloadFailed,
     SourceUnavailable, DatasetUnavailable, ResumeSourceHasNoAdapter, NoTrainableParameters,
     MissingBuildToolchain, MissingExtra, FileNotFoundError, FileExistsError, ValueError,
 )
