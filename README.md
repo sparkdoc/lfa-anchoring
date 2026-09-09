@@ -20,13 +20,17 @@ nothing sequence-shaped. Everything runs locally: no judge, no API key.
 **To watch it work rather than read about it**, open
 [`examples/two_domain_walkthrough.ipynb`](https://github.com/sparkdoc/lfa-anchoring/blob/main/examples/two_domain_walkthrough.ipynb):
 Qwen3-0.6B adapted to Darwin, then to a Victorian cookbook, with every stage repeated with the
-anchor off so the control sits beside each number, and each control re-run at its own best epoch
-count so it is not flattered. Across stage 2 the anchored model's Darwin perplexity moves
-17.45 → 18.92 while the unanchored one's goes to 31.45, having read no Darwin either way. It
-closes with the three models' own answers to fixed probes, where the anchored model brings
-natural selection to a question about island species and stops, while the control drifts into
-biogeography on a question about Tokyo. Recorded 2026-09-08; 22.6 minutes of training and tables
-on one RTX 3090, plus the generation probes; it downloads what it needs and needs no API key.
+anchor off so the control sits beside each number. Across stage 2 the anchored model's Darwin
+perplexity moves 17.45 → 18.92 while the unanchored one's goes to 31.45, having read no Darwin
+either way. Recorded 2026-09-08; 19 minutes of training and tables on one RTX 3090, and it
+downloads what it needs and needs no API key.
+
+A second notebook is optional and continues from the workspace the first leaves behind:
+[`examples/what_the_anchor_does.ipynb`](https://github.com/sparkdoc/lfa-anchoring/blob/main/examples/what_the_anchor_does.ipynb)
+re-runs each control at its own best epoch count, so the gaps above can be split into what is
+dose and what is anchor, and then puts the three models to fixed probes — where the anchored
+model brings natural selection to a question about island species and stops, while the control
+drifts into biogeography on a question about Tokyo.
 
 ## Install
 
@@ -157,7 +161,8 @@ recipe's λ is read against the right artifact; the quickstart explains why both
 | | |
 |---|---|
 | [docs/quickstart.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/quickstart.md) | install, the corpus, the four commands, what a run costs, what a refusal means |
-| [`examples/two_domain_walkthrough.ipynb`](https://github.com/sparkdoc/lfa-anchoring/blob/main/examples/two_domain_walkthrough.ipynb) | the runnable demonstration: two domains, the same runs unanchored, dose-matched controls, and what the models say |
+| [`examples/two_domain_walkthrough.ipynb`](https://github.com/sparkdoc/lfa-anchoring/blob/main/examples/two_domain_walkthrough.ipynb) | the runnable how-to: two domains one after the other, each stage repeated with the anchor off |
+| [`examples/what_the_anchor_does.ipynb`](https://github.com/sparkdoc/lfa-anchoring/blob/main/examples/what_the_anchor_does.ipynb) | optional, continues from it: the controls at their own best dose, and what the models say |
 | [docs/concepts.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/concepts.md) | what the anchor does, what λ and μ are, how a run is read |
 | [docs/recipes.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/recipes.md) | the shipped operating point field by field, and its couplings |
 | [docs/multi-domain-chains.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/multi-domain-chains.md) | second and third domains; what `extend` does |

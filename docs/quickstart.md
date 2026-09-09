@@ -38,11 +38,12 @@ python -m lfa.examples.quickstart --help
 python -m lfa.examples.chain_three_domains --help
 ```
 
-The walkthrough notebook ships in the same place. It is data rather than a module, so open it by
+The two notebooks ship in the same place. They are data rather than modules, so open them by
 path instead of with `-m`:
 
 ```bash
 python -c "import lfa.examples, pathlib; print(pathlib.Path(lfa.examples.__file__).parent / 'two_domain_walkthrough.ipynb')"
+python -c "import lfa.examples, pathlib; print(pathlib.Path(lfa.examples.__file__).parent / 'what_the_anchor_does.ipynb')"
 ```
 
 ## Get a p(h) artifact
@@ -135,10 +136,13 @@ public-domain books the notebook downloads itself, with **each stage run a secon
 anchor off** so the control sits beside every number — open
 [`examples/two_domain_walkthrough.ipynb`](../examples/two_domain_walkthrough.ipynb). It is the
 runnable version of this page plus [multi-domain-chains.md](multi-domain-chains.md), it needs no
-API key, and it ran end to end in 21 minutes on one RTX 3090 (six training runs, four of them
+API key, and it ran end to end in 19 minutes on one RTX 3090 (four training runs, two of them
 controls), plus whatever the model, the artifact and WikiText-2 cost you on a cold cache. Its corpora and epoch count are demo
-scale — a tenth of the documents the recipe was tuned on, a third of its epochs — and the notebook
+scale — a quarter of the text the recipe was tuned on, a quarter of its epochs — and the notebook
 says so beside every table, so do not read its settings as the recommended ones.
+[`examples/what_the_anchor_does.ipynb`](../examples/what_the_anchor_does.ipynb) is optional and
+picks up the workspace it leaves behind: each control re-run at its own best number of epochs,
+and what the three models say when asked.
 
 ## What it prints
 
@@ -190,5 +194,6 @@ and reports the general axis as unmeasured rather than losing the domain number 
 * [recipes.md](recipes.md) — the shipped operating point, field by field, and how to depart from it.
 * [multi-domain-chains.md](multi-domain-chains.md) — a second and third domain.
 * [`examples/two_domain_walkthrough.ipynb`](../examples/two_domain_walkthrough.ipynb) — all of it end to end, with the unanchored control.
+* [`examples/what_the_anchor_does.ipynb`](../examples/what_the_anchor_does.ipynb) — optional: the controls at their own best dose, and what the models say.
 * [adding-a-model.md](adding-a-model.md) — a model that is not Qwen3.
 * [faq.md](faq.md) — memory, full weights, reading the general axis, what is not shipped.

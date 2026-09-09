@@ -23,8 +23,8 @@ pdf = ["marker-pdf"]
 html = ["beautifulsoup4", "markdownify"]
 sklearn = ["scikit-learn>=1.3"]
 # nbformat/nbclient/ipykernel are what `tests/test_notebook.py` reads and runs
-# `examples/two_domain_walkthrough.ipynb` with; a user who only wants the library
-# needs none of them.
+# `examples/two_domain_walkthrough.ipynb` and `examples/what_the_anchor_does.ipynb`
+# with; a user who only wants the library needs none of them.
 dev = ["pytest>=8", "pytest-cov", "build", "nbformat>=5.9", "nbclient>=0.9", "ipykernel>=6.29"]
 
 [project.scripts]
@@ -54,7 +54,7 @@ lfa = ["recipes/*.yaml"]
 "lfa.examples" = ["*.yaml", "*.ipynb"]
 
 [tool.pytest.ini_options]
-markers = ["gpu: needs CUDA", "slow: downloads data from the Hugging Face Hub", "release: the end state of RELEASING.md (fails until the release steps are done)", "notebook: executes examples/two_domain_walkthrough.ipynb end to end (a GPU, the network, ~21 minutes on an RTX 3090)"]
+markers = ["gpu: needs CUDA", "slow: downloads data from the Hugging Face Hub", "release: the end state of RELEASING.md (fails until the release steps are done)", "notebook: executes the example notebooks end to end (a GPU, the network, ~19 minutes on an RTX 3090 for the walkthrough and about as much again for its companion)"]
 addopts = "-m 'not gpu and not slow and not release and not notebook'"
 # `error` first, so a warning this package starts emitting fails the suite instead of joining a
 # pile of noise. The two exemptions below are torch's own, not ours: `lfa.corpus.make_dataloader`
