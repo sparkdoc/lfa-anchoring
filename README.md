@@ -12,52 +12,76 @@ penalizes how far that sub-module's *output on states drawn from `p(h)`* moves:
 L = L_content  +  λ · E_{h ~ p(h)} ‖f_student(h) − f_teacher(h)‖²  +  μ · ‖W_s − W_t‖²
 ```
 
-The preservation signal therefore comes from a statistic plus the frozen teacher, never from
-stored text: LFA is **data-free at adaptation time**, and in a chain of domains no earlier domain
-is ever revisited. The statistic is a per-site mean, covariance and mixture — no text, no token
-ids, nothing sequence-shaped.
+The preservation signal comes from a statistic plus the frozen teacher, never from stored text:
+LFA is **data-free at adaptation time**, and in a chain of domains no earlier domain is ever
+revisited. The statistic is a per-site mean, covariance and mixture — no text, no token ids,
+nothing sequence-shaped. Everything runs locally: no judge, no API key.
 
-This is the method as a package: the training loop, the artifact, the recipe, and the multi-domain
-chain, ported from the research code behind the LFA paper and checked against it.
+**To watch it work rather than read about it**, open
+[`examples/two_domain_walkthrough.ipynb`](https://github.com/sparkdoc/lfa-anchoring/blob/main/examples/two_domain_walkthrough.ipynb):
+Qwen3-0.6B adapted to Darwin, then to a Victorian cookbook, with every stage repeated with the
+anchor off so the control sits beside each number, and each control re-run at its own best epoch
+count so it is not flattered. Across stage 2 the anchored model's Darwin perplexity moves
+17.45 → 18.92 while the unanchored one's goes to 31.45, having read no Darwin either way. It
+closes with the three models' own answers to fixed probes, where the anchored model brings
+natural selection to a question about island species and stops, while the control drifts into
+biogeography on a question about Tokyo. Recorded 2026-09-08; 22.6 minutes of training and tables
+on one RTX 3090, plus the generation probes; it downloads what it needs and needs no API key.
 
 ## Install
 
 ```bash
-pip install lfa-anchoring                       # once it is published; see RELEASING.md
+pip install lfa-anchoring                       # once published; see RELEASING.md
 pip install -e '.[dev]'                         # from a checkout, with the test tools
 ```
 
-Add `[html]` or `[pdf]` if your documents are HTML or PDF. To hold to the versions this was
-tested at, install against the pin file:
-`pip install -c constraints-tested.txt lfa-anchoring`.
+Add `[html]` or `[pdf]` if your documents arrive in those formats. Needs Python ≥ 3.11 and a CUDA
+card. Tested at torch 2.10.0+cu128, transformers 4.57.6, accelerate 1.14.0, peft 0.18.1
+(`pip install -c constraints-tested.txt lfa-anchoring` holds to those exactly).
 
-**Prerequisites: Python ≥ 3.11 with its development headers, a C compiler, and a CUDA card.**
-The headers are the one that surprises people — torch's triton backend compiles a small CUDA
-shim the first time a kernel launches, so a distribution `python3` without its `-dev` package
-(`python3-dev` / `python3.13-dev`, plus `build-essential`) cannot train, while a uv- or
-conda-managed interpreter ships what it needs. `lfa` checks for both before it loads anything
-and says so in one line rather than failing inside gcc minutes into a run.
+> Your `python3` must have its development headers (`python3-dev` + `build-essential` on Debian;
+> uv- and conda-managed interpreters ship them): torch compiles a small CUDA shim on the first
+> kernel launch. `lfa` checks before loading anything and says so in one line.
 
-Tested with the versions in
-[`constraints-tested.txt`](https://github.com/sparkdoc/lfa-anchoring/blob/main/constraints-tested.txt) — torch 2.10.0+cu128, transformers 4.57.6,
-accelerate 1.14.0, peft 0.18.1. Nothing here has been run below those, and nothing above them.
+## The building blocks
 
-## Four commands
+| Block | What it is | Where it lives |
+|---|---|---|
+| **Model** | Any causal LM the package has an adapter for (Qwen3 today). Referenced by Hub id or path; never copied. | `lfa.adapters` |
+| **Artifact** | The `p(h)` statistic for that model: per-site mean, covariance basis and K=32 mixture, int8, ~108 MB. Fetched by id with a checksum, or built from a seed corpus. | `lfa.artifact` |
+| **Recipe** | The tuned operating point (rank, λ, μ, epochs, schedule) *and what it was tuned against*, so a run that changes rank or artifact is told λ no longer means what it meant. | `lfa.Recipe` |
+| **Corpus** | A flat directory of `.txt` files. `lfa prepare-domain` makes one from text, Markdown, HTML or PDF. | `lfa.corpus` |
+| **Workspace** | The state machine that holds the other four together across domains: which model the next stage adapts, which artifact version it anchors against, and a history entry per stage. | `lfa.Workspace` |
+| **Train / Evaluate / Fuse / Extend** | The four operations on a workspace: adapt one domain; read the stage on both axes; export a plain checkpoint; fold the stage into the model *and* into `p(h)` for the next domain. | `lfa.train`, `lfa.evaluate` |
+
+## Assemble them: one domain
+
+Make the corpus, then four commands.
 
 ```bash
-lfa init runs/my_domain --model Qwen/Qwen3-0.6B --artifact qwen3-0.6b-gmm1543k-int8
+lfa prepare-domain ~/papers ~/notes.md --out data/my_domain      # .txt/.md/.html/.pdf -> .txt files
+
+lfa init     runs/my_domain --model Qwen/Qwen3-0.6B --artifact qwen3-0.6b-gmm1543k-int8
 lfa train    --workspace runs/my_domain --corpus data/my_domain
 lfa evaluate --workspace runs/my_domain
 lfa fuse     --workspace runs/my_domain
 ```
 
-`init` makes a workspace: a directory that *records* which model it adapts (a Hub id or a path —
-the model itself is not copied in, and is not even loaded until a stage starts) and which recipe it
-uses, and that *carries* the p(h) artifact, fetched by id and checksum-verified or copied from a
-path you pass, as `artifacts/v1.pt`. Every run, every extended artifact and every fused model then
-lands beside it, with a history entry per stage. `train` adapts the model with the anchor on,
-holding a tenth of the documents out so the domain number is a measurement rather than a fit.
-`evaluate` reads the stage on both axes, against the model it started from:
+The same thing from Python, which the CLI calls into and decides nothing differently from:
+
+```python
+from lfa import Workspace
+
+ws = Workspace.init("runs/my_domain", "Qwen/Qwen3-0.6B", artifact="qwen3-0.6b-gmm1543k-int8")
+ws.train("data/my_domain")            # holds a tenth of the documents out; watch that number
+print(ws.evaluate()["table"])         # both axes, against the model the stage started from
+ws.fuse()                             # a plain checkpoint: AutoModelForCausalLM.from_pretrained
+```
+
+`init` records the model and the recipe and copies the artifact in as `artifacts/v1.pt`; it picks
+the bundled recipe that names your model. `train` scores the held-out tenth after every epoch, and
+warns at the end if that curve turned around — on a small corpus re-run with `--epochs <the
+epoch it bottomed at>`. `evaluate` prints:
 
 ```
 | metric               | before | after |     Δ% |
@@ -66,37 +90,74 @@ holding a tenth of the documents out so the domain number is a measurement rathe
 | domain               |  23.30 | 12.78 | -45.1% |
 ```
 
-`fuse` writes a plain checkpoint that loads with `AutoModelForCausalLM.from_pretrained`. A second
-domain adds one step — `lfa extend` — which folds the finished stage into both the model and
-`p(h)`; `lfa chain domains.yaml` runs a whole sequence.
-
-> **If the repository is private**, an anonymous download of the release asset 404s and the fetch
-> refuses rather than writing something it cannot verify. The assets are published and their
-> checksums are in the registry; this is a visibility problem, not a missing release. Pass a local
-> artifact file instead —
-> `--artifact /path/to/distribution_stats.pt --artifact-id qwen3-0.6b-gmm1543k-int8` — or build
-> one: [docs/rebuilding-the-artifact.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/rebuilding-the-artifact.md). Pass **both**: the id
-> says which published artifact that file is, which is what the recipe's λ is read against (a
-> bare path warns on every stage that λ was calibrated elsewhere) and what supplies the base
-> sample count `lfa extend` needs, since the shipped file carries none of its own.
-
-Full walkthrough: [docs/quickstart.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/quickstart.md). Same flow as Python:
+Add `--compare-unanchored` for the λ = μ = 0 control as a third column, and `--n-windows none`
+offline (the general axis reads WikiText-2 from the Hub). Full page:
+[docs/quickstart.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/quickstart.md);
+the Python flow as a script:
 [`examples/quickstart.py`](https://github.com/sparkdoc/lfa-anchoring/blob/main/examples/quickstart.py).
 
-**To watch the method work rather than read about it**, run
-[`examples/two_domain_walkthrough.ipynb`](https://github.com/sparkdoc/lfa-anchoring/blob/main/examples/two_domain_walkthrough.ipynb): two domains in sequence on real public-domain
-text, with the same two runs repeated with the anchor switched off, so the control is beside
-every number. Measured at 21 minutes on one RTX 3090, no API keys, and everything it needs is
-downloaded by the notebook itself.
+## Assemble them: a second domain, and a chain
 
-Everything is computed locally. There is no judge, no API key, and nothing to configure.
+One extra step between domains. `extend` merges the finished stage into the model and folds the
+domain's activations into `p(h)` as a sample-weighted mixture union — exact, no refit, and it reads
+only the *new* domain — so the next stage adapts the right model and anchors against a `p(h)`
+that describes it.
+
+```bash
+lfa extend   --workspace runs/my_domain
+lfa train    --workspace runs/my_domain --corpus data/second_domain
+lfa evaluate --workspace runs/my_domain
+lfa fuse     --workspace runs/my_domain
+```
+
+```python
+ws = Workspace.open("runs/my_domain")
+ws.extend()
+ws.train("data/second_domain"); print(ws.evaluate()["table"]); ws.fuse()
+```
+
+A whole sequence is one YAML file and one command; every domain is folded in before the next
+starts, and every entry is checked before the first one trains:
+
+```bash
+lfa chain domains.yaml --workspace runs/chain
+```
+```yaml
+domains:
+  - {name: philosophy,   corpus: data/domain_a, epochs: 15}   # paths resolve against this file
+  - {name: archaeology,  corpus: data/domain_c}
+```
+
+λ from stage 2 on is the recipe's value times its `stage2_lambda_multiplier`; you do not set it
+per domain. Details:
+[docs/multi-domain-chains.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/multi-domain-chains.md).
+
+## The artifact
+
+`lfa list-artifacts` shows what is published for Qwen3-0.6B: the recipe artifact
+(`qwen3-0.6b-gmm1543k-int8`) and a ~1 MB diagonal one kept as a budget floor — a known-inferior
+option that needs its own λ, not a cheaper equivalent. `init --artifact <id>` fetches and verifies
+it; `lfa fetch-artifact <id> --dest artifacts/` fetches it once to share between workspaces. To
+build one for another model, or to rebuild this one:
+
+```bash
+lfa prepare-seed-corpus --out data/seed.jsonl            # the 10:1 pretraining:instruction mix
+lfa build-artifact --model <id> --corpus data/seed.jsonl --out artifacts/mine.pt
+```
+
+[docs/rebuilding-the-artifact.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/rebuilding-the-artifact.md)
+covers the build; [docs/adding-a-model.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/adding-a-model.md)
+covers a model that is not Qwen3 (one adapter class, one artifact, one λ calibration). If a fetch
+404s because the repository is still private, pass a local file **with its id** —
+`--artifact /path/to/distribution_stats.pt --artifact-id qwen3-0.6b-gmm1543k-int8` — so the
+recipe's λ is read against the right artifact; the quickstart explains why both are needed.
 
 ## Documentation
 
 | | |
 |---|---|
-| [docs/quickstart.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/quickstart.md) | install, the four commands, what a run costs |
-| [`examples/two_domain_walkthrough.ipynb`](https://github.com/sparkdoc/lfa-anchoring/blob/main/examples/two_domain_walkthrough.ipynb) | the runnable demonstration: two domains, and the same runs unanchored |
+| [docs/quickstart.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/quickstart.md) | install, the corpus, the four commands, what a run costs, what a refusal means |
+| [`examples/two_domain_walkthrough.ipynb`](https://github.com/sparkdoc/lfa-anchoring/blob/main/examples/two_domain_walkthrough.ipynb) | the runnable demonstration: two domains, the same runs unanchored, dose-matched controls, and what the models say |
 | [docs/concepts.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/concepts.md) | what the anchor does, what λ and μ are, how a run is read |
 | [docs/recipes.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/recipes.md) | the shipped operating point field by field, and its couplings |
 | [docs/multi-domain-chains.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/multi-domain-chains.md) | second and third domains; what `extend` does |
@@ -106,69 +167,28 @@ Everything is computed locally. There is no judge, no API key, and nothing to co
 | [docs/verification.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/verification.md) | what was checked against the research code, how, and what came out |
 | [RELEASING.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/RELEASING.md) | how the artifacts and a tag are cut |
 
-## What is in the box
-
-* `lfa.train` — the loop: content loss, function anchor, weight backstop, warmup + cosine, per-epoch
-  held-out validation, checkpoints and resume.
-* `lfa.artifact` — building a `p(h)` artifact from a seed corpus, quantizing it, fetching a
-  published one by id with its checksum, and extending one with a new domain.
-* `lfa.Recipe` — a tuned operating point *and what it was tuned at*, so a run that departs from
-  either the rank or the artifact is told that λ no longer means what it meant.
-* `lfa.Workspace` — the state machine across domains: which model the next stage adapts, which
-  artifact version it anchors against, and the order the two may be done in.
-* `lfa.evaluate` — the two perplexities, and the table that pairs them.
-* `lfa.adapters` — the one place a model's layout is known. A new architecture is one class.
-
-Two published artifacts for Qwen3-0.6B (`lfa list-artifacts`): the recipe artifact
-(`qwen3-0.6b-gmm1543k-int8`, ~108 MB) and a ~1 MB diagonal one kept as a budget floor — a
-known-inferior option, not a cheaper equivalent.
-
 ## Tests
 
 From a checkout (the wheel ships the package and the examples, not the tests):
 
 ```bash
-pytest -q
-pytest tests/test_gpu_smoke.py -m gpu -q     # bf16 placement, one stage on the card, TorchGMM
+pytest -q                                    # no GPU, no corpus, no network
+pytest tests/test_gpu_smoke.py -m gpu -q     # one stage on the card
 ```
 
-That suite is about this package on its own: the loop, the artifact, the recipe, the workspace and
-the CLI. The default run needs no GPU, no corpus and no network; the second line is the `gpu`
-marker, which the default deselects.
+## Provenance
 
-## Was the port checked against the research code?
+This package is the method behind the LFA paper, ported from the research code and checked
+against it: the sampler's draws replayed bit-for-bit, every anchor block bit-identical, and one
+full run of the bundled recipe agreeing with the research run on every deterministic series
+(per-epoch content loss within 0.191 %). [docs/verification.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/verification.md)
+is the report, with the one deliberate divergence since (the corpus loader's per-epoch chunking)
+and what it changes. Agreement with another implementation is not correctness, and nothing here
+reproduces a published number: the paper's headline (domain perplexity 8.76 on Qwen3-0.6B at a
+seed ΔPPL of −10.0 %) is the paper's measurement on the paper's corpus and instruments.
 
-Yes, and [docs/verification.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/verification.md)
-is the report: the sampler's 85 draws per anchoring step replayed **bit-for-bit** (with a negative
-control that fails), all four anchor blocks and the layer schedule bit-identical, and one full run
-of the bundled recipe against a research-code run of the identical configuration agreeing on every
-deterministic series — optimizer steps and corpus counts exact, per-epoch content loss within
-0.191 %, per-epoch held-out loss within 0.0104 nats.
-
-That page **reports; it does not prove.** The harness needs both implementations plus gigabytes of
-checkpoints, artifacts and corpora that are not public, so it lives with the research code and is
-not in this repository — it is available to a reviewer who asks. And agreement with another
-implementation is not correctness.
-
-It is also dated. Since it was measured the corpus loader has **deliberately diverged**: the
-per-epoch chunk offset now rotates the chunk boundaries instead of discarding each document's first
-`offset` tokens, which the old behaviour did in every epoch after the first — costing a 600-token
-document 42.6 % of its tokens in an average epoch, a 5,000-token one 5.1 %. Long documents are the
-harmless tail, which is why the paper's corpora never showed it. The epoch-0 stream, and therefore
-every corpus count on that page, is unchanged; the per-epoch series are not. The old stream is
-not reachable from this package — it was briefly a setting and was removed, because it served
-reproducing those numbers and nothing else.
-
-None of it is a reproduction of a published number either. The paper's own headline — domain
-perplexity 8.76 on Qwen3-0.6B at a seed ΔPPL of −10.0 %, i.e. seed-corpus perplexity 10 % *below*
-the base model's — is the paper's measurement on the paper's corpus and instruments, and is quoted
-here only as such.
-
-## Relationship to the research record
-
-The research code behind the paper is a private record of every arm, every ladder and every
-retraction. It is not distributed. This package is the method itself: what survived, ported,
-tested and documented, with the research-only scaffolding left behind.
+The research code — every arm, ladder and retraction — is a private record and is not
+distributed. This is what survived, ported, tested and documented.
 
 ## Citing
 
