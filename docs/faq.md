@@ -2,17 +2,26 @@
 
 ## How much GPU memory does a run need?
 
-About **9 GB** for Qwen3-0.6B at the shipped recipe. Measured on an RTX 3090 (2026-09-07) at rank
-32, batch 6 × 512 tokens, 16 anchor samples: **8.63 GiB allocated at peak, 10.8 GiB reserved** by
-the caching allocator. A run holds two models — the student and the frozen teacher — plus the
-optimizer state and the activations; the anchor itself is small, since it evaluates sub-modules on
-16 vectors rather than on the batch.
+About **8 GB** for Qwen3-0.6B at the shipped recipe, since 0.1.1. Measured on an RTX 3090
+(2026-09-07) at rank 32, batch 6 × 512 tokens, 16 anchor samples: **8.63 GiB allocated at peak,
+10.8 GiB reserved** by the caching allocator — with a second, separately loaded teacher, which is
+what every run did before 0.1.1 and what `--teacher-mode separate` still does. A LoRA run now
+holds **one** model: PEFT freezes the base weight of every module it adapts, so the student *is*
+the teacher and it is read there with the adapters switched off. That is the whole of the teacher's
+resident weights returned — **1.11 GiB at 0.6B** (596 M parameters in bfloat16), measured on all
+three of allocated, reserved and `nvidia-smi`, at no cost in step time (−0.2 %, inside a
+run-to-run spread of 0.8 %). What is left is the student, the optimizer state and the activations;
+the anchor itself is small, since it evaluates sub-modules on 16 vectors rather than on the batch.
+
+Full-weight training moves the base weights, so there the student is not a copy of anything and a
+real teacher is loaded: a full-weight run still holds two models, and `--teacher-mode
+adapter_disabled` is refused rather than approximated.
 
 LFA **pins one card by default** and refuses a device map that would spread the model across
 several (`ShardingRefused`). Sharding is model parallelism: it exists to fit a model that does not
 fit, it buys memory rather than speed, and here it costs about 8 % because every anchored hidden
-state then crosses a device boundary. Pass `--allow-sharding` deliberately, when student and
-teacher together genuinely do not fit.
+state then crosses a device boundary. Pass `--allow-sharding` deliberately, when the model — plus
+the separate teacher, if the run holds one — genuinely does not fit.
 
 For sweeps, run one configuration per card as two independent lanes (`--device cuda:0` and
 `--device cuda:1`). That is a true 2× on the queue, which no form of parallelism inside one run

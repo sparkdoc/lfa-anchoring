@@ -157,8 +157,12 @@ A recipe file must be a YAML mapping, may not carry a field `Recipe` does not ha
 
 ## Per-run overrides
 
-`Workspace.train` takes `epochs`, `full_weight`, `keep_short_whole` and `output_name` per call
-(`--epochs`, `--full-weight` on the CLI); the recipe is otherwise used as written. Whatever
+`Workspace.train` takes `epochs`, `full_weight`, `teacher_mode`, `keep_short_whole` and
+`output_name` per call (`--epochs`, `--full-weight`, `--teacher-mode` on the CLI); the recipe is
+otherwise used as written. `teacher_mode` is not a recipe field on purpose: it decides where the
+frozen teacher is read from, not what is optimized, and the two modes train the same model to the
+last bit — so it is not part of a tuned operating point. `auto`, the default, is
+`adapter_disabled` for a LoRA run (no second model is loaded) and `separate` for full weight. Whatever
 actually ran — both λ values after the stage multiplier, the short-document setting, the held-out
 fraction, the device and the dtype — is recorded in that stage's `history.json` entry, so a run
 says what it did rather than what it was asked for.

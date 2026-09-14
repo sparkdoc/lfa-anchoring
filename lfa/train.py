@@ -16,6 +16,12 @@ The two paths use completely separate data, which is what makes the method data-
 from the previously-learned domains is stored or replayed, and the preservation signal comes
 from the artifact plus the frozen teacher alone.
 
+The ``teacher`` every function here takes is whatever satisfies a :class:`~lfa.adapters.
+ModelAdapter`'s accessors, which under LoRA need not be a second model: with
+``teacher_mode="adapter_disabled"`` (the default for a LoRA run) it is an
+:class:`~lfa.models.AdapterDisabledTeacher` over the student itself. Nothing in the objective
+changes -- the two are bit-identical -- so no code below distinguishes them.
+
 Everything else here is bookkeeping around that step -- gradient accumulation, the learning-rate
 schedule, per-epoch re-chunking of the corpus, per-epoch validation on the held-out documents,
 checkpoints, and resume. Two guards earn their keep: a run whose optimizer steps produce a
@@ -29,7 +35,7 @@ import json
 import logging
 import time
 import warnings
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -42,7 +48,8 @@ from torch.utils.data import DataLoader
 from .adapters import ModelAdapter
 from .corpus import ChunkedCorpus, make_dataloader
 from .losses import anchor_loss, compute_layer_weights, weight_loss
-from .models import assert_trainable_params, load_adapter_for_training
+from .models import (TeacherModeRefused, assert_trainable_params, load_adapter_for_training,
+                     make_adapter_disabled_teacher, resolve_teacher_mode)
 from .sampler import Sampler
 
 logger = logging.getLogger("lfa.train")
@@ -153,6 +160,13 @@ class TrainConfig:
     lora_dropout: float = 0.0
     freeze_embed: bool = True
     full_weight: bool = False
+    #: Where the frozen teacher comes from: ``"adapter_disabled"`` reads it out of the student's
+    #: own LoRA base and loads no second model, ``"separate"`` loads one, and ``"auto"`` (the
+    #: default) is the first for a LoRA run and the second for full weight. It changes no number
+    #: -- the two are bit-identical under LoRA -- only what the run allocates. :func:`train`
+    #: replaces this with the mode it actually used before writing ``config.json``, so a run
+    #: directory always names a concrete mode rather than ``"auto"``.
+    teacher_mode: str = "auto"
 
     # -- data
     seed: int = 42
@@ -174,6 +188,11 @@ class TrainConfig:
                 f"lr_schedule must be one of {', '.join(LR_SCHEDULES)}, got "
                 f"{self.lr_schedule!r}."
             )
+        # Validated, not resolved: `auto` needs to know whether the caller is bringing a teacher
+        # of its own, and only `train` knows that. What it refuses here is the combination no
+        # caller can rescue -- adapter_disabled on a run whose base weights move.
+        resolve_teacher_mode(self.teacher_mode, use_lora=self.use_lora,
+                             full_weight=self.full_weight)
 
     def to_dict(self) -> dict[str, Any]:
         """The config as a JSON-serializable dict (what lands in ``config.json``)."""
@@ -748,7 +767,7 @@ def _corpus_shape_warnings(dataset, config: TrainConfig) -> list[str]:
 
 
 def train(
-    teacher: nn.Module,
+    teacher: nn.Module | None,
     student: nn.Module,
     dataset: ChunkedCorpus,
     sampler: Sampler | None,
@@ -769,6 +788,11 @@ def train(
     the trade between two.
 
     Args:
+        teacher: the frozen reference model, or ``None`` to read it out of the LoRA student
+            itself (``config.teacher_mode`` ``"adapter_disabled"`` or ``"auto"``). Handing one in
+            *is* ``"separate"``, and that is what the run records, whatever the config said --
+            the run really did hold a second model. Asking for ``"adapter_disabled"`` and then
+            passing a teacher is a contradiction and is refused rather than silently resolved.
         dataset: re-chunked at the start of every epoch, from an offset determined by
             ``config.seed`` and the epoch number, for positional diversity.
         sampler: the ``p(h)`` sampler; ``None`` trains with no anchor at all (the unanchored
@@ -796,6 +820,28 @@ def train(
     output_dir.mkdir(parents=True, exist_ok=True)
     run_logger = logger or logging.getLogger("lfa.train")
 
+    # What the caller brought settles `auto`, and the two have to agree before anything is set up:
+    # a run that recorded `adapter_disabled` while holding a second model would be a lie in
+    # `config.json`, which is the one place a reader can find out what a finished run did.
+    if teacher is None:
+        if config.teacher_mode == "separate":
+            raise TeacherModeRefused(
+                "teacher_mode='separate' asks for a second, separately loaded model and no "
+                "teacher was given. Pass one, or use teacher_mode='adapter_disabled' to read the "
+                "frozen teacher out of the LoRA student itself."
+            )
+        teacher_mode = resolve_teacher_mode("adapter_disabled", use_lora=config.use_lora,
+                                            full_weight=config.full_weight)
+    else:
+        if config.teacher_mode == "adapter_disabled":
+            raise TeacherModeRefused(
+                "teacher_mode='adapter_disabled' loads no second model, but a teacher was handed "
+                "to train(). Pass teacher=None for that mode, or teacher_mode='separate' to "
+                "train against the teacher you have loaded."
+            )
+        teacher_mode = "separate"
+    config = replace(config, teacher_mode=teacher_mode)
+
     if config.full_weight:
         run_logger.warning(FULL_WEIGHT_NOTICE)
 
@@ -813,7 +859,7 @@ def train(
     for note in _corpus_shape_warnings(dataset, config):
         run_logger.warning(note)
 
-    num_layers = adapter.num_layers(teacher)
+    num_layers = adapter.num_layers(teacher if teacher is not None else student)
     layer_weights = None
     if config.anchor_end_ratio < 1.0:
         layer_weights = compute_layer_weights(
@@ -855,6 +901,15 @@ def train(
                 student = load_adapter_for_training(student, checkpoint_dir)
                 run_logger.info("  Adapter re-attached (trainable) from %s", checkpoint_dir)
         assert_trainable_params(student, context=f"resume from {output_dir}")
+
+    # Built here rather than by the caller, and deliberately after the block above: a resume
+    # re-attaches the saved adapter, which produces a NEW model object, and a view built over the
+    # bare student would have collected no adapter wrapper to switch off -- it would have served
+    # the student's own adapted function as the teacher's, silently.
+    if teacher is None:
+        teacher = make_adapter_disabled_teacher(student)
+        run_logger.info("Teacher: the student's own frozen LoRA base (teacher_mode="
+                        "adapter_disabled); no second model is loaded")
 
     state.model = student            # the object a resume re-attached, not the caller's base
     optimizer = AdamW(student.parameters(), lr=config.learning_rate,

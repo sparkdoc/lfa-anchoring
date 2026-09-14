@@ -160,7 +160,9 @@ Read both. A general number *below* the base model's is not a win — [faq.md](f
 ## What it costs
 
 That run — the bundled recipe, 1,673 documents at 512 tokens, 15 epochs, rank 32 — took
-**about 1 h 48 m on one RTX 3090** (432 s per epoch) and about 9 GB of GPU memory. LFA pins a
+**about 1 h 48 m on one RTX 3090** (432 s per epoch) and about 9 GB of GPU memory — that run held
+a separate teacher, as every run before 0.1.1 did; the same run today loads no second model and
+peaks 1.11 GB lower ([faq.md](faq.md)). LFA pins a
 single card by default and refuses a sharded device map unless you pass `--allow-sharding`:
 sharding buys memory, not speed, and costs about 8 % here because every anchored hidden state then
 crosses a device boundary.

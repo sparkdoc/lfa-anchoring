@@ -168,16 +168,17 @@ interrupted fetch never leaves something that looks like an artifact.
 ## 5. Tag and build the package
 
 ```bash
-git tag -a v0.1.0 -m "lfa-anchoring 0.1.0"
+git tag -a v0.1.1 -m "lfa-anchoring 0.1.1"
 pip install -e ".[dev]"    # `build` is in the dev extra; `python -m build` needs it installed
 python -m build            # sdist + wheel
 ```
 
 Check what the sdist carries (`MANIFEST.in` governs it): `lfa/`, `docs/`, `examples/`, `tests/`,
-`LICENSE`, `README.md`, `RELEASING.md`, `constraints-tested.txt`. Rehearsed 2026-09-08:
+`LICENSE`, `README.md`, `RELEASING.md`, `constraints-tested.txt`. Rehearsed 2026-09-08 at 0.1.0:
 **73 files, 240 KiB** (`tar -tzf dist/*.tar.gz | grep -v '/$' | wc -l`; the same listing is 82
-lines with the directory entries counted). Re-measure rather than trusting the figure — the docs
-move.
+lines with the directory entries counted). ⚠ 0.1.1 adds `tests/test_teacher_mode.py`, so that
+count has moved and has **not** been re-measured — re-measure rather than trusting the figure,
+which is what this paragraph has always said.
 
 The **wheel** is 34 files: the package, `lfa/recipes/qwen3-0.6b.yaml`, and `lfa/examples/` — the
 top-level `examples/` directory, mapped into the package by `[tool.setuptools.package-dir]` so
@@ -191,7 +192,7 @@ four `Project-URL:` lines with no `<org>` left in them.
 
 ```bash
 python -m venv /tmp/lfa-release
-/tmp/lfa-release/bin/pip install -c constraints-tested.txt dist/lfa_anchoring-0.1.0-*.whl
+/tmp/lfa-release/bin/pip install -c constraints-tested.txt dist/lfa_anchoring-0.1.1-*.whl
 /tmp/lfa-release/bin/lfa --help
 /tmp/lfa-release/bin/python -m lfa.examples.quickstart --help     # the wheel ships these
 ```
@@ -249,6 +250,44 @@ matched by hand on a branch. `docs/verification.md` opens with what that changes
 Push the tag, publish the package release with the sdist and the wheel, and leave the artifacts
 where step 3 put them: the registry now points at them by digest, so the two releases are joined by
 the checksum rather than by their tags.
+
+---
+
+## Changelog
+
+Newest first. A release that changes what a run computes says so in its first sentence; one that
+does not says that too, because "nothing moved" is the claim a reader most needs to be able to
+trust.
+
+### 0.1.1
+
+**No number moves.** Under LoRA a run no longer loads a second copy of the model: PEFT keeps the
+base weight of every module it adapts frozen, so the student already holds the teacher and
+`lfa.models.AdapterDisabledTeacher` reads it there with the adapters switched off. Verified
+bit-identical on GPU against the 0.1.0 path at the shipped Qwen3-0.6B recipe — 392 of 392 adapter
+tensors `torch.equal` after 58 optimizer steps, every per-micro-batch loss term equal over all 116
+recorded rows, with `torch.use_deterministic_algorithms(True)` and `CUBLAS_WORKSPACE_CONFIG=:4096:8`
+— and the same protocol separates a seed-changed control at 0 of 392, so the comparison can see a
+difference.
+
+* **`teacher_mode`** — new `TrainConfig` field, `Workspace.train(teacher_mode=...)` argument and
+  `lfa train --teacher-mode` flag, with values `auto | separate | adapter_disabled`. `auto` (the
+  default) is `adapter_disabled` for a LoRA run and `separate` for `--full-weight`, where the base
+  weights move and there is no teacher to read; `adapter_disabled` is refused there rather than
+  approximated. The **resolved** mode is recorded in the run's `config.json` and in the workspace
+  history entry, so a finished run says which teacher it trained against.
+* **Peak GPU memory falls by the whole resident teacher** — 1.11 GiB on Qwen3-0.6B (596 M
+  parameters in bfloat16), on allocated, reserved and `nvidia-smi` alike, at no cost in step time
+  (−0.2 %, inside a 0.8 % run-to-run spread, paired at the shipped recipe on an RTX 3090).
+* `Workspace.train`'s unanchored control inherits the stage's teacher mode, so a control is still
+  the same run without the anchor rather than the same run set up differently.
+* Docs: the README's data-free paragraph, the FAQ's memory answer, the quickstart's cost note and
+  `docs/recipes.md`'s per-run overrides.
+
+### 0.1.0
+
+First release: the package, the two published p(h) artifacts, the bundled Qwen3-0.6B recipe, and
+the two example notebooks. Rehearsed against `docs/verification.md`.
 
 ---
 

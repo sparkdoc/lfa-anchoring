@@ -59,11 +59,13 @@ from .evaluate import (
 from .models import (
     DEFAULT_DEVICE,
     apply_lora,
+    frozen_reference,
     fuse,
     load_student,
     load_teacher,
     load_tokenizer,
     resolve_device,
+    resolve_teacher_mode,
 )
 from .recipe import BUNDLED_DIR, Recipe
 from .sampler import Sampler
@@ -485,6 +487,7 @@ class Workspace:
         output_name: str | None = None,
         keep_short_whole: bool | None = None,
         full_weight: bool | None = None,
+        teacher_mode: str | None = None,
         device: str | dict = DEFAULT_DEVICE,
         allow_sharding: bool = False,
         resume: bool = False,
@@ -513,6 +516,12 @@ class Workspace:
                 one, into a chunk and a fragment.
             full_weight: override the recipe's training mode. Full weight is outside the LFA
                 paper's validated envelope; the recipe's own warning says so.
+            teacher_mode: where the frozen teacher comes from -- ``"auto"`` (the default),
+                ``"adapter_disabled"`` or ``"separate"``. Under LoRA the default reads the
+                teacher out of the student's own frozen base and loads no second model, which is
+                bit-identical to ``"separate"`` and one whole model cheaper. Full weight resolves
+                to ``"separate"``, and asking for ``"adapter_disabled"`` there is refused. The
+                resolved mode lands in the history entry and in the run's ``config.json``.
             device: a single device, as :func:`lfa.models.resolve_device` reads it.
             allow_sharding: permit a device map that spreads the model over several devices.
             resume: continue the run already in this stage's output directory.
@@ -563,6 +572,16 @@ class Workspace:
 
         stage = self.state["stage"] if repeat else self.state["stage"] + 1
         config = resolved.to_train_config(stage, artifact, keep_short_whole=keep_short_whole)
+        # Resolved here, before anything is loaded, because it decides whether a second model is
+        # loaded at all -- and because `adapter_disabled` on a full-weight run is a refusal, which
+        # belongs at second zero rather than after the corpus has been chunked.
+        config = dataclasses.replace(
+            config,
+            teacher_mode=resolve_teacher_mode(config.teacher_mode if teacher_mode is None
+                                              else teacher_mode,
+                                              use_lora=config.use_lora,
+                                              full_weight=config.full_weight),
+        )
 
         # Said before anything is loaded: an off-calibration lambda is not a refusal, but it is
         # also not the measured operating point, and a run is worth more than the warning is.
@@ -606,6 +625,10 @@ class Workspace:
             # can move away from the recipe's own values.
             "keep_short_whole": config.keep_short_whole,
             "full_weight": config.full_weight,
+            # Which teacher the stage trained against: `adapter_disabled` held no second model.
+            # It changes no number (the two are bit-identical under LoRA), but a run's footprint
+            # is not readable from anything else here.
+            "teacher_mode": config.teacher_mode,
             # What the stage was allowed to see. `evaluate` rebuilds the same split from the
             # corpus, the seed and this fraction, and scores the documents this run never trained
             # on -- so the number it reports is held out rather than fitted.
@@ -779,20 +802,44 @@ class Workspace:
         (:class:`lfa.train.ResumeSourceHasNoAdapter`) -- not by the frozen-model guard, which
         cannot see it: ``load_student`` hands back a fully trainable model.
 
+        Whether a teacher is loaded at all is ``config.teacher_mode``, already resolved by the
+        caller. ``adapter_disabled`` (the default for a LoRA run) loads none: PEFT keeps the base
+        weight of every adapted module frozen, so the student holds the teacher and
+        :class:`~lfa.models.AdapterDisabledTeacher` reads it there. ``separate`` loads a second
+        model, which is what full-weight training needs and what every run before 0.1.1 did.
+
         The embedding lookup is rebuilt from the teacher here rather than shipped: layer-0
         ``pre_qkv`` is ``input_layernorm(embed_tokens(id))``, exactly reconstructible and ~300 MB
         to store. Without this call the artifact has no table, and ``L_embed`` -- the only term
         anchoring the embedding end of the tied embedding/LM-head matrix -- is dropped silently.
+        Under ``adapter_disabled`` it is rebuilt from the student's own *frozen* embedding, which
+        is the same tensor a separate teacher would have carried.
         """
-        # Bound up front so the cleanup below is safe however far the setup gets: two models is
-        # the largest thing this package allocates, and a failed setup must not keep them.
-        teacher = student = sampler = None
+        # Bound up front so the cleanup below is safe however far the setup gets: a model is the
+        # largest thing this package allocates -- two of them under `teacher_mode="separate"` --
+        # and a failed setup must not keep them. `reference` may be a view over the student, so it
+        # is released with the rest rather than after it.
+        teacher = student = sampler = reference = None
+        # Resolved here rather than by each caller, because this is the one funnel every run goes
+        # through -- the stage, its unanchored control, and a resume alike -- and it is what
+        # decides whether a second model is loaded at all.
+        config = dataclasses.replace(
+            config, teacher_mode=resolve_teacher_mode(config.teacher_mode,
+                                                      use_lora=config.use_lora,
+                                                      full_weight=config.full_weight))
         try:
-            teacher = load_teacher(str(base_model), device=placement, dtype=dtype,
-                                   allow_sharding=allow_sharding)
-            adapter = get_adapter(teacher)
-            student = load_student(str(base_model), device=placement, dtype=dtype,
-                                   allow_sharding=allow_sharding)
+            if config.teacher_mode == "separate":
+                teacher = load_teacher(str(base_model), device=placement, dtype=dtype,
+                                       allow_sharding=allow_sharding)
+                adapter = get_adapter(teacher)
+                student = load_student(str(base_model), device=placement, dtype=dtype,
+                                       allow_sharding=allow_sharding)
+            else:
+                student = load_student(str(base_model), device=placement, dtype=dtype,
+                                       allow_sharding=allow_sharding)
+                adapter = get_adapter(student)
+                logger.info("Teacher mode: adapter_disabled -- the student's own frozen LoRA "
+                            "base is the teacher; no second model is loaded")
             # A resumed LoRA run is handed the BARE student: `lfa.train.train` re-attaches the
             # saved adapter itself, and only if it is not looking at a PEFT model already. Wrap
             # it here and the resume restores the epoch counter, the history, the scheduler
@@ -803,13 +850,18 @@ class Workspace:
                                      alpha=config.lora_alpha, dropout=config.lora_dropout,
                                      freeze_embed=config.freeze_embed)
 
+            # What the artifact is checked against and what the layer-0 table is rebuilt from: the
+            # separate teacher when there is one, otherwise the student's frozen base. On the
+            # resume path the student has not been wrapped yet and `frozen_reference` hands it
+            # back as it is -- correct, because it was loaded from `base_model` moments ago.
+            reference = teacher if teacher is not None else frozen_reference(student)
             if anchored:
                 sampler = Sampler(config.artifact_path, device=_primary_device(placement),
                                   seed=config.seed)
                 # An artifact that does not describe this model anchors toward a different
                 # function, and every shape downstream still matches, so nothing would notice.
-                validate_against_model(sampler.params, teacher, adapter)
-                sampler.build_embedding_lookup_from_model(teacher, adapter)
+                validate_against_model(sampler.params, reference, adapter)
+                sampler.build_embedding_lookup_from_model(reference, adapter)
 
             tokenizer = load_tokenizer(str(base_model))
             # Holding documents out is what makes this stage's domain perplexity a measurement
@@ -833,7 +885,7 @@ class Workspace:
                                     val_dataset=holdout)
             return training, counts
         finally:
-            del teacher, student, sampler
+            del teacher, student, sampler, reference
             gc.collect()
             if _primary_device(placement).startswith("cuda"):
                 torch.cuda.empty_cache()
@@ -1102,8 +1154,14 @@ class Workspace:
             recipe, lambda_qkv=0.0, lambda_mlp=0.0, mu=0.0,
             full_weight=bool(entry.get("full_weight", recipe.full_weight)),
         )
-        config = control.to_train_config(entry["stage"], entry["artifact"],
-                                         keep_short_whole=_stage_frame(entry))
+        config = dataclasses.replace(
+            control.to_train_config(entry["stage"], entry["artifact"],
+                                    keep_short_whole=_stage_frame(entry)),
+            # The stage's own teacher mode, so the control is the same run without the anchor
+            # rather than the same run set up differently. A stage recorded before 0.1.1 has
+            # none and resolves the way any other run would.
+            teacher_mode=entry.get("teacher_mode") or "auto",
+        )
         # Named after the run it controls, so a repeat of a stage gets its own control.
         output_dir = self.path / "runs" / f"{Path(entry['output_dir']).name}_unanchored"
         logger.info("Unanchored control for stage %d -> %s: this is a SECOND full training "

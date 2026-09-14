@@ -1,9 +1,14 @@
 """Loading the teacher and student, wrapping the student in LoRA, and fusing an adapter.
 
-Layerwise Function Anchoring (LFA) trains a student against a frozen copy of the same model,
-so a run holds two models at once. Both are loaded here, in the same dtype, from the same
-checkpoint, so that at step 0 the student *is* the teacher and the anchoring signal starts at
-exactly zero.
+Layerwise Function Anchoring (LFA) trains a student against a frozen reference of the same model.
+**Under LoRA that reference is already inside the student**: PEFT freezes the base weight of every
+adapted linear, the norms are never adapter targets, and ``freeze_embed`` leaves the embedding and
+the tied head alone -- so the teacher's output on an anchor vector ``h`` is what the student's own
+sub-module computes with its adapter switched off. :class:`AdapterDisabledTeacher` reads it that
+way and no second model is loaded (``teacher_mode="adapter_disabled"``, the default for a LoRA run
+since 0.1.1). Full-weight training moves ``W_base``, so there the student holds no teacher and
+:func:`load_teacher` loads a real one, in the same dtype from the same checkpoint, so that at step
+0 the student *is* the teacher and the anchoring signal starts at exactly zero.
 
 **One GPU by default.** :func:`resolve_device` pins a single device and refuses ``"auto"``
 unless the caller passes ``allow_sharding=True``. Sharding a model across cards is model
@@ -19,6 +24,7 @@ adapter-free model that evaluation and release consume.
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 import shutil
@@ -40,14 +46,20 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "DEFAULT_DEVICE",
+    "TEACHER_MODES",
     "ShardingRefused",
     "NoTrainableParameters",
+    "TeacherModeRefused",
     "resolve_device",
     "resolve_model_path",
     "load_tokenizer",
     "load_teacher",
     "load_student",
     "apply_lora",
+    "resolve_teacher_mode",
+    "AdapterDisabledTeacher",
+    "make_adapter_disabled_teacher",
+    "frozen_reference",
     "MissingBuildToolchain",
     "check_gpu_toolchain",
     "assert_trainable_params",
@@ -68,6 +80,20 @@ class ShardingRefused(RuntimeError):
 
 class NoTrainableParameters(RuntimeError):
     """Raised when a model that is about to be trained has nothing with ``requires_grad``."""
+
+
+class TeacherModeRefused(ValueError):
+    """Raised when the frozen teacher cannot be read the way ``teacher_mode`` asks for.
+
+    Every case is one where the student's frozen base is *not* the teacher's weights, or where the
+    caller has asked for two incompatible things at once. A ``ValueError``, so the CLI reports it
+    as one line rather than as a traceback.
+    """
+
+
+#: What ``teacher_mode`` accepts. ``"auto"`` resolves by training mode -- see
+#: :func:`resolve_teacher_mode`.
+TEACHER_MODES = ("auto", "separate", "adapter_disabled")
 
 
 class MissingBuildToolchain(RuntimeError):
@@ -310,6 +336,350 @@ def apply_lora(
         ensure_weight_tying=not freeze_embed,
     )
     return get_peft_model(model, config)
+
+
+# ==============================================================================================
+# The teacher a LoRA student already holds
+# ==============================================================================================
+#
+# PEFT freezes the base weight of every module it adapts and routes the forward through a wrapper
+# that adds a trainable delta to the base's output. Disable the wrapper and the student computes
+# `W_base . h` -- which is exactly what the separate teacher computes, on the same tensor, in the
+# same dtype, on the same device. So under LoRA the second model is pure redundancy.
+#
+# Two shapes of read, and the difference matters:
+#
+#   * A module that is CALLED (q/k/v/o, the MLP's three projections, lm_head, embed_tokens) is
+#     handed back as its frozen base -- the very `nn.Linear` the separate teacher would have used.
+#     No wrapper, no state, nothing to restore.
+#   * A CONTAINER whose forward composes adapted children (the MLP, whose `down(act(gate(x)) *
+#     up(x))` is anchored as one function, and the whole model) is not re-implemented. The view
+#     switches the adapters beneath it off, calls the container's own forward, and switches them
+#     back -- so the nonlinearity and the composition cannot drift from the teacher's.
+#
+# The switch is `_disable_adapters`, set directly. PEFT's `enable_adapters(False)` also calls
+# `requires_grad_(False)` on the adapter tensors: a teacher *read* that silently freezes the
+# student is precisely the class of bug `load_adapter_for_training` exists to prevent, so it is
+# not used here. `_disable_adapters` is what `lora.Linear.forward` branches on and has no other
+# effect.
+#
+# Nothing here knows a model's layout. The view mirrors whatever tree the student has, so a
+# `ModelAdapter` walks it exactly as it walks the student -- which is the rule this package holds
+# to everywhere else: layout lives in `lfa.adapters` and nowhere else.
+
+
+@functools.lru_cache(maxsize=1)
+def _adapter_wrapper_kinds() -> tuple[type, ...]:
+    """The PEFT base classes whose forward can add a trainable delta.
+
+    Cached because it is asked on the hot path: every module under an anchored container is
+    tested on every teacher read, and a bare ``from x import y`` per test is a measurable share
+    of a training step at 28 layers x 16 anchor draws.
+
+    TWO of them, and missing the second is a real defect rather than a tidiness point:
+
+    * ``BaseTunerLayer`` -- ``lora.Linear`` and its kin, which add ``s.BA`` to the base output.
+    * ``AuxiliaryTrainingWrapper`` -- ``ModulesToSaveWrapper``, which :func:`apply_lora` puts
+      around ``embed_tokens`` (and, through ``ensure_weight_tying``, the head) whenever
+      ``freeze_embed`` is False. It keeps ``original_module`` frozen and routes the forward to a
+      *trainable copy* instead, and it is **not** a ``BaseTunerLayer``. A view that disabled only
+      the LoRA layers would serve the student's trained embeddings from a full-model forward while
+      serving the frozen base from every weight read -- silently, and only in that configuration.
+
+    PEFT's own ``disable_adapter()`` context covers both (``LoraModel._set_adapter_layers``), and
+    both expose ``_disable_adapters`` and branch on it in ``forward``.
+    """
+    from peft.tuners.tuners_utils import BaseTunerLayer
+
+    try:
+        from peft.utils.other import AuxiliaryTrainingWrapper
+    except ImportError:                      # pragma: no cover - peft without the auxiliary base
+        return (BaseTunerLayer,)
+    return (BaseTunerLayer, AuxiliaryTrainingWrapper)
+
+
+def _is_adapter_wrapper(module: nn.Module) -> bool:
+    """Whether ``module`` is a PEFT wrapper that can add a trainable delta."""
+    return isinstance(module, _adapter_wrapper_kinds())
+
+
+def _frozen_base_module(module: nn.Module) -> nn.Module:
+    """The frozen base underneath a possibly PEFT-wrapped module.
+
+    ``lora.Linear`` (any ``BaseTunerLayer``) gives its ``base_layer``; ``ModulesToSaveWrapper``
+    gives its ``original_module``, the copy PEFT keeps frozen while training another; anything
+    else is already the base and is returned as it is.
+    """
+    original = getattr(module, "original_module", None)
+    if original is not None:
+        return original
+    get_base_layer = getattr(module, "get_base_layer", None)
+    if callable(get_base_layer):
+        return get_base_layer()
+    return module
+
+
+def _is_adapter_parameter(name: str) -> bool:
+    """Whether a parameter name belongs to an adapter rather than to the frozen base."""
+    return "lora_" in name or "modules_to_save" in name
+
+
+def _frozen_parameters(module: nn.Module):
+    """Yield only the frozen-base parameters under ``module``, never an adapter tensor.
+
+    Load-bearing for dtype as well as for correctness: :func:`lfa.losses._module_io` reads
+    ``next(module.parameters())`` for the dtype it casts anchor vectors to, and an adapter tensor
+    is not guaranteed to carry the model's dtype.
+    """
+    for name, parameter in module.named_parameters():
+        if not _is_adapter_parameter(name):
+            yield parameter
+
+
+def _refuse_merged_adapters(module: nn.Module) -> None:
+    """Refuse a student whose adapter has been merged into the base weight.
+
+    After a merge the delta *is* in ``base_layer.weight``, so the frozen base has stopped being
+    the teacher and every read through this view would be the student's own adapted function.
+    """
+    for child in module.modules():
+        if _is_adapter_wrapper(child) and getattr(child, "merged", False):
+            raise TeacherModeRefused(
+                "adapter-disabled teacher: this student has a merged adapter, so its base weight "
+                "is no longer the teacher's. Train from an unmerged adapter, or pass "
+                "teacher_mode='separate' to load a real teacher."
+            )
+
+
+class _FrozenModuleView:
+    """One module as the teacher sees it: every PEFT wrapper beneath it disabled.
+
+    Built only for a module that still has an adapter wrapper somewhere under it. Anything
+    without one is handed back unwrapped instead (:func:`_frozen_view`), so the objects a
+    ``ModelAdapter`` finally resolves -- the projections, the norms, the embedding -- are plain
+    modules with no indirection at all.
+
+    The view mirrors the student's own tree by attribute and by index, so a ``ModelAdapter``
+    resolves sub-modules on it exactly as it does on the student.
+    """
+
+    def __init__(self, module: nn.Module, cache: dict[int, "_FrozenModuleView"] | None = None):
+        self._module = module
+        # Shared across the whole view, so each sub-module is scanned for wrappers once rather
+        # than on every accessor call, and so `id()` of a view is stable (an adapter that walks
+        # `.model` in a loop compares identities to detect a cycle).
+        self._cache = {} if cache is None else cache
+        self._wrappers = [child for child in module.modules() if _is_adapter_wrapper(child)]
+
+    # -- the student's tree, mirrored ----------------------------------------------------------
+
+    def __getattr__(self, name):
+        if name.startswith("_"):             # never recurse through this view's own state
+            raise AttributeError(name)
+        return self._as_teacher(getattr(self._module, name))
+
+    def __getitem__(self, index):
+        return self._as_teacher(self._module[index])
+
+    def __len__(self) -> int:
+        return len(self._module)
+
+    def __iter__(self):
+        return (self._as_teacher(child) for child in self._module)
+
+    def _as_teacher(self, value):
+        return _frozen_view(value, self._cache) if isinstance(value, nn.Module) else value
+
+    # -- the surface the losses read -----------------------------------------------------------
+
+    def parameters(self, recurse: bool = True):
+        return _frozen_parameters(self._module)
+
+    def named_parameters(self, *args, **kwargs):
+        for name, parameter in self._module.named_parameters(*args, **kwargs):
+            if not _is_adapter_parameter(name):
+                yield name, parameter
+
+    def modules(self):
+        """The wrapped module's real sub-modules, wrappers included and unfiltered.
+
+        Deliberately not a view: the callers are shape inspections
+        (:func:`lfa.artifact.schema._site_input_width` looks for the first ``nn.Linear`` under a
+        composite site to read its input width), and a PEFT wrapper is not an ``nn.Linear`` while
+        the ``base_layer`` beneath it is -- so the unfiltered walk gives the base's own width.
+        """
+        return self._module.modules()
+
+    def __bool__(self) -> bool:
+        # Without this, `__len__` would answer truthiness and raise TypeError for a module that
+        # has no length. A view is always a real object.
+        return True
+
+    @property
+    def training(self) -> bool:
+        return self._module.training
+
+    def __call__(self, *args, **kwargs):
+        """The wrapped module's own forward, with every adapter beneath it switched off.
+
+        The merged-adapter check rides on the list this loop already walks rather than taking a
+        traversal of its own: this runs once per anchored container per step.
+        """
+        previous = []
+        for wrapper in self._wrappers:
+            if getattr(wrapper, "merged", False):
+                raise TeacherModeRefused(
+                    "adapter-disabled teacher: an adapter has been merged into the base weight "
+                    "mid-run, so the base is no longer the teacher. Use teacher_mode='separate'."
+                )
+            previous.append(wrapper._disable_adapters)
+            wrapper._disable_adapters = True
+        try:
+            return self._module(*args, **kwargs)
+        finally:
+            for wrapper, was_disabled in zip(self._wrappers, previous):
+                wrapper._disable_adapters = was_disabled
+
+    def __repr__(self) -> str:               # pragma: no cover - diagnostics only
+        return f"_FrozenModuleView({type(self._module).__name__})"
+
+
+def _frozen_view(module: nn.Module, cache: dict[int, object] | None = None):
+    """``module`` as the teacher sees it: the frozen base itself, or a view over it.
+
+    The cache is consulted **first**, and it caches the plain-module answer as well as the view.
+    Deciding whether a module needs a view means walking everything under it, and the losses
+    resolve every anchored sub-module of every layer on every step -- so deciding again on each
+    access costs a full walk of the model per accessor call per step. Measured at the shipped
+    recipe on Qwen3-0.6B (RTX 3090, rank 32, batch 6 x 512, 16 anchor samples): 0.7228 s/step
+    deciding each time against 0.7087 s/step with this lookup, against a ``separate`` arm at
+    0.7018 -- 2% of the whole run for a question whose answer cannot change.
+
+    Keying by ``id`` is sound because everything the cache answers for is reachable from the
+    student the view holds, so no entry can be collected and no id reused while the view lives.
+    """
+    if cache is not None and (cached := cache.get(id(module))) is not None:
+        return cached
+    base = _frozen_base_module(module)
+    if not any(_is_adapter_wrapper(child) for child in base.modules()):
+        view = base                          # the very object a separate teacher would have used
+    else:
+        view = _FrozenModuleView(base, cache)
+    if cache is not None:
+        cache[id(module)] = view
+    return view
+
+
+class AdapterDisabledTeacher(_FrozenModuleView):
+    """The frozen teacher, read out of a LoRA student instead of loaded as a second model.
+
+    A :class:`~lfa.adapters.ModelAdapter` resolves every anchored sub-module on this exactly as it
+    does on the student, and each one comes back as the student's own frozen base. The anchoring
+    loss, mu's weight term and the layer-0 embedding table are then computed against the same
+    tensors a separate teacher would have held -- bit for bit, not approximately.
+
+    ``eval()`` and ``train()`` are no-ops that return ``self``. The caller means "put the teacher
+    in eval mode", and the teacher here *is* the student, which must stay in whatever mode
+    training left it in. (No numerical difference at the shipped recipe, whose dropouts are zero,
+    but silently flipping the student out of train mode from a teacher read would be a real trap.)
+
+    Raises:
+        TeacherModeRefused: if ``student`` carries no LoRA adapter, or carries a merged one.
+    """
+
+    def __init__(self, student: nn.Module):
+        from peft.tuners.tuners_utils import BaseTunerLayer
+
+        if not any(isinstance(module, BaseTunerLayer) for module in student.modules()):
+            raise TeacherModeRefused(
+                "teacher_mode='adapter_disabled' needs a LoRA (PEFT) student: no adapter layer "
+                "was found in this model. Full-weight training moves the base weights, so the "
+                "student holds no teacher there -- use teacher_mode='separate'."
+            )
+        _refuse_merged_adapters(student)
+        super().__init__(student)
+
+    def eval(self) -> "AdapterDisabledTeacher":
+        return self
+
+    def train(self, mode: bool = True) -> "AdapterDisabledTeacher":
+        return self
+
+    @property
+    def training(self) -> bool:
+        return False
+
+    def __call__(self, *args, **kwargs):
+        """A full-model forward as the teacher would run it: adapters off, in eval mode."""
+        was_training = self._module.training
+        self._module.eval()
+        try:
+            return super().__call__(*args, **kwargs)
+        finally:
+            if was_training:
+                self._module.train()
+
+    def __repr__(self) -> str:               # pragma: no cover - diagnostics only
+        return f"AdapterDisabledTeacher(student={type(self._module).__name__})"
+
+
+def make_adapter_disabled_teacher(student: nn.Module) -> AdapterDisabledTeacher:
+    """The teacher view over a LoRA ``student`` (see :class:`AdapterDisabledTeacher`)."""
+    return AdapterDisabledTeacher(student)
+
+
+def frozen_reference(model: nn.Module):
+    """``model``'s frozen base, whether or not LoRA has been attached to it yet.
+
+    A LoRA-wrapped student gives an :class:`AdapterDisabledTeacher`. A student that has *not* been
+    wrapped -- the resume path, where the trainer re-attaches the saved adapter itself -- is
+    returned unchanged: it was loaded from the base checkpoint moments ago and its weights are
+    that base.
+
+    For the reads that happen before training starts (checking the artifact against the model, and
+    rebuilding the layer-0 embedding table) this is the teacher, in either state.
+    """
+    from peft.tuners.tuners_utils import BaseTunerLayer
+
+    if any(isinstance(module, BaseTunerLayer) for module in model.modules()):
+        return make_adapter_disabled_teacher(model)
+    return model
+
+
+def resolve_teacher_mode(mode: str, *, use_lora: bool, full_weight: bool) -> str:
+    """Turn ``"auto"`` into the mode a run will actually use, and refuse the impossible one.
+
+    ``"auto"`` is ``"adapter_disabled"`` for a LoRA run -- the student holds the teacher, so
+    loading a second copy would allocate a whole model for nothing -- and ``"separate"`` for
+    full-weight training, where ``W_base`` moves and the student is no longer a copy of anything.
+
+    Args:
+        mode: one of :data:`TEACHER_MODES`.
+        use_lora: whether the run attaches a LoRA adapter.
+        full_weight: whether the run trains the full weights.
+
+    Returns:
+        ``"separate"`` or ``"adapter_disabled"``.
+
+    Raises:
+        TeacherModeRefused: ``"adapter_disabled"`` asked for a full-weight run.
+        ValueError: an unknown mode.
+    """
+    if mode not in TEACHER_MODES:
+        raise ValueError(
+            f"teacher_mode must be one of {', '.join(TEACHER_MODES)}, got {mode!r}."
+        )
+    is_lora = use_lora and not full_weight
+    if mode == "adapter_disabled" and not is_lora:
+        raise TeacherModeRefused(
+            "teacher_mode='adapter_disabled' reads the frozen teacher out of the student's own "
+            "LoRA base, and full-weight training moves that base -- there would be no teacher "
+            "left to read. Use teacher_mode='separate' for a full-weight run, or drop "
+            "--full-weight."
+        )
+    if mode == "auto":
+        return "adapter_disabled" if is_lora else "separate"
+    return mode
 
 
 def assert_trainable_params(model: nn.Module, context: str = "training") -> None:

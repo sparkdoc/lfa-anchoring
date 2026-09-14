@@ -32,8 +32,8 @@ from .artifact.fetch import (ArtifactNotPublished, ChecksumMismatch, DownloadFai
                             fetch_artifact,
                              list_artifacts)
 from .evaluate import DatasetUnavailable
-from .models import (DEFAULT_DEVICE, MissingBuildToolchain, NoTrainableParameters,
-                     ShardingRefused)
+from .models import (DEFAULT_DEVICE, TEACHER_MODES, MissingBuildToolchain,
+                     NoTrainableParameters, ShardingRefused)
 from .prepare_domain import MissingExtra, prepare_domain
 from .seed_corpus import SourceUnavailable, prepare_seed_corpus
 from .train import ResumeSourceHasNoAdapter
@@ -119,7 +119,7 @@ def _train(args) -> int:
     entry = _open(args).train(
         args.corpus, args.recipe, epochs=args.epochs, device=args.device,
         allow_sharding=args.allow_sharding, resume=args.resume,
-        full_weight=args.full_weight,
+        full_weight=args.full_weight, teacher_mode=args.teacher_mode,
     )
     loss = entry["final_loss"]
     cost = f" (final loss {loss:.4f})" if loss is not None else ""
@@ -249,6 +249,13 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--full-weight", dest="full_weight", action="store_true", default=None,
                        help="train full weights instead of LoRA; outside the paper's validated "
                             "envelope")
+    train.add_argument("--teacher-mode", dest="teacher_mode", default=None,
+                       choices=list(TEACHER_MODES), metavar="MODE",
+                       help="where the frozen teacher comes from: adapter_disabled reads it out "
+                            "of the student's own LoRA base and loads no second model, separate "
+                            "loads one, auto (the default) is the first under LoRA and the "
+                            "second for --full-weight. The two are bit-identical; the choice is "
+                            "memory, not results")
     train.add_argument("--resume", action="store_true",
                        help="continue the run already in this stage's output directory")
     _add_device(train, sharding=True)

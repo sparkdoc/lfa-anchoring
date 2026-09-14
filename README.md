@@ -14,7 +14,10 @@ L = L_content  +  λ · E_{h ~ p(h)} ‖f_student(h) − f_teacher(h)‖²  +  �
 
 The preservation signal comes from a statistic plus the frozen teacher, never from stored text:
 LFA is **data-free at adaptation time**, and in a chain of domains no earlier domain is ever
-revisited. The statistic is a per-site mean, covariance and mixture — no text, no token ids,
+revisited. Under LoRA that frozen teacher is the student's own base — PEFT keeps it frozen, so a
+run loads no second copy of the model and reads the teacher out of the student with its adapters
+switched off, which is bit-identical to holding a separate one and 1.11 GB cheaper on Qwen3-0.6B
+(`--teacher-mode`; full-weight training moves the base, so there a real teacher is loaded). The statistic is a per-site mean, covariance and mixture — no text, no token ids,
 nothing sequence-shaped. Everything runs locally: no judge, no API key.
 
 **To watch it work rather than read about it**, open
