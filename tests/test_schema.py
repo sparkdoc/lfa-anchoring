@@ -35,3 +35,15 @@ def test_make_meta_says_who_built_the_statistics_and_who_wrote_the_block():
                       built_with="research code; meta block added by lfa-anchoring")
     assert added["built_with"] == "research code; meta block added by lfa-anchoring"
     assert added["lfa_version"] == default["lfa_version"] == __version__
+
+
+def test_meta_carries_provenance_when_given_and_none_otherwise():
+    from lfa.artifact.schema import SELF_GENERATED, make_meta
+
+    plain = make_meta("m", 32, 2, ["pre_qkv"], 10)
+    assert plain["provenance"] is None and plain["corpus_sha256"] is None
+
+    selfgen = make_meta("m", 32, 2, ["pre_qkv"], 10, provenance=SELF_GENERATED,
+                        corpus_sha256="ab" * 32)
+    assert selfgen["provenance"] == "self-generated"
+    assert selfgen["corpus_sha256"] == "ab" * 32

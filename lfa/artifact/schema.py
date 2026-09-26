@@ -30,6 +30,7 @@ __all__ = [
     "LM_HEAD_SITE",
     "META_KEY",
     "EMBEDDING_LOOKUP_KEY",
+    "SELF_GENERATED",
     "site_key",
     "parse_site_key",
     "make_meta",
@@ -46,6 +47,9 @@ LM_HEAD_SITE = "pre_lm_head"
 
 META_KEY = "__meta__"
 EMBEDDING_LOOKUP_KEY = "embedding_lookup"
+
+#: ``__meta__["provenance"]`` of an artifact fitted on text the model wrote itself.
+SELF_GENERATED = "self-generated"
 
 
 def site_key(layer: int, site: str) -> str:
@@ -71,6 +75,8 @@ def make_meta(
     sites: list[str],
     n_samples_total: int | None,
     built_with: str = "lfa-anchoring",
+    provenance: str | None = None,
+    corpus_sha256: str | None = None,
 ) -> dict:
     """The ``__meta__`` block: what the statistics describe, and what built them.
 
@@ -87,6 +93,10 @@ def make_meta(
             artifact something else built should say so instead (``RELEASING.md`` step 1 does).
             ``lfa_version`` records which version wrote the block either way, so the two fields do
             not have to answer the same question.
+        provenance: :data:`SELF_GENERATED` for an artifact fitted on the model's own text;
+            ``None`` for everything fitted on real text.
+        corpus_sha256: the hash of the corpus file the statistics were collected on, when it is a
+            generated one.
     """
     return {
         "model_id": model_id,
@@ -96,6 +106,10 @@ def make_meta(
         "n_samples_total": None if n_samples_total is None else int(n_samples_total),
         "built_with": built_with,
         "lfa_version": __version__,
+        # What text the statistics were collected on. `None` is real text (the seed corpus, a
+        # domain); SELF_GENERATED is text the model wrote, and `corpus_sha256` then names it.
+        "provenance": provenance,
+        "corpus_sha256": corpus_sha256,
     }
 
 
