@@ -125,13 +125,13 @@ def parse_qa_pairs(text: str) -> list[dict]:
     return [p for p in pairs if p["question"] and p["answer"]]
 
 
-def _prompt_for(tokenizer, passage: str, n: int, domain_description: str) -> str:
+def _prompt_for(tokenizer, passage: str, n: int, domain_description: str,
+                chat_template: bool) -> str:
     body = render_template(domain_description, n, passage)
-    try:
-        return tokenizer.apply_chat_template([{"role": "user", "content": body}], tokenize=False,
-                                             add_generation_prompt=True, enable_thinking=False)
-    except Exception:
+    if not chat_template:
         return body + "\n"
+    return tokenizer.apply_chat_template([{"role": "user", "content": body}], tokenize=False,
+                                         add_generation_prompt=True, enable_thinking=False)
 
 
 def write_supplement(model_id: str, documents: list[str], out_path, *, domain_description: str,
@@ -153,7 +153,12 @@ def write_supplement(model_id: str, documents: list[str], out_path, *, domain_de
             f"0 passages of at least {options.min_passage_chars} characters in "
             f"{len(documents)} training document(s): nothing to write a supplement from.")
 
+    writer_sha256 = checkpoint_sha256(model_id)          # before the sampling, not after
     model, tokenizer = writer if writer is not None else load_writer(model_id, device)
+    chat_template = bool(getattr(tokenizer, "chat_template", None))
+    if not chat_template:
+        logger.warning("%s has no chat template: supplement prompts are sent as plain text, "
+                       "outside the recorded frame", model_id)
     stop = [tokenizer.eos_token_id]
     end_id = tokenizer.convert_tokens_to_ids(_TURN_END)
     if isinstance(end_id, int) and end_id >= 0 and end_id not in stop:
@@ -163,8 +168,8 @@ def write_supplement(model_id: str, documents: list[str], out_path, *, domain_de
                                 "unparseable_passage": 0}, set()
     for batch_index in range(0, len(passages), options.batch_size):
         batch = passages[batch_index:batch_index + options.batch_size]
-        prompts = [_prompt_for(tokenizer, passage, options.pairs_per_passage, domain_description)
-                   for _, passage in batch]
+        prompts = [_prompt_for(tokenizer, passage, options.pairs_per_passage, domain_description,
+                               chat_template) for _, passage in batch]
         outputs = generate(model, tokenizer, prompts, max_new_tokens=options.max_new_tokens,
                            temperature=options.temperature, top_p=options.top_p,
                            stop_token_ids=stop, seed=options.seed,
@@ -181,11 +186,10 @@ def write_supplement(model_id: str, documents: list[str], out_path, *, domain_de
                 if length > options.max_answer_chars:
                     rejected["long_answer"] += 1
                     continue
-                key = (pair["question"], pair["answer"])
-                if key in seen:
+                if pair["question"] in seen:             # keyed on the question, as recorded
                     rejected["duplicate"] += 1
                     continue
-                seen.add(key)
+                seen.add(pair["question"])
                 rows.append({"prompt": pair["question"], "response": pair["answer"],
                              "source_index": source_index})
         logger.info("supplement: %d/%d passages -> %d pairs", min(batch_index + len(batch),
@@ -204,11 +208,12 @@ def write_supplement(model_id: str, documents: list[str], out_path, *, domain_de
     manifest = {
         "kind": "supplement",
         "model_id": model_id,
-        "writer_sha256": checkpoint_sha256(model_id),
+        "writer_sha256": writer_sha256,
         "corpus_sha256": corpus_sha256,
         "domain_description": domain_description,
         "template": render_template(domain_description, options.pairs_per_passage, "{passage}"),
         "template_sha256": template_sha256(),
+        "chat_template_applied": chat_template,
         "options": asdict(options),
         "decoding": {"temperature": options.temperature, "top_p": options.top_p, "top_k": 0,
                      "min_p": 0.0},

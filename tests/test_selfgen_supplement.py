@@ -64,9 +64,19 @@ def test_the_template_names_the_domain_and_keeps_the_rules():
 class _Tok:
     pad_token_id = 0
     eos_token_id = 1
+    chat_template = "stub"
 
     def apply_chat_template(self, messages, add_generation_prompt=True, enable_thinking=None, **_):
         return "<u>" + messages[0]["content"] + "</u><a>"
+
+    def convert_tokens_to_ids(self, token):
+        return 2
+
+
+class _PlainTok:
+    """A tokenizer with no chat template at all."""
+    pad_token_id = 0
+    eos_token_id = 1
 
     def convert_tokens_to_ids(self, token):
         return 2
@@ -77,10 +87,14 @@ class _Model:
 
 
 def test_write_supplement_records_pairs_and_a_manifest(tmp_path, monkeypatch):
-    monkeypatch.setattr("lfa.selfgen.supplement.checkpoint_sha256", lambda m: "a" * 64)
+    hashed = []
+    monkeypatch.setattr("lfa.selfgen.supplement.checkpoint_sha256",
+                        lambda m: hashed.append(m) or "a" * 64)
     docs = ["para one " * 60 + "\n\n" + "para two " * 60, "short " * 80]
 
     def generate(model, tokenizer, prompts, **kwargs):
+        assert hashed == ["stub"]                   # the writer is hashed before any sampling
+        assert all(p.startswith("<u>") for p in prompts)
         assert kwargs["temperature"] == 0.7 and kwargs["top_p"] == 0.8
         return ['[{"question": "Why?", "answer": "' + "Because of the passage. " * 3 + '"},'
                 ' {"question": "Tiny?", "answer": "no"}]<|im_end|>'] * len(prompts)
@@ -98,6 +112,7 @@ def test_write_supplement_records_pairs_and_a_manifest(tmp_path, monkeypatch):
     assert manifest["rejected"]["short_answer"] >= 1
     assert manifest["writer_sha256"] == "a" * 64 and manifest["corpus_sha256"] == "b" * 64
     assert manifest["template_sha256"] and "tests" in manifest["template"]
+    assert manifest["chat_template_applied"] is True
     assert (tmp_path / "s.jsonl.manifest.json").is_file()
 
 
@@ -117,3 +132,42 @@ def test_no_passages_refuses_before_any_model_loads(tmp_path):
     with pytest.raises(NoPairsWritten, match="0 passages"):
         write_supplement("stub", ["tiny"], tmp_path / "s.jsonl", domain_description="d",
                          corpus_sha256="b" * 64, writer=None)
+
+
+def test_duplicates_are_keyed_on_the_question_alone(tmp_path, monkeypatch):
+    monkeypatch.setattr("lfa.selfgen.supplement.checkpoint_sha256", lambda m: "a" * 64)
+    answers = iter(["The first answer, long enough to pass the filter.",
+                    "A different answer, also long enough to pass the filter."])
+
+    def generate(model, tokenizer, prompts, **kwargs):
+        return ['[{"question": "Same?", "answer": "' + next(answers) + '"}]' for _ in prompts]
+
+    manifest = write_supplement("stub", ["one " * 60, "two " * 60], tmp_path / "s.jsonl",
+                                domain_description="d",
+                                options=SupplementOptions(min_passage_chars=10),
+                                corpus_sha256="b" * 64, generate=generate,
+                                writer=(_Model(), _Tok()))
+    rows = [json.loads(l) for l in (tmp_path / "s.jsonl").read_text().splitlines()]
+    assert manifest["n_passages"] == 2 and len(rows) == 1
+    assert rows[0]["response"].startswith("The first answer")
+    assert manifest["rejected"]["duplicate"] == 1
+
+
+def test_a_writer_without_a_chat_template_warns_and_says_so(tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr("lfa.selfgen.supplement.checkpoint_sha256", lambda m: "a" * 64)
+
+    def generate(model, tokenizer, prompts, **kwargs):
+        assert all(p.startswith("You are creating training data") for p in prompts)
+        return ['[{"question": "Why?", "answer": "' + "Because of the passage. " * 3 + '"}]'
+                ] * len(prompts)
+
+    with caplog.at_level("WARNING", logger="lfa.selfgen.supplement"):
+        manifest = write_supplement("stub", ["text " * 100, "more " * 100], tmp_path / "s.jsonl",
+                                    domain_description="d",
+                                    options=SupplementOptions(min_passage_chars=10),
+                                    corpus_sha256="b" * 64, generate=generate,
+                                    writer=(_Model(), _PlainTok()))
+    warnings = [r for r in caplog.records if r.name == "lfa.selfgen.supplement"
+                and r.levelname == "WARNING"]
+    assert len(warnings) == 1 and "plain text" in warnings[0].getMessage()
+    assert manifest["chat_template_applied"] is False
