@@ -30,7 +30,9 @@ __all__ = [
     "drop_burn_in", "passes_filters", "generate_texts", "checkpoint_sha256", "sha256_text",
 ]
 
-_HEADER_MARK = "␟"   # a character no template contains, to find where the content goes
+_HEADER_MARK = "␟"   # characters no template contains, to find where each turn's content goes
+_USER_MARK = "␝"
+_ASSISTANT_MARK = "␞"
 
 
 def load_writer(model_id: str, device: str = "cuda:0"):
@@ -66,31 +68,53 @@ def pick_seed_prefix(tokenizer, model=None) -> str:
 
 
 def chat_user_header(tokenizer) -> str | None:
-    """What a user turn opens with under the tokenizer's chat template, or ``None`` without one."""
+    """What a user turn opens with under the tokenizer's chat template, or ``None`` without one.
+
+    Isolated by difference, not read off a lone user message: a template may prepend BOS or a
+    default system turn (Qwen2.5-Instruct, Llama-3.2), and that preamble is not the opener. Two
+    conversations are rendered, ``[user, assistant]`` and ``[user, assistant, user]``. The text
+    after the assistant's content in the first is the assistant turn's close; in the second, what
+    follows that same close up to the last user's content is the opener. This is anchored on the
+    assistant content rather than on the first render being a prefix of the second, because
+    Qwen3's template drops an earlier assistant turn's empty think block once a later user turn
+    exists, so the prefix property fails there.
+    """
+    def render(messages):
+        return tokenizer.apply_chat_template(messages, tokenize=False,
+                                             add_generation_prompt=False)
+
+    exchange = [{"role": "user", "content": _USER_MARK},
+                {"role": "assistant", "content": _ASSISTANT_MARK}]
     try:
-        rendered = tokenizer.apply_chat_template(
-            [{"role": "user", "content": _HEADER_MARK}], tokenize=False,
-            add_generation_prompt=False)
+        short = render(exchange)
+        full = render(exchange + [{"role": "user", "content": _HEADER_MARK}])
     except Exception:                                     # no template, or one that rejects it
         return None
-    head, sep, _ = rendered.partition(_HEADER_MARK)
-    return head if sep else None
+    before_mark, sep, _ = full.partition(_HEADER_MARK)
+    if not sep or _ASSISTANT_MARK not in short or _ASSISTANT_MARK not in before_mark:
+        return None
+    close = short[short.rfind(_ASSISTANT_MARK) + 1:]
+    after_assistant = before_mark[before_mark.rfind(_ASSISTANT_MARK) + 1:]
+    if not after_assistant.startswith(close):
+        return None
+    return after_assistant[len(close):] or None
 
 
 def boundary_markers(tokenizer, seed_prefix: str) -> tuple[str, ...]:
-    """Where a raw continuation ends: the document boundary, and any chat-template opening."""
+    """Where a raw continuation ends: the document boundary, EOS, and any chat-turn opening."""
     markers = [seed_prefix]
     for token in (getattr(tokenizer, "eos_token", None),):
         if token and token not in markers:
             markers.append(token)
     header = chat_user_header(tokenizer)
     if header:
-        # The first special token of the header, e.g. "<|im_start|>", not the whole header.
-        first = header.split("\n", 1)[0]
-        for candidate in (first.split("user")[0], first):
-            if candidate and candidate not in markers:
-                markers.append(candidate)
-                break
+        # The opener's leading special token, e.g. "<|im_start|>", not the whole header: cut at
+        # the role word or the first newline, whichever comes first.
+        cut = min((i for i in (header.find("user"), header.find("\n")) if i != -1),
+                  default=len(header))
+        candidate = header[:cut].strip() or header.strip()
+        if candidate and candidate not in markers:
+            markers.append(candidate)
     return tuple(markers)
 
 
@@ -149,10 +173,20 @@ def generate_texts(model, tokenizer, prompts: list[str], *, max_new_tokens: int,
 
 
 def checkpoint_sha256(model_id: str) -> str:
-    """One hash over every ``*.safetensors`` file of the checkpoint, in sorted order."""
-    root = Path(resolve_model_path(model_id))
+    """One hash over every ``*.safetensors`` file of the checkpoint, in sorted order.
+
+    A Hub id is resolved to its local cache snapshot (``local_files_only=True``): resolved online,
+    it stays a bare id, which is no directory, and the hash would be that of empty input.
+
+    Raises:
+        ValueError: when no ``*.safetensors`` file is found under the resolved directory.
+    """
+    root = Path(resolve_model_path(model_id, local_files_only=True))
+    files = sorted(root.rglob("*.safetensors"))
+    if not files:
+        raise ValueError(f"No *.safetensors files under {root} (resolved from {model_id!r}).")
     digest = hashlib.sha256()
-    for path in sorted(root.rglob("*.safetensors")):
+    for path in files:
         digest.update(path.name.encode())
         with open(path, "rb") as handle:
             for block in iter(lambda: handle.read(1 << 20), b""):
