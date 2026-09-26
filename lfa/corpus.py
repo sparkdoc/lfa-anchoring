@@ -25,17 +25,20 @@ contributing most of the gradient, and more epochs than the amount of text can c
 :func:`lfa.train.train` logs them before the first step.
 
 The only per-chunk targets are the inputs themselves (``labels == input_ids``); the model shifts
-them internally. There is no QA supplement in the companion, so there is no prompt masking and no
-per-token loss weighting: what the loader yields is exactly what the content loss sees.
+them internally. A written question-and-answer supplement (:func:`load_corpus`'s ``supplement``) is
+mixed in as further whole documents, so there is no prompt masking and no per-token loss
+weighting: what the loader yields is exactly what the content loss sees.
 """
 
 from __future__ import annotations
 
+import itertools
 import json
 import logging
 import math
 import os
 import random
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -452,8 +455,9 @@ def _extract_text(obj: Any, tokenizer=None) -> str | None:
     """The document carried by a JSON record, or ``None`` if it carries none.
 
     A ``prompt``/``response`` pair is rendered with ``tokenizer``'s chat template when one is
-    given, so that the text carries the control tokens the model actually sees in use; without a
-    tokenizer (or if the template fails) the two fields are joined by a newline.
+    given, as the non-thinking turn :func:`render_pair` renders, so that the text carries the
+    control tokens the model actually sees in use; without a tokenizer (or if the template fails)
+    the two fields are joined by a newline.
     """
     if isinstance(obj, str):
         return obj
@@ -468,11 +472,84 @@ def _extract_text(obj: Any, tokenizer=None) -> str | None:
                             {"role": "assistant", "content": response}]
                 try:
                     return tokenizer.apply_chat_template(messages, tokenize=False,
-                                                         add_generation_prompt=False)
+                                                         add_generation_prompt=False,
+                                                         enable_thinking=False)
                 except Exception:                     # no template, or one that rejects the pair
                     logger.debug("Chat template failed for an instruction pair; joining plainly.")
             return (prompt + "\n" + response).strip()
     return None
+
+
+def render_pair(tokenizer, prompt: str, response: str) -> str:
+    """One question-and-answer pair as a full chat turn, ``enable_thinking=False``.
+
+    Qwen3 then inserts the empty ``<think>\\n\\n</think>`` block that the research training
+    format carries (mr-fusion ``prepare_domain_qa.qa_to_chat_text``), so a written pair is
+    trained in the format the model answers in. Without a template the two are joined plainly.
+    """
+    messages = [{"role": "user", "content": prompt}, {"role": "assistant", "content": response}]
+    try:
+        return tokenizer.apply_chat_template(messages, tokenize=False,
+                                             add_generation_prompt=False, enable_thinking=False)
+    except Exception:
+        logger.debug("Chat template failed for a pair; joining plainly.")
+        return (prompt + "\n" + response).strip()
+
+
+def load_supplement(path, tokenizer) -> list[str]:
+    """The written pairs as training documents, in file order (the prefix rule needs it)."""
+    texts = []
+    with open(path, "r", encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            if record.get("prompt"):
+                texts.append(render_pair(tokenizer, str(record["prompt"]),
+                                         str(record.get("response", ""))))
+    return texts
+
+
+@dataclass
+class Selection:
+    """How many pairs a token-fraction target selects, and what share they actually make."""
+    n_used: int
+    achieved_fraction: float
+    under_target: bool
+
+
+def select_supplement_prefix(raw_tokens: list[int], pair_tokens: list[int],
+                             target: float) -> Selection:
+    """The pair prefix whose token share ``used / (raw + used)`` is closest to ``target``.
+
+    Ported verbatim from the research mixer (``prepare_domain_qa.select_qa_for_fraction``):
+    pairs are added in order, the largest count under the need is compared with the first count
+    over it, and the closer one wins.
+    """
+    if not (0.0 <= target < 1.0):
+        raise ValueError(f"target must be in [0, 1): got {target}")
+    total_raw = sum(raw_tokens)
+    if target == 0.0:
+        return Selection(0, 0.0, under_target=False)
+    if not pair_tokens or total_raw == 0:
+        return Selection(0, 0.0, under_target=True)
+
+    needed = target / (1.0 - target) * total_raw
+    cumsums = list(itertools.accumulate(pair_tokens))
+    k = 0
+    for i, c in enumerate(cumsums):
+        if c <= needed:
+            k = i + 1
+        else:
+            break
+
+    def achieved(n: int) -> float:
+        used = cumsums[n - 1] if n > 0 else 0
+        return used / (total_raw + used)
+
+    candidates = [k] + ([k + 1] if k < len(pair_tokens) else [])
+    best = min(candidates, key=lambda n: abs(achieved(n) - target))
+    return Selection(best, achieved(best), under_target=achieved(best) < target - 1e-9)
 
 
 def _load_json_texts(file_path: Path, tokenizer=None) -> list[str]:
@@ -523,6 +600,38 @@ def load_texts(path: str | Path, tokenizer=None) -> list[str]:
     return texts
 
 
+def split_documents(path, val_fraction: float, seed: int) -> tuple[list[str], list[str]]:
+    """The seed-shuffled raw documents, training side then held-out side.
+
+    This is the one split: the trainer, ``evaluate`` and the supplement writer all read it, so
+    a pair is never written from a document the stage is scored on. The first
+    ``int(n * (1 - val_fraction))`` shuffled documents train and the rest are held out.
+
+    A one-document corpus cannot be split, so it trains on its document and holds nothing out
+    (logged at WARNING: its domain number is then a fit). Any other split that would hold out
+    every document is refused.
+    """
+    texts = load_texts(path)
+    if not texts:
+        raise ValueError(f"No texts found in {path}")
+    random.Random(seed).shuffle(texts)
+    if val_fraction <= 0.0:
+        return texts, []
+    if len(texts) == 1:
+        logger.warning(
+            "val_fraction=%s on the one document found in %s: a single document cannot be "
+            "split, so it is trained on and nothing is held out. The domain number is then a "
+            "fit rather than a held-out measurement.", val_fraction, path)
+        return texts, []
+    split_idx = int(len(texts) * (1 - val_fraction))
+    if split_idx == 0:
+        raise ValueError(
+            f"val_fraction={val_fraction} holds out all {len(texts)} document(s) found in "
+            f"{path}, leaving nothing to train on. Lower it, or pass val_fraction=0.0 to train "
+            "on everything and read the domain number as a fit rather than a measurement.")
+    return texts[:split_idx], texts[split_idx:]
+
+
 def load_corpus(
     path: str | Path,
     tokenizer,
@@ -531,37 +640,55 @@ def load_corpus(
     val_fraction: float = 0.0,
     seed: int = 42,
     keep_short_whole: bool = True,
+    supplement: str | Path | None = None,
+    supplement_fraction: float = 0.0,
 ) -> tuple[ChunkedCorpus, ChunkedCorpus | None]:
-    """Read ``path`` and build the training corpus, optionally holding documents out.
+    """Read ``path`` and build the training corpus, optionally holding documents out and
+    mixing a written supplement in.
 
-    Documents are shuffled with ``seed`` before the split, so the same seed gives the same split.
+    The held-out split is taken from the RAW documents first (:func:`split_documents`), so the
+    held-out perplexity stays a raw-text number comparable across runs; then a prefix of the
+    supplement is chosen for ``supplement_fraction`` of training tokens
+    (:func:`select_supplement_prefix`) and shuffled into the training side under ``seed``. The
+    training corpus's ``supplement_report`` says what was used (``None`` when nothing was
+    mixed); a pool short of the target is logged at WARNING and used whole, never refused.
+
     Returns ``(train, val)``; ``val`` is ``None`` when ``val_fraction <= 0``, which is this
     function's default because most callers (the artifact extension, an explicit evaluation of a
     named corpus) want every document. A training run does not: the shipped recipe sets
     ``val_fraction=0.1`` and :meth:`lfa.workspace.Workspace.train` passes it here, so the stage's
     domain number is a held-out measurement rather than a fit.
     """
-    texts = load_texts(path)
-    if not texts:
-        raise ValueError(f"No texts found in {path}")
+    train_texts, val_texts = split_documents(path, val_fraction, seed)
 
-    random.Random(seed).shuffle(texts)
+    report = None
+    if supplement is not None and supplement_fraction > 0.0:
+        pairs = load_supplement(supplement, tokenizer)
+        raw_tokens = [len(tokenizer(t, add_special_tokens=True)["input_ids"]) for t in train_texts]
+        pair_tokens = [len(tokenizer(t, add_special_tokens=True)["input_ids"]) for t in pairs]
+        chosen = select_supplement_prefix(raw_tokens, pair_tokens, supplement_fraction)
+        report = {"n_available": len(pairs), "n_used": chosen.n_used,
+                  "target_fraction": supplement_fraction,
+                  "achieved_fraction": chosen.achieved_fraction,
+                  "under_target": chosen.under_target}
+        if chosen.under_target:
+            logger.warning("Supplement pool short of the target: %d pairs give a token share of "
+                           "%.3f against %.3f asked", chosen.n_used, chosen.achieved_fraction,
+                           supplement_fraction)
+        train_texts = train_texts + pairs[:chosen.n_used]
+        random.Random(seed + 1).shuffle(train_texts)
 
     def build(subset: list[str]) -> ChunkedCorpus:
-        return ChunkedCorpus(subset, tokenizer, max_length=max_length, stride=stride,
-                             keep_short_whole=keep_short_whole)
+        corpus = ChunkedCorpus(subset, tokenizer, max_length=max_length, stride=stride,
+                               keep_short_whole=keep_short_whole)
+        corpus.supplement_report = None
+        return corpus
 
+    train = build(train_texts)
+    train.supplement_report = report
     if val_fraction <= 0.0:
-        return build(texts), None
-
-    split_idx = int(len(texts) * (1 - val_fraction))
-    if split_idx == 0:
-        raise ValueError(
-            f"val_fraction={val_fraction} holds out all {len(texts)} document(s) found in "
-            f"{path}, leaving nothing to train on. Lower it, or pass val_fraction=0.0 to train "
-            "on everything and read the domain number as a fit rather than a measurement."
-        )
-    return build(texts[:split_idx]), build(texts[split_idx:])
+        return train, None
+    return train, build(val_texts)
 
 
 # ------------------------------------------------------------------------------------------

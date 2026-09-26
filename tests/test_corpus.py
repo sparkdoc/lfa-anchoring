@@ -30,8 +30,12 @@ from lfa.corpus import (
     ChunkedCorpus,
     CorpusTooLarge,
     load_corpus,
+    load_supplement,
     load_texts,
     make_dataloader,
+    render_pair,
+    select_supplement_prefix,
+    split_documents,
 )
 
 
@@ -569,12 +573,16 @@ def test_load_corpus_validation_split_is_deterministic(tmp_path, tiny_model, tin
 
 
 def test_a_split_that_holds_out_every_document_is_refused(tmp_path, tiny_model):
-    """The shipped recipe holds a tenth out by default, and a one-document corpus rounds that up
-    to all of it -- which would otherwise train on nothing and report a plausible loss for it."""
+    """Two documents at ``val_fraction=0.6`` round the training side down to none -- which would
+    otherwise train on nothing and report a plausible loss for it. (A one-document corpus is the
+    exception: it trains on its document and holds nothing out; see the test below.)"""
     _, tok = tiny_model
-    (tmp_path / "only.txt").write_text("the only document in this corpus " * 20)
+    for name in ("a.txt", "b.txt"):
+        (tmp_path / name).write_text(f"document {name} of this corpus " * 20)
     with pytest.raises(ValueError, match="nothing to train on"):
-        load_corpus(tmp_path, tok, max_length=128, val_fraction=0.1)
+        load_corpus(tmp_path, tok, max_length=128, val_fraction=0.6)
+    with pytest.raises(ValueError, match="nothing to train on"):
+        split_documents(tmp_path, 0.6, seed=0)
 
 
 def test_load_corpus_keeps_short_docs_whole_by_default(tmp_path, tiny_model):
@@ -633,7 +641,9 @@ def test_load_texts_renders_instruction_pairs_with_the_chat_template(tmp_path):
     (tmp_path / "pairs.jsonl").write_text('{"prompt":"q","response":"r"}\n')
 
     class Templating:
-        def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=False):
+        def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=False,
+                                enable_thinking=None):
+            assert enable_thinking is False           # the non-thinking turn, as render_pair
             return "<chat>" + "|".join(m["content"] for m in messages) + "</chat>"
 
     assert load_texts(tmp_path, tokenizer=Templating()) == ["<chat>q|r</chat>"]
@@ -647,3 +657,102 @@ def test_load_texts_falls_back_when_the_template_refuses(tmp_path):
             raise ValueError("this tokenizer has no chat template")
 
     assert load_texts(tmp_path, tokenizer=NoTemplate()) == ["q\nr"]
+
+
+# --------------------------------------------------------------------------------------
+# The written supplement: selection, rendering, mixing
+# --------------------------------------------------------------------------------------
+
+def test_zero_fraction_selects_no_pairs():
+    r = select_supplement_prefix([100, 100], [30, 30, 30], 0.0)
+    assert (r.n_used, r.achieved_fraction, r.under_target) == (0, 0.0, False)
+
+
+def test_picks_the_count_closest_to_the_target():
+    # total_raw=200, target=0.2 -> needed=50; n=1: 30/230=0.130; n=2: 60/260=0.231 -> 2
+    r = select_supplement_prefix([100, 100], [30, 30, 30], 0.2)
+    assert r.n_used == 2 and r.achieved_fraction == pytest.approx(60 / 260, abs=1e-4)
+    assert r.under_target is False
+
+
+def test_a_pool_too_small_takes_all_and_flags_under_target():
+    r = select_supplement_prefix([100], [10, 10], 0.5)
+    assert r.n_used == 2 and r.under_target is True
+    assert r.achieved_fraction == pytest.approx(20 / 120, abs=1e-4)
+
+
+def test_an_empty_pool_with_a_positive_target_is_under():
+    r = select_supplement_prefix([100], [], 0.25)
+    assert (r.n_used, r.achieved_fraction, r.under_target) == (0, 0.0, True)
+
+
+def test_a_fraction_at_or_above_one_is_rejected():
+    with pytest.raises(ValueError):
+        select_supplement_prefix([100], [10], 1.0)
+
+
+def test_a_pool_larger_than_the_target_uses_a_prefix_and_reports_the_rest(tmp_path, tiny_model):
+    _, tokenizer = tiny_model
+    docs = tmp_path / "docs"; docs.mkdir()
+    for i in range(4):
+        (docs / f"d{i}.txt").write_text("raw document text " * 20)
+    supp = tmp_path / "supplement.jsonl"
+    supp.write_text("".join('{"prompt": "q%d?", "response": "a%d."}\n' % (i, i) for i in range(40)))
+
+    train, _ = load_corpus(docs, tokenizer, max_length=64, val_fraction=0.0, seed=0,
+                           supplement=supp, supplement_fraction=0.1)
+
+    report = train.supplement_report
+    assert report["n_available"] == 40 and 0 < report["n_used"] < 40
+    assert abs(report["achieved_fraction"] - 0.1) < 0.05 and report["under_target"] is False
+
+
+def test_the_held_out_split_is_taken_from_raw_documents_before_mixing(tmp_path, tiny_model):
+    _, tokenizer = tiny_model
+    docs = tmp_path / "docs"; docs.mkdir()
+    for i in range(10):
+        (docs / f"d{i}.txt").write_text(f"raw document {i} " * 20)
+    supp = tmp_path / "supplement.jsonl"
+    supp.write_text('{"prompt": "q?", "response": "PAIRTEXT."}\n' * 5)
+
+    train_docs, held = split_documents(docs, 0.2, seed=3)
+    train, val = load_corpus(docs, tokenizer, max_length=64, val_fraction=0.2, seed=3,
+                             supplement=supp, supplement_fraction=0.3)
+
+    assert len(held) == 2 and val.report["n_docs"] == 2
+    assert not any("PAIRTEXT" in t for t in held)
+    assert train.report["n_docs"] == 8 + train.supplement_report["n_used"]
+
+
+def test_a_single_document_corpus_trains_on_it_and_holds_nothing_out(tmp_path, tiny_model):
+    _, tokenizer = tiny_model
+    docs = tmp_path / "docs"; docs.mkdir()
+    (docs / "only.txt").write_text("one long document " * 50)
+    train, val = load_corpus(docs, tokenizer, max_length=64, val_fraction=0.1, seed=0)
+    assert train.report["n_docs"] == 1 and val is not None and val.report["n_docs"] == 0
+
+
+def test_render_pair_uses_the_non_thinking_template_when_there_is_one():
+    class T:
+        def apply_chat_template(self, messages, tokenize=False, enable_thinking=None, **_):
+            assert enable_thinking is False
+            return "<u>" + messages[0]["content"] + "</u><a>" + messages[1]["content"] + "</a>"
+    assert render_pair(T(), "q", "a") == "<u>q</u><a>a</a>"
+
+    class NoTemplate:
+        def apply_chat_template(self, *a, **k):
+            raise ValueError("none")
+    assert render_pair(NoTemplate(), "q", "a") == "q\na"
+
+
+def test_load_supplement_renders_pairs_in_file_order_and_skips_blank_and_promptless_lines(
+        tmp_path):
+    supp = tmp_path / "supplement.jsonl"
+    supp.write_text('{"prompt": "q1", "response": "a1"}\n\n{"response": "orphan"}\n'
+                    '{"prompt": "q2", "response": "a2"}\n')
+
+    class NoTemplate:
+        def apply_chat_template(self, *a, **k):
+            raise ValueError("none")
+
+    assert load_supplement(supp, NoTemplate()) == ["q1\na1", "q2\na2"]
