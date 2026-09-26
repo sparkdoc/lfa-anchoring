@@ -25,6 +25,16 @@ here. Every document this work touches says "reachability", never "retention".
 one seed, three domains for C15. Judge `gpt-5.6-luna@medium`. The package docs state this scope
 wherever a number appears and quote nothing as the package's own measurement.
 
+## 1a. Amendments after reading the code (2026-09-26, plan-writing)
+
+* The supplement lives in the **workspace**, `<ws>/supplements/<corpus sha256[:12]>/`, not inside
+  the corpus directory: `lfa.corpus.load_texts` walks the corpus tree recursively, so a JSONL
+  placed there would be read as raw documents and leak into the held-out split.
+* Generation seeds torch's global RNG per batch rather than holding a private generator, because
+  `transformers.generate` takes none.
+* Pairs record `source_index` (position in the seed-shuffled training side) rather than a file
+  name, because the loader hands documents on as strings.
+
 ## 2. Decisions taken in conversation
 
 | decision | choice | why |
@@ -59,15 +69,20 @@ Data flow, single domain, fully self-supplied:
 
 ```
 model ──generate.py──► artifacts/v1_corpus.jsonl ──build_artifact──► artifacts/v1.pt
-model + training-side docs ──supplement.py──► <domain>/.lfa/supplement.jsonl
+model + training-side docs ──supplement.py──► <ws>/supplements/<hash>/supplement.jsonl
 raw train docs + supplement prefix at f ──corpus.py──► ChunkedCorpus ──train──► stage model
 ```
 
 ### 3.1 `lfa/selfgen/generate.py`
 
 `generate_texts(model, tokenizer, prompts, *, max_new_tokens, temperature, top_p, stop_token_ids,
-generator, batch_size) -> list[str]`: batched sampling with an explicit attention mask, a private
-`torch.Generator` seeded by the caller, and decoding that stops at any id in `stop_token_ids`.
+seed, batch_size) -> list[str]`: batched sampling with an explicit attention mask and decoding that
+stops at any id in `stop_token_ids`. Hugging Face `generate` accepts no private generator, so
+reproducibility comes from seeding torch's global RNG from `(seed, batch_index)` before every
+batch, which the research script also relied on. Every truncation knob is passed explicitly
+(`top_k=0`, `min_p=0.0`, `repetition_penalty=1.0`): Qwen3's `generation_config.json` ships
+`top_k: 20`, and inheriting it silently turns a full-vocabulary sample into a top-20 one (measured
+in the research record, 2026-09-09).
 
 Ported as written from `scripts/prepare_selfgen_corpus.py` (mr-fusion): `pick_seed_prefix` (declared
 sequence-start id, then BOS, then EOS, then newline), `drop_burn_in` (default 0, as measured),
@@ -130,7 +145,7 @@ the existing rollback guard removes what init created if the build raises. Recor
 
 1. resolve the recipe; if `supplement_fraction > 0` and `supplement is not False`:
    * `supplement` a path: use that JSONL;
-   * else look for `<corpus>/.lfa/supplement.jsonl` whose manifest matches (`corpus_sha256` of the
+   * else look for `<workspace>/supplements/<corpus sha256[:12]>/supplement.jsonl` whose manifest matches (`corpus_sha256` of the
      training-side documents, writer checkpoint sha256, template sha256, `lfa` major.minor); reuse
      on match, else regenerate;
 2. `supplement=False`: train at f=0; the recipe warning fires ("λ was calibrated at
@@ -175,7 +190,8 @@ max_answer_chars=100_000, seed=42) -> Manifest`.
 * **Parser**: `parse_qa_pairs` as written: JSON objects first, salvaging complete objects from a
   truncated array, then `Question:/Answer:` markers; `parse_assistant_turn` strips the chat wrapper.
 * **Filters**: answer length in `[min_answer_chars, max_answer_chars]`; exact-duplicate pairs dropped.
-* **Output**: `{"prompt", "response", "source_doc"}` rows, in generation order (the prefix rule in
+* **Output**: `{"prompt", "response", "source_index"}` rows (the index of the document in the
+  seed-shuffled training side), in generation order (the prefix rule in
   §3.8 depends on the order being fixed), and `<out>.manifest.json` with writer checkpoint sha256,
   template sha256 and text, decoding settings, passage count, pairs kept, rejection tally, the
   training-side corpus sha256, `lfa` version.
