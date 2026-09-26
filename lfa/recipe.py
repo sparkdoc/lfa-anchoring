@@ -59,6 +59,14 @@ class Recipe:
             the corpus, so a chain over a new pair of domains re-tunes it.
         calibrated_rank: The LoRA rank the lambdas were tuned at.
         calibrated_artifact: The artifact id the lambdas were tuned against.
+        calibrated_self_generated: True when an artifact fitted on this model's own text (meta
+            ``provenance == "self-generated"``) is a calibrated substitute for
+            :attr:`calibrated_artifact`, so :meth:`warnings` stays silent about it. False makes a
+            self-generated artifact a re-tune like any other artifact swap.
+        supplement_fraction: The share of training *tokens* made up of the question-and-answer
+            pairs the entry model writes from the domain, in ``[0, 1)``. 0.13 is the frame the
+            shipped lambda was tuned at; 0.0 trains on the raw corpus alone (off that frame). It
+            is read by the workspace, not by :meth:`to_train_config`.
 
     Every other field is the corresponding :class:`lfa.train.TrainConfig` knob; see that class for
     what each does. Values are validated on construction, so a hand-edited YAML fails at load
@@ -99,11 +107,18 @@ class Recipe:
     seed: int = 42
     keep_short_whole: bool = True
     val_fraction: float = 0.1
+    # -- the supplement: the question-and-answer pairs the entry model writes from the domain,
+    #    mixed in at this share of training TOKENS. 0.13 is the frame the shipped lambda was
+    #    tuned at; 0.0 trains on the raw corpus alone (and is off that frame).
+    supplement_fraction: float = 0.13
 
     # -- what the point was calibrated at
     stage2_lambda_multiplier: float = 3.0
     calibrated_rank: int = 32
     calibrated_artifact: str = "qwen3-0.6b-gmm1543k-int8"
+    # True when an artifact fitted on this model's OWN text is a calibrated substitute for
+    # `calibrated_artifact` (Qwen3-0.6B: C12, a tie at every lambda tried; one seed).
+    calibrated_self_generated: bool = False
 
     def __post_init__(self) -> None:
         if self.epochs < 1:
@@ -123,6 +138,10 @@ class Recipe:
                 f"val_fraction must be in [0, 1), got {self.val_fraction}: it is the share of "
                 "DOCUMENTS held out of training, so 1.0 would leave nothing to train on"
             )
+        if not 0.0 <= self.supplement_fraction < 1.0:
+            raise ValueError(
+                f"supplement_fraction must be in [0, 1), got {self.supplement_fraction}: it is "
+                "the share of training TOKENS the written pairs make up.")
 
     # ------------------------------------------------------------------ loading and saving
 
@@ -232,12 +251,21 @@ class Recipe:
             val_fraction=self.val_fraction,
         )
 
-    def warnings(self, rank: int, artifact_id: str) -> list[str]:
+    def warnings(self, rank: int, artifact_id: str, artifact_meta: dict | None = None) -> list[str]:
         """What is off-calibration about running this recipe at ``rank`` on ``artifact_id``.
 
         Empty when the run sits at the point the lambdas were tuned at. Each string says what
         moved and which way to re-tune; none of them is a refusal -- an off-calibration run is
         allowed, it just is not the measured operating point.
+
+        Args:
+            rank: The LoRA rank the run trains at.
+            artifact_id: The id of the p(h) artifact the run anchors against.
+            artifact_meta: That artifact's meta (``None`` or ``{}`` when unknown). When its
+                ``provenance`` is ``"self-generated"`` the artifact is judged by who wrote the
+                text rather than by its id: silent for this recipe's own model when
+                :attr:`calibrated_self_generated` is set, a calibrate-lambda note when it is not,
+                and a mismatch note when the text came from another model.
         """
         notes: list[str] = []
         # The two site families can carry different lambdas; quoting one of them as "the lambda"
@@ -254,7 +282,25 @@ class Recipe:
                 "diagnose against held-out domain perplexity, since over-anchoring makes "
                 "general-text perplexity look its best."
             )
-        if artifact_id != self.calibrated_artifact:
+        meta = artifact_meta or {}
+        self_generated = meta.get("provenance") == "self-generated"
+        if self_generated:
+            if meta.get("model_id") == self.model_id and self.calibrated_self_generated:
+                pass                                       # the calibrated substitute
+            elif meta.get("model_id") == self.model_id:
+                notes.append(
+                    "this artifact was fitted on the model's own text and this recipe does not "
+                    "record self-generation as calibrated: calibrate lambda against held-out "
+                    "domain perplexity (docs/adding-a-model.md, 'Calibrating λ'), reading the "
+                    "frontier rather than a single point."
+                )
+            else:
+                notes.append(
+                    f"this self-generated artifact describes {meta.get('model_id')!r}, not this "
+                    f"recipe's {self.model_id!r}: lambda is coupled to the p(h) artifact, so "
+                    "calibrate it against held-out domain perplexity for this model."
+                )
+        elif artifact_id != self.calibrated_artifact:
             notes.append(
                 f"lambda is coupled to the p(h) artifact: this recipe's lambda was calibrated "
                 f"against {self.calibrated_artifact!r} and you are anchoring against "

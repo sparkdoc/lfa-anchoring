@@ -28,6 +28,7 @@ SHIPPED = dict(
     val_fraction=0.1,
     stage2_lambda_multiplier=3.0, calibrated_rank=32,
     calibrated_artifact="qwen3-0.6b-gmm1543k-int8",
+    supplement_fraction=0.13, calibrated_self_generated=True,
 )
 
 
@@ -254,3 +255,48 @@ def test_the_shipped_point_holds_a_tenth_of_the_documents_out(tmp_path):
     assert recipe.val_fraction == 0.1
     assert yaml.safe_load((BUNDLED_DIR / "qwen3-0.6b.yaml").read_text())["val_fraction"] == 0.1
     assert recipe.to_train_config(1, tmp_path / "s.pt").val_fraction == 0.1
+
+
+def _recipe(**overrides):
+    """The bundled Qwen3 point with fields overridden (it is calibrated by declaration)."""
+    return dataclasses.replace(Recipe.load("qwen3-0.6b"), **overrides)
+
+
+SELFGEN_META = {"model_id": "Qwen/Qwen3-0.6B", "provenance": "self-generated"}
+
+
+def test_a_self_generated_artifact_on_the_calibrated_model_and_flag_is_silent():
+    recipe = _recipe(model_id="Qwen/Qwen3-0.6B", calibrated_self_generated=True)
+    assert recipe.warnings(recipe.calibrated_rank, "self-generated:abc", SELFGEN_META) == []
+
+
+def test_a_self_generated_artifact_without_the_flag_warns_to_calibrate():
+    recipe = _recipe(model_id="Qwen/Qwen3-0.6B", calibrated_self_generated=False)
+    notes = recipe.warnings(recipe.calibrated_rank, "self-generated:abc", SELFGEN_META)
+    assert len(notes) == 1 and "calibrate lambda" in notes[0] and "adding-a-model" in notes[0]
+
+
+def test_a_self_generated_artifact_for_another_model_warns_even_with_the_flag():
+    recipe = _recipe(model_id="Qwen/Qwen3-0.6B", calibrated_self_generated=True)
+    meta = {**SELFGEN_META, "model_id": "someone/other-model"}
+    notes = recipe.warnings(recipe.calibrated_rank, "self-generated:abc", meta)
+    assert len(notes) == 1 and "self-generated" in notes[0]
+
+
+def test_a_real_text_artifact_keeps_the_existing_swap_warning():
+    recipe = _recipe(model_id="Qwen/Qwen3-0.6B", calibrated_self_generated=True)
+    notes = recipe.warnings(recipe.calibrated_rank, "other-artifact",
+                            {"model_id": "Qwen/Qwen3-0.6B", "provenance": None})
+    assert len(notes) == 1 and "coupled to the p(h) artifact" in notes[0]
+
+
+def test_supplement_fraction_is_validated_and_defaults_to_the_measured_frame():
+    assert _recipe().supplement_fraction == 0.13
+    with pytest.raises(ValueError, match="supplement_fraction"):
+        _recipe(supplement_fraction=1.0)
+
+
+def test_the_bundled_qwen3_recipe_is_calibrated_for_self_generation():
+    from lfa import Recipe
+    recipe = Recipe.load("qwen3-0.6b")
+    assert recipe.calibrated_self_generated is True and recipe.supplement_fraction == 0.13
