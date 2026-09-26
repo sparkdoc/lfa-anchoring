@@ -95,8 +95,13 @@ def _open(args) -> Workspace:
 
 
 def _init(args) -> int:
+    selfgen = None
+    if args.artifact == "self-generated":
+        selfgen = SelfGenOptions(n_raw=args.n_raw, n_chat=args.n_chat,
+                                 max_new_tokens=args.max_new_tokens, device=args.device)
     workspace = Workspace.init(args.path, args.model, artifact=args.artifact,
-                               recipe=args.recipe, artifact_id=args.artifact_id)
+                               recipe=args.recipe, artifact_id=args.artifact_id,
+                               selfgen=selfgen)
     # `Workspace.init` already LOGS that the workspace was created, and the CLI configures
     # logging, so printing the same sentence here showed it twice. Say the next step instead.
     print(f"Next: lfa train --workspace {workspace.path} --corpus <your documents>")
@@ -226,8 +231,9 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--model", required=True, metavar="ID",
                       help="a Hub id or a local checkpoint path")
     init.add_argument("--artifact", default="qwen3-0.6b-gmm1543k-int8", metavar="ID",
-                      help="a published artifact id or a path to an artifact file "
-                           "(default: %(default)s)")
+                      help="a published artifact id, a path to an artifact file, or "
+                           "`self-generated` to build one from the model's own text (no "
+                           "download) (default: %(default)s)")
     init.add_argument("--artifact-id", dest="artifact_id", metavar="ID",
                       help="the published artifact id a locally-passed artifact FILE is a copy "
                            "of, so the recipe's calibration is read against it rather than "
@@ -235,6 +241,16 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--recipe", metavar="NAME",
                       help="the workspace's default recipe: a bundled name or a path (default: "
                            "the bundled recipe that names this model, if there is one)")
+    init.add_argument("--n-raw", dest="n_raw", type=int, default=2500, metavar="N",
+                      help="--artifact self-generated: raw documents to write (default: "
+                           "%(default)s)")
+    init.add_argument("--n-chat", dest="n_chat", type=int, default=250, metavar="N",
+                      help="--artifact self-generated: chat-format documents (default: "
+                           "%(default)s)")
+    init.add_argument("--max-new-tokens", dest="max_new_tokens", type=int, default=2048,
+                      metavar="N", help="--artifact self-generated: tokens per document "
+                                       "(default: %(default)s)")
+    _add_device(init)
     init.set_defaults(handler=_init)
 
     # ------------------------------------------------------------------------- fetch-artifact

@@ -15,6 +15,7 @@ from lfa.sampler import Sampler
 from lfa.selfgen.artifact_corpus import SelfGenOptions, write_artifact_corpus
 from lfa.selfgen.generate import (boundary_markers, chat_user_header, clean_raw, generate_texts,
                                   load_writer, pick_seed_prefix)
+from lfa.workspace import Workspace
 
 pytestmark = pytest.mark.gpu
 
@@ -89,3 +90,10 @@ def test_a_self_generated_artifact_fits_carries_provenance_and_samples(small_art
     sampler = Sampler(small_artifact, device=DEVICE, seed=0)
     draw = sampler.sample_best(5, "pre_mlp", 8)
     assert draw is not None and draw.shape == (8, 1024)
+
+
+def test_init_self_generated_on_qwen3_records_the_corpus_hash(tmp_path):
+    ws = Workspace.init(tmp_path / "ws", MODEL, artifact="self-generated", selfgen=SMALL)
+    assert ws.state["artifact_id"].startswith("self-generated:")
+    assert (tmp_path / "ws" / "artifacts" / "v1.corpus.jsonl.manifest.json").is_file()
+    assert ws._artifact_meta()["provenance"] == "self-generated"

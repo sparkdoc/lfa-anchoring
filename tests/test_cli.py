@@ -488,3 +488,23 @@ def test_build_artifact_over_a_corpus_keeps_its_own_sample_count(monkeypatch, ca
                         lambda model_id, corpus, out, **kwargs: seen.update(kwargs) or out)
     assert main(["build-artifact", "--model", "m", "--out", "x.pt", "--corpus", "c.jsonl"]) == 0
     assert seen["max_samples"] == 1_500_000
+
+
+def test_init_self_generated_is_routed_to_the_builder(tmp_path, base_dir, tiny_artifact,
+                                                       monkeypatch, capsys):
+    import lfa.workspace as ws_module
+    _, fixture = tiny_artifact
+    seen = {}
+
+    def fake_build(model_id, out_path, options, **kwargs):
+        seen["n_raw"] = options.n_raw
+        Path(out_path).write_bytes(fixture.read_bytes())
+        Path(out_path).with_suffix(".corpus.jsonl").write_text('{"text": "x"}\n')
+        Path(str(Path(out_path).with_suffix(".corpus.jsonl")) + ".manifest.json").write_text(
+            '{"corpus_sha256": "%s"}' % ("f" * 64))
+        return Path(out_path)
+    monkeypatch.setattr(ws_module, "build_artifact_self_generated", fake_build)
+
+    assert main(["init", str(tmp_path / "ws"), "--model", str(base_dir),
+                 "--artifact", "self-generated", "--n-raw", "7"]) == 0
+    assert seen["n_raw"] == 7

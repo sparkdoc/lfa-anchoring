@@ -1168,3 +1168,108 @@ def _chain_workspace(tmp_path, base_dir) -> Workspace:
     """A workspace whose default recipe is the tiny one, so a spec need not name it."""
     recipe_path = tiny_recipe(base_dir).save(tmp_path / "tiny_recipe.yaml")
     return new_workspace(tmp_path / "ws", base_dir, recipe=str(recipe_path))
+
+
+# --------------------------------------------------------------------- self-generated init
+SELF_GENERATED = "self-generated"
+
+
+def test_init_self_generated_builds_into_v1_and_records_provenance(tmp_path, base_dir,
+                                                                    tiny_artifact, monkeypatch):
+    import lfa.workspace as ws_module
+    _, fixture = tiny_artifact
+
+    def fake_build(model_id, out_path, options, **kwargs):
+        Path(out_path).write_bytes(fixture.read_bytes())
+        Path(out_path).with_suffix(".corpus.jsonl").write_text('{"text": "x"}\n')
+        Path(str(Path(out_path).with_suffix(".corpus.jsonl")) + ".manifest.json").write_text(
+            '{"corpus_sha256": "%s"}' % ("e" * 64))
+        return Path(out_path)
+    monkeypatch.setattr(ws_module, "build_artifact_self_generated", fake_build)
+
+    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact=SELF_GENERATED)
+
+    assert (tmp_path / "ws" / "artifacts" / "v1.pt").is_file()
+    assert (tmp_path / "ws" / "artifacts" / "v1.corpus.jsonl").is_file()
+    assert ws.state["artifact_id"] == "self-generated:" + "e" * 12
+    assert ws.state["artifact_provenance"] == SELF_GENERATED
+
+
+def test_init_self_generated_rolls_back_when_the_build_raises(tmp_path, base_dir, monkeypatch):
+    import lfa.workspace as ws_module
+
+    def failing(model_id, out_path, options, **kwargs):
+        raise RuntimeError("no card")
+    monkeypatch.setattr(ws_module, "build_artifact_self_generated", failing)
+
+    with pytest.raises(RuntimeError, match="no card"):
+        Workspace.init(tmp_path / "ws", str(base_dir), artifact=SELF_GENERATED)
+    assert not (tmp_path / "ws").exists()
+
+
+def test_init_self_generated_rollback_removes_the_partial_files_the_build_left(
+        tmp_path, base_dir, monkeypatch):
+    """A build that dies mid-fit has already written its corpus; `rmdir` alone would keep it."""
+    import lfa.workspace as ws_module
+
+    def dies_after_the_corpus(model_id, out_path, options, **kwargs):
+        corpus = Path(out_path).with_suffix(".corpus.jsonl")
+        corpus.write_text('{"text": "x"}\n')
+        Path(str(corpus) + ".manifest.json").write_text('{"corpus_sha256": "%s"}' % ("e" * 64))
+        raise MemoryError("host RAM")
+    monkeypatch.setattr(ws_module, "build_artifact_self_generated", dies_after_the_corpus)
+
+    with pytest.raises(MemoryError, match="host RAM"):
+        Workspace.init(tmp_path / "ws", str(base_dir), artifact=SELF_GENERATED)
+    assert not (tmp_path / "ws").exists()
+
+
+def test_init_self_generated_refuses_an_artifact_id_before_creating_anything(tmp_path, base_dir):
+    with pytest.raises(ValueError, match="corpus hash"):
+        Workspace.init(tmp_path / "ws", str(base_dir), artifact=SELF_GENERATED,
+                       artifact_id="tiny")
+    assert not (tmp_path / "ws").exists()
+
+
+def test_every_other_init_records_no_provenance(tmp_path, base_dir, tiny_artifact):
+    _, fixture = tiny_artifact
+    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact=str(fixture))
+    assert ws.state["artifact_provenance"] is None
+    assert Workspace.open(tmp_path / "ws").state["artifact_provenance"] is None
+
+
+def test_train_reads_a_self_generated_artifact_by_its_provenance_not_its_id(
+        tmp_path, base_dir, corpus_a, tiny_artifact, monkeypatch, caplog):
+    """The recipe is calibrated against "tiny"; the self-generated id is not that. Without the
+    artifact's meta the run would warn about an artifact mismatch; with it, the note is the
+    calibrate-lambda one for this model's own text."""
+    import lfa.workspace as ws_module
+    from lfa.artifact.schema import META_KEY
+
+    params, _ = tiny_artifact
+
+    def fake_build(model_id, out_path, options, **kwargs):
+        built = copy.deepcopy(params)
+        built[META_KEY] = dict(built[META_KEY], model_id=model_id, provenance=SELF_GENERATED,
+                               corpus_sha256="e" * 64)
+        torch.save(built, out_path)
+        corpus = Path(out_path).with_suffix(".corpus.jsonl")
+        corpus.write_text('{"text": "x"}\n')
+        Path(str(corpus) + ".manifest.json").write_text('{"corpus_sha256": "%s"}' % ("e" * 64))
+        return Path(out_path)
+    monkeypatch.setattr(ws_module, "build_artifact_self_generated", fake_build)
+
+    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact=SELF_GENERATED)
+    assert ws._artifact_meta()["provenance"] == SELF_GENERATED
+    with caplog.at_level("WARNING", logger="lfa.workspace"):
+        ws.train(corpus_a, recipe=tiny_recipe(base_dir), device="cpu")
+
+    warned = [r.message for r in caplog.records if r.name == "lfa.workspace"
+              and r.levelname == "WARNING"]
+    assert any("fitted on the model's own text" in note for note in warned)
+    assert not any("calibrated against" in note for note in warned)
+
+
+def test_artifact_meta_is_empty_without_an_artifact(tmp_path, registry, base_dir):
+    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact="tiny", fetch=False)
+    assert ws._artifact_meta() == {}
