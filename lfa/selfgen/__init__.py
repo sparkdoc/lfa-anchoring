@@ -8,6 +8,6 @@ package documentation quotes about it carries that scope.
 """
 
 from .artifact_corpus import SelfGenOptions, write_artifact_corpus  # noqa: F401
-# from .supplement import write_supplement  # noqa: F401  (Task 9)
+from .supplement import write_supplement  # noqa: F401
 
-__all__ = ["SelfGenOptions", "write_artifact_corpus"]
+__all__ = ["SelfGenOptions", "write_artifact_corpus", "write_supplement"]

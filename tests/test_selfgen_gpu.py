@@ -15,6 +15,7 @@ from lfa.sampler import Sampler
 from lfa.selfgen.artifact_corpus import SelfGenOptions, write_artifact_corpus
 from lfa.selfgen.generate import (boundary_markers, chat_user_header, clean_raw, generate_texts,
                                   load_writer, pick_seed_prefix)
+from lfa.selfgen.supplement import SupplementOptions, write_supplement
 from lfa.workspace import Workspace
 
 pytestmark = pytest.mark.gpu
@@ -97,3 +98,35 @@ def test_init_self_generated_on_qwen3_records_the_corpus_hash(tmp_path):
     assert ws.state["artifact_id"].startswith("self-generated:")
     assert (tmp_path / "ws" / "artifacts" / "v1.corpus.jsonl.manifest.json").is_file()
     assert ws._artifact_meta()["provenance"] == "self-generated"
+
+
+DARWIN = """On the Origin of Species was published in 1859. Darwin argued that species change over
+time through a process he called natural selection, in which individuals better suited to their
+environment leave more offspring.
+
+He drew on his observations of finches in the Galapagos, whose beaks differed from island to
+island according to the food available, and on the practice of animal breeders, who select for
+traits deliberately.
+
+The book provoked immediate controversy, but by the 1870s most naturalists accepted that
+evolution had occurred, even where they doubted that natural selection was its main cause.
+""" * 3
+
+
+@pytest.fixture(scope="module")
+def small_supplement(tmp_path_factory, writer):
+    out = tmp_path_factory.mktemp("supp") / "supplement.jsonl"
+    manifest = write_supplement(MODEL, [DARWIN], out, domain_description="natural history",
+                                options=SupplementOptions(passage_chars=800, batch_size=4,
+                                                          max_new_tokens=512),
+                                corpus_sha256="0" * 64, writer=writer)
+    return out, manifest
+
+
+def test_qwen3_writes_parseable_pairs_from_a_real_passage(small_supplement):
+    import json
+    out, manifest = small_supplement
+    rows = [json.loads(l) for l in out.read_text().splitlines()]
+    assert manifest["n_passages"] >= 2 and manifest["n_pairs"] == len(rows) >= 2
+    assert all(len(r["response"]) >= 40 and r["prompt"].strip() for r in rows)
+    assert "about a text on natural history" in manifest["template"]
