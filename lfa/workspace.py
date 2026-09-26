@@ -668,7 +668,8 @@ class Workspace:
         if resolved.supplement_fraction > 0.0 and supplement is not False:
             if supplement is True:
                 supplement_path, supplement_manifest = self._supplement_for(
-                    corpus_path, resolved, domain_description=domain_description, device=device)
+                    corpus_path, resolved, domain_description=domain_description,
+                    placement=placement)
             else:
                 supplement_path = Path(supplement).expanduser().resolve()
                 manifest_file = Path(str(supplement_path) + ".manifest.json")
@@ -984,12 +985,14 @@ class Workspace:
                 torch.cuda.empty_cache()
 
     def _supplement_for(self, corpus_path: Path, recipe: Recipe, *, domain_description: str | None,
-                        device: str | dict, force: bool = False) -> tuple[Path, dict]:
+                        placement: str | dict, force: bool = False) -> tuple[Path, dict]:
         """The supplement for ``corpus_path``: reused when its manifest matches, else written.
 
         A match is the training side's corpus hash, the writer checkpoint's hash and the
         template's hash. The writer is the workspace's CURRENT model -- the stage's entry model
         -- so in a chain the fused model writes the next domain's pairs (the C15 protocol).
+        ``placement`` is already resolved by the caller (so a sharding the caller allowed is
+        not refused here); the writer runs on its primary device.
         """
         train_docs, _ = split_documents(corpus_path, recipe.val_fraction, recipe.seed)
         corpus_hash = sha256_text(train_docs)
@@ -1010,7 +1013,7 @@ class Workspace:
                     writer_id, len(train_docs))
         manifest = write_supplement(writer_id, train_docs, out, domain_description=description,
                                     options=SupplementOptions(), corpus_sha256=corpus_hash,
-                                    device=_primary_device(resolve_device(device)))
+                                    device=_primary_device(placement))
         return out, manifest
 
     def prepare_supplement(self, corpus, *, recipe: Recipe | str | Path | None = None,
@@ -1019,12 +1022,13 @@ class Workspace:
         """Write (or reuse) the supplement ``train`` would write for ``corpus``; return its path.
 
         The same file, from the same writer and training-side documents, that :meth:`train`
-        reuses -- so a supplement can be read before the stage that mixes it in.
+        reuses -- so a supplement can be read before the stage that mixes it in. ``device`` is
+        a single device: the writer is one model, so a sharding request is refused.
         """
         corpus_path = Path(corpus).expanduser().resolve()
         resolved = self._resolve_recipe(recipe)
         path, _ = self._supplement_for(corpus_path, resolved, domain_description=domain_description,
-                                       device=device, force=force)
+                                       placement=resolve_device(device), force=force)
         return path
 
     def _resolve_recipe(self, recipe: Recipe | str | Path | None) -> Recipe:
@@ -1315,9 +1319,13 @@ class Workspace:
         output_dir = self.path / "runs" / f"{Path(entry['output_dir']).name}_unanchored"
         logger.info("Unanchored control for stage %d -> %s: this is a SECOND full training "
                     "run, as long as the first, with lambda = mu = 0", entry["stage"], output_dir)
+        # The stage's own supplement at its own fraction: under the same seed the loader selects
+        # the same prefix, so the control trains on exactly the stage's documents.
+        mixed = entry.get("supplement") or {}
         self._run_training(config, Path(entry["corpus"]), entry["base_model"], output_dir,
                            placement=placement, dtype=dtype, allow_sharding=False, resume=False,
-                           anchored=False)
+                           anchored=False, supplement=mixed.get("path"),
+                           supplement_fraction=mixed.get("target_fraction", 0.0))
         return output_dir
 
     def _require_trained_stage(self) -> dict:

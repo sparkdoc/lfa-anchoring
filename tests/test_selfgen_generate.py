@@ -101,7 +101,9 @@ def test_generate_texts_passes_every_truncation_knob_and_decodes_only_new_tokens
 
         def __call__(self, prompts, **_):
             ids = torch.tensor([[0, 5], [6, 7]])
-            return BatchEncoding({"input_ids": ids, "attention_mask": (ids != 0).long()})
+            # A BERT-style tokenizer also emits token_type_ids, which `generate` refuses.
+            return BatchEncoding({"input_ids": ids, "attention_mask": (ids != 0).long(),
+                                  "token_type_ids": torch.zeros_like(ids)})
 
         def batch_decode(self, ids, skip_special_tokens):
             self.decoded, self.skip = ids.tolist(), skip_special_tokens
@@ -114,6 +116,7 @@ def test_generate_texts_passes_every_truncation_knob_and_decodes_only_new_tokens
     assert kw["top_k"] == 0 and kw["min_p"] == 0.0 and kw["repetition_penalty"] == 1.0
     assert kw["do_sample"] is True and kw["eos_token_id"] == [9, 10]
     assert kw["temperature"] == 1.0 and kw["top_p"] == 1.0 and kw["max_new_tokens"] == 3
+    assert "token_type_ids" not in kw and "attention_mask" in kw
     assert tok.decoded == [[50, 51, 52], [60, 61, 62]] and tok.skip is False
     assert out == ["50 51 52", "60 61 62"]
 

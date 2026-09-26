@@ -160,6 +160,8 @@ def generate_texts(model, tokenizer, prompts: list[str], *, max_new_tokens: int,
     torch.manual_seed(seed * 1_000_003 + batch_index)
     encoded = tokenizer(prompts, return_tensors="pt", padding=True,
                         add_special_tokens=False).to(model.device)
+    # A tokenizer that emits token_type_ids (BERT-style) would have `generate` refuse the call.
+    encoded.pop("token_type_ids", None)
     # transformers may log "right-padding was detected": Qwen3's pad token is <|endoftext|>, the
     # seed prefix itself, so a one-token prompt ends in the pad id. The attention mask is correct.
     with torch.no_grad():

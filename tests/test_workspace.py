@@ -1300,7 +1300,7 @@ def _fake_supplement_writer(calls):
     def write(model_id, documents, out_path, *, domain_description, options, corpus_sha256,
               generate=None, writer=None, device="cuda:0"):
         calls.append(dict(model_id=model_id, n_docs=len(documents), domain=domain_description,
-                          corpus_sha256=corpus_sha256))
+                          corpus_sha256=corpus_sha256, device=device))
         Path(out_path).parent.mkdir(parents=True, exist_ok=True)
         Path(out_path).write_text('{"prompt": "q?", "response": "%s", "source_index": 0}\n'
                                   % ("an answer " * 8) * 6)
@@ -1392,3 +1392,47 @@ def test_prepare_supplement_writes_once_and_names_the_file(tmp_path, registry, b
     assert first == second and first.name == "supplement.jsonl" and len(supplement_writer) == 1
     ws.prepare_supplement(corpus_a, recipe=tiny_recipe(base_dir), device="cpu", force=True)
     assert len(supplement_writer) == 2
+
+
+def test_the_unanchored_control_mixes_the_stage_supplement_at_its_fraction(
+        tmp_path, registry, base_dir, corpus_a, supplement_writer, monkeypatch):
+    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact="tiny")
+    entry = ws.train(corpus_a, recipe=tiny_recipe(base_dir, supplement_fraction=0.2),
+                     device="cpu")
+    mixed = []
+    real_load_corpus = workspace_module.load_corpus
+
+    def recording(*args, **kwargs):
+        if kwargs.get("supplement") is not None:
+            mixed.append((str(kwargs["supplement"]), kwargs["supplement_fraction"]))
+        return real_load_corpus(*args, **kwargs)
+
+    monkeypatch.setattr(workspace_module, "load_corpus", recording)
+    ws.evaluate(compare_unanchored=True, n_windows=None, device="cpu")
+
+    # The control is the stage without the anchor: same supplement, same fraction, same seed.
+    assert mixed == [(entry["supplement"]["path"], 0.2)]
+
+
+def test_a_single_device_map_still_writes_the_supplement(tmp_path, registry, base_dir,
+                                                         corpus_a, supplement_writer):
+    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact="tiny")
+    entry = ws.train(corpus_a, recipe=tiny_recipe(base_dir, supplement_fraction=0.2),
+                     device={"": "cpu"})
+    assert len(supplement_writer) == 1 and supplement_writer[0]["device"] == "cpu"
+    assert entry["supplement"]["n_pairs_used"] > 0
+
+
+def test_a_sharded_map_with_allow_sharding_gets_past_the_supplement_step(tmp_path, registry,
+                                                                         base_dir, corpus_a,
+                                                                         supplement_writer):
+    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact="tiny")
+    sharded = {"model": "cpu", "lm_head": "cpu:1"}
+    try:
+        ws.train(corpus_a, recipe=tiny_recipe(base_dir, supplement_fraction=0.2),
+                 device=sharded, allow_sharding=True)
+    except ShardingRefused as error:                      # the regression this guards
+        pytest.fail(f"allow_sharding=True was refused: {error}")
+    except Exception:                                     # a fake map may fail at load on CPU
+        pass
+    assert len(supplement_writer) == 1 and supplement_writer[0]["device"] == "cpu"
