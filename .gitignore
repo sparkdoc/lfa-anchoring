@@ -11,3 +11,6 @@ workspaces/
 # Not part of the package and not something a user should inherit.
 .claude/
 .mcp.json
+
+# git worktrees for feature branches (superpowers:using-git-worktrees)
+.worktrees/
