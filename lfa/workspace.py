@@ -426,6 +426,7 @@ class Workspace:
         created = [directory for directory in (path, artifacts_dir) if not directory.exists()]
         path.mkdir(parents=True, exist_ok=True)
         artifacts_dir.mkdir(exist_ok=True)
+        already_there = set(artifacts_dir.glob("v1*"))
 
         try:
             if self_generated:
@@ -446,9 +447,9 @@ class Workspace:
             # Only what this call made, and only while still empty: `rmdir` refuses a directory
             # with anything in it, which is the guard that keeps this from touching a workspace
             # that was already there. A self-generated build writes its corpus before it fits,
-            # so a failure mid-fit leaves `v1*` files that have to go first.
+            # so a failure mid-fit leaves `v1*` files of its own that have to go first.
             if self_generated:
-                for leftover in artifacts_dir.glob("v1*"):
+                for leftover in set(artifacts_dir.glob("v1*")) - already_there:
                     leftover.unlink(missing_ok=True)
             for directory in reversed(created):
                 try:

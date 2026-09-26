@@ -1273,3 +1273,22 @@ def test_train_reads_a_self_generated_artifact_by_its_provenance_not_its_id(
 def test_artifact_meta_is_empty_without_an_artifact(tmp_path, registry, base_dir):
     ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact="tiny", fetch=False)
     assert ws._artifact_meta() == {}
+
+
+def test_init_self_generated_rollback_keeps_files_it_did_not_write(tmp_path, base_dir,
+                                                                    monkeypatch):
+    """The rollback removes what this init made -- not a v1 file that was already there."""
+    import lfa.workspace as ws_module
+
+    def failing(model_id, out_path, options, **kwargs):
+        Path(out_path).with_suffix(".corpus.jsonl").write_text('{"text": "x"}\n')
+        raise RuntimeError("no card")
+    monkeypatch.setattr(ws_module, "build_artifact_self_generated", failing)
+    kept = tmp_path / "ws" / "artifacts" / "v1.pt"
+    kept.parent.mkdir(parents=True)
+    kept.write_bytes(b"not mine")
+
+    with pytest.raises(RuntimeError, match="no card"):
+        Workspace.init(tmp_path / "ws", str(base_dir), artifact=SELF_GENERATED)
+    assert kept.read_bytes() == b"not mine"
+    assert not (tmp_path / "ws" / "artifacts" / "v1.corpus.jsonl").exists()
