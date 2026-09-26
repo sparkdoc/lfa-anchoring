@@ -160,8 +160,9 @@ def _apply_repo_warning_filters() -> list[str]:
     """Apply this repo's `pyproject.toml` warning filters to the current `catch_warnings` scope.
 
     Read from the file and parsed with pytest's own parser, so a test that wants the project's
-    real strictness gets exactly it -- `error` first, then the two torch pin-memory deprecations
-    that are exempted by message. Returns the raw specs, for a test that wants to assert on them.
+    real strictness gets exactly it -- `error` first, then the exemptions `pyproject.toml`
+    explains (deprecation-class warnings attributed to modules outside `lfa` and `tests`, and
+    torch's NVML report). Returns the raw specs, for a test that wants to assert on them.
     """
     import tomllib
 

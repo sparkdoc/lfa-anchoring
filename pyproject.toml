@@ -57,14 +57,25 @@ lfa = ["recipes/*.yaml"]
 markers = ["gpu: needs CUDA", "slow: downloads data from the Hugging Face Hub", "release: the end state of RELEASING.md (fails until the release steps are done)", "notebook: executes the example notebooks end to end (a GPU, the network, ~19 minutes on an RTX 3090 for the walkthrough and about as much again for its companion)"]
 addopts = "-m 'not gpu and not slow and not release and not notebook'"
 # `error` first, so a warning this package starts emitting fails the suite instead of joining a
-# pile of noise. The two exemptions below are torch's own, not ours: `lfa.corpus.make_dataloader`
-# pins memory when CUDA is available (a real throughput feature), and torch 2.10's pin path calls
-# `Tensor.pin_memory(device)` / `Tensor.is_pinned(device)` with the device argument it has itself
-# deprecated -- three tensors per batch, ~18k lines over a GPU-machine suite run, and nothing this
-# package can do about it. They are matched by message so that any OTHER deprecation still errors.
+# pile of noise. Left at that, the rule is brittle in a way that has nothing to do with this
+# package: `error` applies to every warning raised anywhere in the process, so a deprecation that
+# a third-party library emits at import time -- torch and deepspeed under Python 3.14, say, the
+# latter pulled in by `accelerate` when it happens to be installed -- fails the suite on one
+# machine and not another. The three exemptions below narrow the rule without weakening it where
+# it matters. Deprecation-class warnings (`DeprecationWarning`, `PendingDeprecationWarning`,
+# `FutureWarning`) are ignored ONLY when they are attributed to a module outside `lfa` and
+# `tests`: a deprecated call made by this package's own code is still attributed to it (that is
+# what `stacklevel` is for) and still errors, and every other category -- `UserWarning`,
+# `RuntimeWarning` -- still errors wherever it comes from. These subsume torch 2.10's
+# `Tensor.pin_memory(device)` / `Tensor.is_pinned(device)` deprecations, which the previous list
+# exempted by message. The last entry is torch's own report that the NVIDIA driver could not be
+# reached (a container, a sandbox, a machine whose GPU is unplugged): the suite needs no GPU, so
+# a missing one is not a test failure.
 filterwarnings = [
     "error",
-    "ignore:The argument 'device' of Tensor.pin_memory\\(\\) is deprecated:DeprecationWarning",
-    "ignore:The argument 'device' of Tensor.is_pinned\\(\\) is deprecated:DeprecationWarning",
+    "ignore::DeprecationWarning:(?!lfa(\\.|$)|tests(\\.|$)).*",
+    "ignore::PendingDeprecationWarning:(?!lfa(\\.|$)|tests(\\.|$)).*",
+    "ignore::FutureWarning:(?!lfa(\\.|$)|tests(\\.|$)).*",
+    "ignore:Can't initialize NVML:UserWarning",
 ]
 testpaths = ["tests"]
