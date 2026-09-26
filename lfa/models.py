@@ -97,13 +97,11 @@ TEACHER_MODES = ("auto", "separate", "adapter_disabled")
 
 
 class MissingBuildToolchain(RuntimeError):
-    """Raised when a CUDA run would need to compile and this machine cannot.
+    """A CUDA run that would need to compile on a machine that cannot.
 
-    torch's triton backend JIT-compiles a small CUDA shim at the first GPU kernel launch, which
-    needs ``Python.h`` and a C compiler. Interpreters that ship their own headers (uv- and
-    conda-managed ones, most Docker images) have both; a distribution ``python3`` without its
-    ``-dev`` package has neither, and the failure otherwise arrives as a gcc error and a
-    sixty-line traceback through torch, minutes into a run.
+    Kept for callers that catch it (it is still in ``cli.USER_FACING_ERRORS``); it is no longer
+    raised. :func:`check_gpu_toolchain` now logs a one-time warning instead, because the
+    package's own training and generation paths ran on a GPU without ``Python.h`` (2026-09-26).
     """
 
 
@@ -111,18 +109,21 @@ class MissingBuildToolchain(RuntimeError):
 TOOLCHAIN_CHECK_OFF = "LFA_SKIP_TOOLCHAIN_CHECK"
 
 
+#: Set once the toolchain warning has been printed; the check runs on every workspace operation.
+_toolchain_warned = False
+
+
 def check_gpu_toolchain(device: str | dict) -> None:
-    """Refuse a CUDA run up front when the machine cannot compile triton's shim.
+    """Warn, once, when a CUDA run might need to compile and this machine cannot.
 
-    Called from :func:`resolve_device`, so it runs once per workspace operation, before a model
-    is loaded -- the point of it is to say this in one line at second zero rather than as
-    somebody else's traceback at minute five. It checks only what is cheap and decisive: the
-    presence of ``Python.h`` for the running interpreter, and a C compiler on ``PATH``.
-
-    Raises:
-        MissingBuildToolchain: naming what is missing, for this interpreter, with the remedy.
+    Some torch paths (inductor, custom triton kernels) JIT-compile a small CUDA shim on the
+    first kernel launch, which needs ``Python.h`` and a C compiler. The package's own training
+    and generation paths do not: a Qwen3-0.6B LoRA stage and an unconditional generation ran on
+    an RTX 2070 under a Python with no development headers (2026-09-26). So a missing
+    toolchain is reported once, as a warning naming the remedy, and the run proceeds.
     """
-    if os.environ.get(TOOLCHAIN_CHECK_OFF):
+    global _toolchain_warned
+    if os.environ.get(TOOLCHAIN_CHECK_OFF) or _toolchain_warned:
         return
     if not _single_device(device).startswith("cuda"):
         return
@@ -138,15 +139,14 @@ def check_gpu_toolchain(device: str | dict) -> None:
     if not missing:
         return
 
-    raise MissingBuildToolchain(
-        f"This machine cannot compile for the GPU, and a CUDA run needs to: {' and '.join(missing)}"
-        f" is missing for {sys.executable}. torch's triton backend compiles a small CUDA shim at "
-        "the first GPU kernel launch, so without them the run dies mid-training in gcc rather "
-        "than here. Install your distribution's development package for this interpreter "
-        "(`python3-dev` / `python3.13-dev`, plus `build-essential`), or use an interpreter that "
-        "ships its own headers (uv- or conda-managed). This is an environment prerequisite, not "
-        f"a defect in this package. Set {TOOLCHAIN_CHECK_OFF}=1 to skip this check on a machine "
-        "where your torch build never compiles."
+    _toolchain_warned = True
+    logger.warning(
+        "This machine cannot compile for the GPU: %s is missing for %s. This package's own "
+        "training and generation paths ran without it, but a torch path that JIT-compiles "
+        "(torch.compile, custom triton kernels) would fail in gcc mid-run. Install your "
+        "distribution's development package for this interpreter (`python3-dev` / "
+        "`python3.13-dev`, plus `build-essential`) if that happens. Set %s=1 to silence this.",
+        " and ".join(missing), sys.executable, TOOLCHAIN_CHECK_OFF,
     )
 
 
@@ -177,7 +177,6 @@ def resolve_device(device: str | dict | None = None, allow_sharding: bool = Fals
 
     Raises:
         ShardingRefused: for a sharding request without ``allow_sharding=True``.
-        MissingBuildToolchain: a CUDA device on a machine that cannot compile triton's shim.
     """
     if device is None:
         check_gpu_toolchain(DEFAULT_DEVICE)

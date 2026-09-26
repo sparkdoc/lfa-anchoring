@@ -47,8 +47,9 @@ card. Tested at torch 2.10.0+cu128, transformers 4.57.6, accelerate 1.14.0, peft
 (`pip install -c constraints-tested.txt lfa-anchoring` holds to those exactly).
 
 > Your `python3` must have its development headers (`python3-dev` + `build-essential` on Debian;
-> uv- and conda-managed interpreters ship them): torch compiles a small CUDA shim on the first
-> kernel launch. `lfa` checks before loading anything and says so in one line.
+> uv- and conda-managed interpreters ship them): some torch paths compile a small CUDA shim on the
+> first kernel launch; the package's own paths do not, so `lfa` warns once if the headers are
+> missing and proceeds.
 
 ## The building blocks
 

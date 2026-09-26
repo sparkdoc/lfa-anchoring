@@ -14,12 +14,11 @@ Add `[html]` or `[pdf]` if your documents are HTML or PDF; `[dev]` is the mainta
 (pytest, coverage, build) and an end user does not need it.
 
 **Prerequisites: Python ≥ 3.11 *with its development headers*, a C compiler, and a CUDA card.**
-torch's triton backend compiles a small CUDA shim at the first GPU kernel launch, so a
-distribution `python3` installed without `python3-dev` / `python3.13-dev` (and
-`build-essential`) has no `Python.h` and cannot train — while a uv- or conda-managed interpreter
-ships its own headers and is fine. `lfa` checks for the headers and a compiler before it loads a
-model, and refuses in one line if either is missing; `LFA_SKIP_TOOLCHAIN_CHECK=1` turns that
-check off for a machine where your torch build never compiles.
+Some torch paths compile a small CUDA shim on the first kernel launch; the package's own paths
+do not, so `lfa` warns once if the headers are missing and proceeds. A distribution `python3`
+installed without `python3-dev` / `python3.13-dev` (and `build-essential`) has no `Python.h`,
+while a uv- or conda-managed interpreter ships its own headers. `LFA_SKIP_TOOLCHAIN_CHECK=1`
+silences the warning.
 
 The versions this was built and tested against are pinned in
 [`constraints-tested.txt`](../constraints-tested.txt) (torch 2.10.0+cu128, transformers 4.57.6,

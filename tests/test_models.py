@@ -13,7 +13,6 @@ from lfa.adapters import effective_weight, get_adapter
 from lfa.models import (
     DEFAULT_DEVICE,
     TOOLCHAIN_CHECK_OFF,
-    MissingBuildToolchain,
     NoTrainableParameters,
     ShardingRefused,
     apply_lora,
@@ -238,11 +237,10 @@ def test_fuse_leaves_an_untouched_projection_alone(base_dir, lora_setup, tmp_pat
 
 # ------------------------------------------------------- the CUDA build-toolchain preflight
 #
-# A distribution `python3` without its `-dev` package has no `Python.h`, and torch's triton
-# backend JIT-compiles a small CUDA shim at the first GPU kernel launch. Without this check the
-# failure arrives minutes into a run as a gcc error under sixty lines of somebody else's
-# traceback -- which the documented rule ("a traceback is a bug in this package") then
-# misattributes to us.
+# A distribution `python3` without its `-dev` package has no `Python.h`, and some torch paths
+# (torch.compile, custom triton kernels) JIT-compile a small CUDA shim at the first kernel
+# launch. The package's own training and generation paths do not, so the preflight warns once,
+# naming the remedy, and lets the run proceed.
 
 
 @pytest.fixture
@@ -257,27 +255,33 @@ def no_headers(tmp_path, monkeypatch):
     return empty
 
 
-def test_a_cuda_run_without_python_headers_is_refused_before_anything_loads(no_headers):
-    with pytest.raises(MissingBuildToolchain) as refused:
+def test_a_cuda_run_without_python_headers_warns_once_and_proceeds(no_headers, caplog):
+    """A real Qwen3-0.6B LoRA step and a generation ran on an RTX 2070 with no headers
+    (2026-09-26), so the missing toolchain is a warning about a path some torch builds take,
+    not a refusal."""
+    import lfa.models as models_module
+
+    models_module._toolchain_warned = False
+    with caplog.at_level("WARNING", logger="lfa.models"):
+        check_gpu_toolchain("cuda:0")
         check_gpu_toolchain("cuda:0")
 
-    message = str(refused.value)
-    assert "Python development headers" in message
-    assert "python3-dev" in message                      # the remedy, in the user's own terms
-    assert "not a defect in this package" in message     # what the traceback rule needs to know
-    assert TOOLCHAIN_CHECK_OFF in message                # and the way past it
+    messages = [r.getMessage() for r in caplog.records if "Python development headers" in r.getMessage()]
+    assert len(messages) == 1                            # once per process
+    assert "python3-dev" in messages[0]
+    assert TOOLCHAIN_CHECK_OFF in messages[0]
+    assert resolve_device("cuda:0") == "cuda:0"          # and the resolver proceeds
 
 
-def test_the_preflight_also_wants_a_compiler(monkeypatch):
-    """Headers without a compiler is the other half of the same prerequisite."""
+def test_the_preflight_also_mentions_a_missing_compiler(monkeypatch, caplog):
     import lfa.models as models_module
 
     monkeypatch.delenv(TOOLCHAIN_CHECK_OFF, raising=False)
-    # `shutil` is imported into `lfa.models`, so this reaches the module's own lookup.
     monkeypatch.setattr(models_module.shutil, "which", lambda name: None)
-
-    with pytest.raises(MissingBuildToolchain, match="C compiler"):
-        check_gpu_toolchain({"": "cuda:0"})               # a single-device map, as workspaces use
+    models_module._toolchain_warned = False
+    with caplog.at_level("WARNING", logger="lfa.models"):
+        check_gpu_toolchain({"": "cuda:0"})
+    assert any("C compiler" in r.getMessage() for r in caplog.records)
 
 
 def test_a_cpu_run_needs_no_toolchain(no_headers):
@@ -285,16 +289,11 @@ def test_a_cpu_run_needs_no_toolchain(no_headers):
     assert resolve_device("cpu") == "cpu"                # and the resolver stays out of the way
 
 
-def test_the_preflight_can_be_switched_off_for_a_machine_that_never_compiles(no_headers,
-                                                                             monkeypatch):
+def test_the_preflight_can_be_switched_off(no_headers, monkeypatch, caplog):
+    import lfa.models as models_module
+
     monkeypatch.setenv(TOOLCHAIN_CHECK_OFF, "1")
-    check_gpu_toolchain("cuda:0")
-    assert resolve_device("cuda:0") == "cuda:0"
-
-
-def test_resolving_a_cuda_device_runs_the_preflight(no_headers):
-    """The one place every workspace operation passes through before it loads a model."""
-    with pytest.raises(MissingBuildToolchain):
-        resolve_device("cuda:0")
-    with pytest.raises(MissingBuildToolchain):
-        resolve_device(None)                             # the default device is a CUDA one
+    models_module._toolchain_warned = False
+    with caplog.at_level("WARNING", logger="lfa.models"):
+        check_gpu_toolchain("cuda:0")
+    assert not [r for r in caplog.records if "headers" in r.getMessage()]
