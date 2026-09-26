@@ -653,8 +653,10 @@ def load_corpus(
     training corpus's ``supplement_report`` says what was used (``None`` when nothing was
     mixed); a pool short of the target is logged at WARNING and used whole, never refused.
 
-    Returns ``(train, val)``; ``val`` is ``None`` when ``val_fraction <= 0``, which is this
-    function's default because most callers (the artifact extension, an explicit evaluation of a
+    Returns ``(train, val)``; ``val`` is ``None`` when nothing is held out -- ``val_fraction <= 0``,
+    or a one-document corpus, which cannot be split -- and never an empty corpus, which a trainer
+    would score as a perfect held-out curve. ``val_fraction <= 0`` is this function's default
+    because most callers (the artifact extension, an explicit evaluation of a
     named corpus) want every document. A training run does not: the shipped recipe sets
     ``val_fraction=0.1`` and :meth:`lfa.workspace.Workspace.train` passes it here, so the stage's
     domain number is a held-out measurement rather than a fit.
@@ -686,7 +688,7 @@ def load_corpus(
 
     train = build(train_texts)
     train.supplement_report = report
-    if val_fraction <= 0.0:
+    if not val_texts:
         return train, None
     return train, build(val_texts)
 

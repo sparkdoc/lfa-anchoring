@@ -729,7 +729,7 @@ def test_a_single_document_corpus_trains_on_it_and_holds_nothing_out(tmp_path, t
     docs = tmp_path / "docs"; docs.mkdir()
     (docs / "only.txt").write_text("one long document " * 50)
     train, val = load_corpus(docs, tokenizer, max_length=64, val_fraction=0.1, seed=0)
-    assert train.report["n_docs"] == 1 and val is not None and val.report["n_docs"] == 0
+    assert train.report["n_docs"] == 1 and val is None     # never an empty held-out corpus
 
 
 def test_render_pair_uses_the_non_thinking_template_when_there_is_one():
