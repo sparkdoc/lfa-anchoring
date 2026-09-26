@@ -88,7 +88,9 @@ def build_artifact(
         gmm_k: mixture components per site.
         layer_group_size: collect this many layers at a time instead of all at once, then fit and
             free before the next group, at the cost of one corpus pass per group. ``None`` keeps
-            every site live at once, which is only viable when the arithmetic below fits.
+            every site live at once, which is only viable when the arithmetic below fits. The
+            value is recorded in the meta block: the reservoir draws depend on it, so a rebuild
+            passes the same value.
         quantize: store the large fields blockwise-int8 (halves the file; dequantized on load).
         device: device to run collection on.
         seed: base seed -- the reservoir's draws and each site's GMM initialization derive from it.
@@ -177,6 +179,7 @@ def build_artifact(
         n_samples_total=max(site_counts),
         provenance=provenance,
         corpus_sha256=corpus_sha256,
+        layer_group_size=layer_group_size,
     )
     if token_counts is not None:
         frequencies = token_counts.float()
@@ -206,6 +209,11 @@ def choose_layer_group_size(hidden_size: int, pre_o_width: int, num_layers: int,
     bytes; the LM-head site rides on the last group and is inside the margin ``share`` leaves.
     With ``available_bytes`` unreadable (``None``) this returns 7, the Qwen3-0.6B setting
     documented on :func:`build_artifact`.
+
+    The choice is not neutral: grouping changes the reservoir draws and the fitted mixtures, not
+    the exact moments. So the value chosen here depends on the host's free memory at run time,
+    and the artifact's meta records it (``layer_group_size``); to reproduce a build, pass
+    ``--layer-group-size`` with the value in the artifact's meta.
     """
     if available_bytes is None:
         return _DOCUMENTED_LAYER_GROUP_SIZE
@@ -252,6 +260,9 @@ def build_artifact_self_generated(
     (2,500 + 250 documents; 600k samples per site; K=32). Scale it down for a smoke run. When
     ``options.layer_group_size`` is ``None`` the group is chosen from the model's config and the
     host's available memory (:func:`choose_layer_group_size`), and the choice is logged.
+    Grouping changes the reservoir draws and the fitted mixtures, not the exact moments, so the
+    value used (chosen or given) is recorded in the artifact's meta as ``layer_group_size``; to
+    reproduce a build, pass ``--layer-group-size`` with that value.
     """
     options = options or SelfGenOptions()
     out_path = Path(out_path)

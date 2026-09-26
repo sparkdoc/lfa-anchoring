@@ -77,6 +77,7 @@ def make_meta(
     built_with: str = "lfa-anchoring",
     provenance: str | None = None,
     corpus_sha256: str | None = None,
+    layer_group_size: int | None = None,
 ) -> dict:
     """The ``__meta__`` block: what the statistics describe, and what built them.
 
@@ -97,6 +98,9 @@ def make_meta(
             ``None`` for everything fitted on real text.
         corpus_sha256: the hash of the corpus file the statistics were collected on, when it is a
             generated one.
+        layer_group_size: how many layers were collected per pass; the reservoir draws depend on
+            it, so a rebuild passes the same value. ``None`` when unknown, or when every layer
+            was collected in one pass.
     """
     return {
         "model_id": model_id,
@@ -110,6 +114,7 @@ def make_meta(
         # domain); SELF_GENERATED is text the model wrote, and `corpus_sha256` then names it.
         "provenance": provenance,
         "corpus_sha256": corpus_sha256,
+        "layer_group_size": None if layer_group_size is None else int(layer_group_size),
     }
 
 

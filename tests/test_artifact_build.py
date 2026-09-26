@@ -229,6 +229,17 @@ def test_build_artifact_layer_groups_cover_the_same_sites(
     validate_against_model(params, model, get_adapter(model))
 
 
+def test_build_artifact_meta_records_the_layer_group_size(tmp_path, model_dir, corpus_file,
+                                                          built):
+    """Grouping changes the reservoir draws, so a rebuild needs the value the artifact used."""
+    assert load_artifact(built)["__meta__"]["layer_group_size"] is None
+    out = tmp_path / "grouped.pt"
+    build_artifact(str(model_dir), corpus_file, out, max_samples=1000, seq_len=128,
+                   pca_variance=0.9, gmm_k=2, layer_group_size=1, quantize=False,
+                   device="cpu", seed=0)
+    assert load_artifact(out)["__meta__"]["layer_group_size"] == 1
+
+
 # ------------------------------------------------------- meta / model agreement
 
 def test_validate_rejects_meta_that_contradicts_the_sites(built, tiny_model):
