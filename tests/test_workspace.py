@@ -1292,3 +1292,103 @@ def test_init_self_generated_rollback_keeps_files_it_did_not_write(tmp_path, bas
         Workspace.init(tmp_path / "ws", str(base_dir), artifact=SELF_GENERATED)
     assert kept.read_bytes() == b"not mine"
     assert not (tmp_path / "ws" / "artifacts" / "v1.corpus.jsonl").exists()
+
+
+# ------------------------------------------------------------------------- the supplement step
+
+def _fake_supplement_writer(calls):
+    def write(model_id, documents, out_path, *, domain_description, options, corpus_sha256,
+              generate=None, writer=None, device="cuda:0"):
+        calls.append(dict(model_id=model_id, n_docs=len(documents), domain=domain_description,
+                          corpus_sha256=corpus_sha256))
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(out_path).write_text('{"prompt": "q?", "response": "%s", "source_index": 0}\n'
+                                  % ("an answer " * 8) * 6)
+        manifest = {"writer_sha256": "w" * 64, "corpus_sha256": corpus_sha256,
+                    "template_sha256": "t" * 64, "n_pairs": 6, "lfa_version": "0.2.0"}
+        Path(str(out_path) + ".manifest.json").write_text(json.dumps(manifest))
+        return manifest
+    return write
+
+
+@pytest.fixture
+def supplement_writer(monkeypatch):
+    import lfa.workspace as ws_module
+    calls = []
+    monkeypatch.setattr(ws_module, "write_supplement", _fake_supplement_writer(calls))
+    monkeypatch.setattr(ws_module, "checkpoint_sha256", lambda m: "w" * 64)
+    monkeypatch.setattr(ws_module, "template_sha256", lambda: "t" * 64)
+    return calls
+
+
+def test_train_writes_the_supplement_from_the_training_side_and_records_it(tmp_path, registry,
+                                                                            base_dir, corpus_a,
+                                                                            supplement_writer):
+    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact="tiny")
+    recipe = tiny_recipe(base_dir, val_fraction=0.25, supplement_fraction=0.2)
+
+    entry = ws.train(corpus_a, recipe=recipe, device="cpu")
+
+    assert len(supplement_writer) == 1
+    assert supplement_writer[0]["n_docs"] == 6                      # 8 docs, 2 held out
+    assert supplement_writer[0]["model_id"] == str(base_dir)        # the stage's entry model
+    assert supplement_writer[0]["domain"] == "domain a"             # from the directory name
+    supp = entry["supplement"]
+    assert supp["n_pairs_available"] == 6 and 0 < supp["n_pairs_used"] <= 6
+    assert supp["target_fraction"] == 0.2 and supp["writer_sha256"] == "w" * 64
+    assert Path(supp["path"]).is_relative_to(tmp_path / "ws" / "supplements")
+    assert entry["n_val_docs"] == 2                                 # held-out count untouched
+
+
+def test_a_matching_supplement_is_reused_not_rewritten(tmp_path, registry, base_dir, corpus_a,
+                                                        supplement_writer):
+    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact="tiny")
+    recipe = tiny_recipe(base_dir, supplement_fraction=0.2)
+    ws.train(corpus_a, recipe=recipe, device="cpu")
+    ws.train(corpus_a, recipe=recipe, device="cpu")                # a repeat of the stage
+    assert len(supplement_writer) == 1
+
+
+def test_an_edited_corpus_regenerates_the_supplement(tmp_path, registry, base_dir,
+                                                     supplement_writer):
+    from conftest import make_corpus
+    corpus = make_corpus(tmp_path / "domain_x", "geology")
+    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact="tiny")
+    recipe = tiny_recipe(base_dir, supplement_fraction=0.2)
+    ws.train(corpus, recipe=recipe, device="cpu")
+    (corpus / "doc_0.txt").write_text("a different document about geology " * 6)
+    ws.train(corpus, recipe=recipe, device="cpu")
+    assert len(supplement_writer) == 2
+    assert supplement_writer[0]["corpus_sha256"] != supplement_writer[1]["corpus_sha256"]
+
+
+def test_supplement_false_trains_at_zero_and_warns(tmp_path, registry, base_dir, corpus_a,
+                                                    supplement_writer, caplog):
+    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact="tiny")
+    recipe = tiny_recipe(base_dir, supplement_fraction=0.2)
+    with caplog.at_level("WARNING", logger="lfa.workspace"):
+        entry = ws.train(corpus_a, recipe=recipe, device="cpu", supplement=False)
+    assert entry["supplement"] is None and not supplement_writer
+    assert any("supplement_fraction 0.2" in r.getMessage() and "mixes none" in r.getMessage()
+               for r in caplog.records)
+
+
+def test_a_supplement_path_is_used_as_given(tmp_path, registry, base_dir, corpus_a,
+                                             supplement_writer):
+    given = tmp_path / "mine.jsonl"
+    given.write_text('{"prompt": "q?", "response": "%s"}\n' % ("word " * 10) * 3)
+    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact="tiny")
+    entry = ws.train(corpus_a, recipe=tiny_recipe(base_dir, supplement_fraction=0.2),
+                     device="cpu", supplement=given)
+    assert not supplement_writer and entry["supplement"]["path"] == str(given)
+    assert entry["supplement"]["n_pairs_available"] == 3
+
+
+def test_prepare_supplement_writes_once_and_names_the_file(tmp_path, registry, base_dir,
+                                                            corpus_a, supplement_writer):
+    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact="tiny")
+    first = ws.prepare_supplement(corpus_a, recipe=tiny_recipe(base_dir), device="cpu")
+    second = ws.prepare_supplement(corpus_a, recipe=tiny_recipe(base_dir), device="cpu")
+    assert first == second and first.name == "supplement.jsonl" and len(supplement_writer) == 1
+    ws.prepare_supplement(corpus_a, recipe=tiny_recipe(base_dir), device="cpu", force=True)
+    assert len(supplement_writer) == 2

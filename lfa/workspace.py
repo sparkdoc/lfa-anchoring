@@ -36,6 +36,7 @@ import gc
 import hashlib
 import json
 import logging
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -49,7 +50,7 @@ from .artifact.build import build_artifact_self_generated
 from .artifact.extend import artifact_carries_base_count, extend_artifact, gmm_site_keys
 from .artifact.fetch import ARTIFACTS, fetch_artifact
 from .artifact.schema import META_KEY, SELF_GENERATED, validate_against_model
-from .corpus import load_corpus
+from .corpus import load_corpus, split_documents
 from .evaluate import (
     DOMAIN_ROW,
     GENERAL_ROW,
@@ -71,6 +72,8 @@ from .models import (
 from .recipe import BUNDLED_DIR, Recipe
 from .sampler import Sampler
 from .selfgen.artifact_corpus import SelfGenOptions
+from .selfgen.generate import checkpoint_sha256, sha256_text
+from .selfgen.supplement import SupplementOptions, template_sha256, write_supplement
 from .train import train as run_training
 
 logger = logging.getLogger("lfa.workspace")
@@ -185,6 +188,12 @@ def _primary_device(device: str | dict) -> str:
     if isinstance(device, dict):
         return str(next(iter(device.values())))
     return str(device)
+
+
+def _domain_description_for(corpus_path: Path) -> str:
+    """The corpus directory's name with `_`/`-` as spaces; what the template says the text is on."""
+    name = corpus_path.stem if corpus_path.is_file() else corpus_path.name
+    return re.sub(r"[_\-]+", " ", name).strip() or "the domain"
 
 
 def _dtype_for(device: str | dict) -> torch.dtype:
@@ -531,6 +540,8 @@ class Workspace:
         device: str | dict = DEFAULT_DEVICE,
         allow_sharding: bool = False,
         resume: bool = False,
+        supplement: bool | str | Path = True,
+        domain_description: str | None = None,
     ) -> dict:
         """Train one stage: ``current_model`` on ``corpus``, anchored on ``current_artifact``.
 
@@ -565,6 +576,16 @@ class Workspace:
             device: a single device, as :func:`lfa.models.resolve_device` reads it.
             allow_sharding: permit a device map that spreads the model over several devices.
             resume: continue the run already in this stage's output directory.
+            supplement: the question-and-answer pairs mixed into the training side at the
+                recipe's ``supplement_fraction``. ``True`` (the default) reuses the supplement
+                under ``supplements/`` when its manifest matches this corpus's training side,
+                the current model and the template, and has the current model -- the stage's
+                entry model -- write it otherwise (see :meth:`prepare_supplement`). A path is
+                mixed in as given. ``False`` trains on the raw corpus alone, off the frame the
+                recipe's lambda was calibrated at, and warns. Ignored when the recipe's
+                fraction is 0.
+            domain_description: what the supplement template says the text is on. Defaults to
+                the corpus directory's name with ``_``/``-`` read as spaces.
 
         Returns:
             The history entry this run appended.
@@ -643,10 +664,26 @@ class Workspace:
                     corpus_path, self.state["artifact_version"], config.lambda_qkv,
                     config.num_epochs)
 
-        training, corpus_counts = self._run_training(config, corpus_path, base_model, output_dir,
-                                                     placement=placement, dtype=dtype,
-                                                     allow_sharding=allow_sharding, resume=resume,
-                                                     anchored=True)
+        supplement_path, supplement_manifest = None, None
+        if resolved.supplement_fraction > 0.0 and supplement is not False:
+            if supplement is True:
+                supplement_path, supplement_manifest = self._supplement_for(
+                    corpus_path, resolved, domain_description=domain_description, device=device)
+            else:
+                supplement_path = Path(supplement).expanduser().resolve()
+                manifest_file = Path(str(supplement_path) + ".manifest.json")
+                supplement_manifest = (json.loads(manifest_file.read_text())
+                                       if manifest_file.is_file() else {})
+        elif resolved.supplement_fraction > 0.0:
+            logger.warning("Training on the raw corpus alone: this recipe's lambda was "
+                           "calibrated at supplement_fraction %g and this run mixes none.",
+                           resolved.supplement_fraction)
+
+        training, corpus_counts = self._run_training(
+            config, corpus_path, base_model, output_dir, placement=placement, dtype=dtype,
+            allow_sharding=allow_sharding, resume=resume, anchored=True,
+            supplement=supplement_path, supplement_fraction=resolved.supplement_fraction)
+        report = corpus_counts.pop("supplement_report")
 
         entry = {
             "stage": stage,
@@ -675,6 +712,17 @@ class Workspace:
             # on -- so the number it reports is held out rather than fitted.
             "val_fraction": config.val_fraction,
             **corpus_counts,
+            # What was mixed into the training side, and who wrote it. `None` when nothing was.
+            "supplement": None if supplement_path is None else {
+                "path": str(supplement_path),
+                "manifest": str(supplement_path) + ".manifest.json",
+                "n_pairs_available": report["n_available"],
+                "n_pairs_used": report["n_used"],
+                "target_fraction": report["target_fraction"],
+                "achieved_fraction": report["achieved_fraction"],
+                "under_target": report["under_target"],
+                "writer_sha256": (supplement_manifest or {}).get("writer_sha256"),
+            },
             "final_loss": training.history[-1]["loss_total"] if training.history else None,
             # Where and in what precision this stage ran: an export merges in the dtype it was
             # trained in rather than in a default that may not be the same one.
@@ -834,7 +882,8 @@ class Workspace:
         return f"stage{stage}_run{1 + sum(1 for e in self.history if e['stage'] == stage)}"
 
     def _run_training(self, config, corpus_path, base_model, output_dir, *, placement, dtype,
-                      allow_sharding, resume, anchored):
+                      allow_sharding, resume, anchored, supplement=None,
+                      supplement_fraction=0.0):
         """Load teacher, student, sampler and corpus for one run, and train it.
 
         A resume passes the bare student through: the trainer re-attaches the saved adapter
@@ -912,14 +961,17 @@ class Workspace:
             dataset, holdout = load_corpus(corpus_path, tokenizer,
                                            max_length=config.sequence_length,
                                            val_fraction=config.val_fraction, seed=config.seed,
-                                           keep_short_whole=config.keep_short_whole)
+                                           keep_short_whole=config.keep_short_whole,
+                                           supplement=supplement,
+                                           supplement_fraction=supplement_fraction)
             # Documents AND chunks: the document counts say how the split fell, the chunk counts
             # say what the loader made of it, and only the second is comparable with another
             # implementation's loader (the research code logs exactly these two numbers per run).
             counts = {"n_train_docs": dataset.report["n_docs"],
                       "n_val_docs": holdout.report["n_docs"] if holdout is not None else 0,
                       "n_train_chunks": dataset.report["n_chunks"],
-                      "n_val_chunks": holdout.report["n_chunks"] if holdout is not None else 0}
+                      "n_val_chunks": holdout.report["n_chunks"] if holdout is not None else 0,
+                      "supplement_report": dataset.supplement_report}
 
             training = run_training(teacher, student, dataset, sampler, adapter, config,
                                     output_dir, resume=resume, tokenizer=tokenizer,
@@ -930,6 +982,50 @@ class Workspace:
             gc.collect()
             if _primary_device(placement).startswith("cuda"):
                 torch.cuda.empty_cache()
+
+    def _supplement_for(self, corpus_path: Path, recipe: Recipe, *, domain_description: str | None,
+                        device: str | dict, force: bool = False) -> tuple[Path, dict]:
+        """The supplement for ``corpus_path``: reused when its manifest matches, else written.
+
+        A match is the training side's corpus hash, the writer checkpoint's hash and the
+        template's hash. The writer is the workspace's CURRENT model -- the stage's entry model
+        -- so in a chain the fused model writes the next domain's pairs (the C15 protocol).
+        """
+        train_docs, _ = split_documents(corpus_path, recipe.val_fraction, recipe.seed)
+        corpus_hash = sha256_text(train_docs)
+        writer_id = str(self.state["current_model"])
+        writer_hash = checkpoint_sha256(writer_id)
+        directory = self.path / "supplements" / corpus_hash[:12]
+        out = directory / "supplement.jsonl"
+        manifest_path = Path(str(out) + ".manifest.json")
+        if out.is_file() and manifest_path.is_file() and not force:
+            manifest = json.loads(manifest_path.read_text())
+            if (manifest.get("corpus_sha256") == corpus_hash
+                    and manifest.get("writer_sha256") == writer_hash
+                    and manifest.get("template_sha256") == template_sha256()):
+                logger.info("Supplement reused: %s", out)
+                return out, manifest
+        description = domain_description or _domain_description_for(corpus_path)
+        logger.info("Writing the supplement for %s with %s (%d training documents)", corpus_path,
+                    writer_id, len(train_docs))
+        manifest = write_supplement(writer_id, train_docs, out, domain_description=description,
+                                    options=SupplementOptions(), corpus_sha256=corpus_hash,
+                                    device=_primary_device(resolve_device(device)))
+        return out, manifest
+
+    def prepare_supplement(self, corpus, *, recipe: Recipe | str | Path | None = None,
+                           domain_description: str | None = None,
+                           device: str | dict = DEFAULT_DEVICE, force: bool = False) -> Path:
+        """Write (or reuse) the supplement ``train`` would write for ``corpus``; return its path.
+
+        The same file, from the same writer and training-side documents, that :meth:`train`
+        reuses -- so a supplement can be read before the stage that mixes it in.
+        """
+        corpus_path = Path(corpus).expanduser().resolve()
+        resolved = self._resolve_recipe(recipe)
+        path, _ = self._supplement_for(corpus_path, resolved, domain_description=domain_description,
+                                       device=device, force=force)
+        return path
 
     def _resolve_recipe(self, recipe: Recipe | str | Path | None) -> Recipe:
         if isinstance(recipe, Recipe):

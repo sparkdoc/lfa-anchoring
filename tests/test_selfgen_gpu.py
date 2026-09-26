@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 import torch
 
+from lfa import Recipe
 from lfa.artifact.build import build_artifact_self_generated
 from lfa.artifact.schema import load_artifact
 from lfa.sampler import Sampler
@@ -130,3 +131,34 @@ def test_qwen3_writes_parseable_pairs_from_a_real_passage(small_supplement):
     assert manifest["n_passages"] >= 2 and manifest["n_pairs"] == len(rows) >= 2
     assert all(len(r["response"]) >= 40 and r["prompt"].strip() for r in rows)
     assert "about a text on natural history" in manifest["template"]
+
+
+def _small_recipe():
+    return Recipe(name="qwen3-small", model_id=MODEL, artifact="self-generated",
+                  lora_rank=4, lora_alpha=8, lambda_qkv=1000.0, lambda_mlp=1000.0, mu=0.05,
+                  n_anchor_samples=4, epochs=1, checkpoint_mode="none", learning_rate=1e-4,
+                  warmup_steps=1, batch_size=1, gradient_accumulation_steps=2,
+                  sequence_length=128, seed=42, val_fraction=0.25, supplement_fraction=0.13,
+                  calibrated_rank=4, calibrated_self_generated=True)
+
+
+@pytest.fixture(scope="module")
+def darwin_corpus(tmp_path_factory):
+    directory = tmp_path_factory.mktemp("domain") / "natural_history"
+    directory.mkdir()
+    for i in range(4):
+        (directory / f"doc_{i}.txt").write_text(DARWIN.replace("1859", str(1859 + i)))
+    return directory
+
+
+def test_a_stage_trains_with_the_self_written_supplement_mixed_in(tmp_path, darwin_corpus):
+    ws = Workspace.init(tmp_path / "ws", MODEL, artifact="self-generated", selfgen=SMALL)
+
+    entry = ws.train(darwin_corpus, recipe=_small_recipe(), device=DEVICE)
+
+    supp = entry["supplement"]
+    assert supp["n_pairs_available"] >= 2 and supp["n_pairs_used"] >= 1
+    assert 0.0 < supp["achieved_fraction"] < 0.5
+    assert len(supp["writer_sha256"]) == 64
+    assert entry["n_val_docs"] == 1 and entry["n_train_docs"] == 3 + supp["n_pairs_used"]
+    assert (tmp_path / "ws" / "supplements").is_dir()

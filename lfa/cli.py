@@ -36,7 +36,8 @@ from .models import (DEFAULT_DEVICE, TEACHER_MODES, MissingBuildToolchain,
                      NoTrainableParameters, ShardingRefused)
 from .prepare_domain import MissingExtra, prepare_domain
 from .seed_corpus import SourceUnavailable, prepare_seed_corpus
-from .selfgen.artifact_corpus import SelfGenOptions
+from .selfgen.artifact_corpus import DegenerateCorpus, SelfGenOptions
+from .selfgen.supplement import NoPairsWritten
 from .train import ResumeSourceHasNoAdapter
 from .workspace import StageOrderError, Workspace, WorkspaceNotReady
 
@@ -65,7 +66,8 @@ USER_FACING_ERRORS = (
     StageOrderError, WorkspaceNotReady, ShardingRefused, ArtifactNotPublished, ChecksumMismatch,
     DownloadFailed,
     SourceUnavailable, DatasetUnavailable, ResumeSourceHasNoAdapter, NoTrainableParameters,
-    MissingBuildToolchain, MissingExtra, FileNotFoundError, FileExistsError, ValueError,
+    MissingBuildToolchain, MissingExtra, NoPairsWritten, DegenerateCorpus, FileNotFoundError,
+    FileExistsError, ValueError,
 )
 
 
@@ -126,10 +128,19 @@ def _train(args) -> int:
         args.corpus, args.recipe, epochs=args.epochs, device=args.device,
         allow_sharding=args.allow_sharding, resume=args.resume,
         full_weight=args.full_weight, teacher_mode=args.teacher_mode,
+        supplement=(False if args.no_supplement else (args.supplement or True)),
+        domain_description=args.domain_description,
     )
     loss = entry["final_loss"]
     cost = f" (final loss {loss:.4f})" if loss is not None else ""
     print(f"Stage {entry['stage']} written to {entry['output_dir']}{cost}")
+    return 0
+
+
+def _prepare_supplement(args) -> int:
+    print(_open(args).prepare_supplement(args.corpus, recipe=args.recipe,
+                                         domain_description=args.domain_description,
+                                         device=args.device, force=args.force))
     return 0
 
 
@@ -287,8 +298,30 @@ def build_parser() -> argparse.ArgumentParser:
                             "memory, not results")
     train.add_argument("--resume", action="store_true",
                        help="continue the run already in this stage's output directory")
+    supplement = train.add_mutually_exclusive_group()
+    supplement.add_argument("--no-supplement", dest="no_supplement", action="store_true",
+                            help="train on the raw corpus alone (the recipe's lambda was "
+                                 "calibrated with the written supplement mixed in; this warns)")
+    supplement.add_argument("--supplement", metavar="JSONL",
+                            help="a prompt/response JSONL to mix in instead of writing one")
+    train.add_argument("--domain-description", dest="domain_description", metavar="TEXT",
+                       help="what the template says the text is on (default: the corpus "
+                            "directory's name)")
     _add_device(train, sharding=True)
     train.set_defaults(handler=_train)
+
+    # -------------------------------------------------------------------- prepare-supplement
+    supp = subcommands.add_parser(
+        "prepare-supplement",
+        help="have the workspace's current model write the question-and-answer supplement "
+             "for a corpus, to inspect before training (train writes it itself otherwise)")
+    _add_workspace(supp)
+    supp.add_argument("--corpus", required=True, metavar="DIR")
+    supp.add_argument("--recipe", metavar="NAME|PATH")
+    supp.add_argument("--domain-description", dest="domain_description", metavar="TEXT")
+    supp.add_argument("--force", action="store_true", help="rewrite an existing supplement")
+    _add_device(supp)
+    supp.set_defaults(handler=_prepare_supplement)
 
     # -------------------------------------------------------------------------------- extend
     extend = subcommands.add_parser(

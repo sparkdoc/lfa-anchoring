@@ -132,6 +132,9 @@ def tiny_recipe(base_dir, **overrides):
         # (the shipped recipe's default) would change every document count the workspace
         # tests assert on. Tests about the hold-out itself set it explicitly.
         val_fraction=0.0,
+        # The shipped 0.13 would have `train` write a supplement with the tiny model before
+        # every stage. Tests about the supplement set it explicitly and patch the writer.
+        supplement_fraction=0.0,
     )
     kwargs.update(overrides)
     return Recipe(**kwargs)

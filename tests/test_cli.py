@@ -26,6 +26,7 @@ from lfa.workspace import Workspace
 SUBCOMMANDS = [
     "init", "fetch-artifact", "train", "extend", "evaluate", "fuse", "chain",
     "build-artifact", "prepare-seed-corpus", "prepare-domain", "list-artifacts",
+    "prepare-supplement",
 ]
 
 
@@ -508,3 +509,9 @@ def test_init_self_generated_is_routed_to_the_builder(tmp_path, base_dir, tiny_a
     assert main(["init", str(tmp_path / "ws"), "--model", str(base_dir),
                  "--artifact", "self-generated", "--n-raw", "7"]) == 0
     assert seen["n_raw"] == 7
+
+
+def test_train_no_supplement_and_supplement_file_are_exclusive(capsys):
+    with pytest.raises(SystemExit) as exit_info:
+        main(["train", "--corpus", "c", "--no-supplement", "--supplement", "s.jsonl"])
+    assert exit_info.value.code == 2
