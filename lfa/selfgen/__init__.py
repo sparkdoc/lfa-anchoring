@@ -7,7 +7,7 @@ of a chain -- can be written by the model itself. The research record behind thi
 package documentation quotes about it carries that scope.
 """
 
-# from .artifact_corpus import SelfGenOptions, write_artifact_corpus  # noqa: F401  (Task 4)
+from .artifact_corpus import SelfGenOptions, write_artifact_corpus  # noqa: F401
 # from .supplement import write_supplement  # noqa: F401  (Task 9)
 
-__all__ = []
+__all__ = ["SelfGenOptions", "write_artifact_corpus"]
