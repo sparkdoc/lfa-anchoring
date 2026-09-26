@@ -7,6 +7,7 @@ reservoir cut down so the whole file stays inside a couple of seconds.
 import copy
 import inspect
 import json
+from pathlib import Path
 
 import pytest
 import torch
@@ -343,3 +344,98 @@ def test_collect_reservoir_is_seeded(tiny_model, build_texts):
 
     assert torch.equal(run(11), run(11))
     assert not torch.equal(run(11), run(12))
+
+
+def test_build_artifact_self_generated_writes_the_corpus_then_fits_with_provenance(tmp_path,
+                                                                                  monkeypatch):
+    """The corpus lands beside the artifact, and the meta names it."""
+    import lfa.artifact.build as build_module
+    from lfa.artifact.build import build_artifact_self_generated
+    from lfa.selfgen.artifact_corpus import SelfGenOptions
+
+    seen = {}
+
+    def fake_corpus(model_id, out_path, options, *, generate, writer):
+        Path(out_path).write_text('{"text": "generated"}\n')
+        return {"corpus_sha256": "d" * 64}
+
+    def fake_build(model_id, corpus_path, out_path, **kwargs):
+        seen.update(kwargs, corpus=str(corpus_path))
+        Path(out_path).write_bytes(b"pt")
+        return Path(out_path)
+
+    monkeypatch.setattr(build_module, "write_artifact_corpus", fake_corpus)
+    monkeypatch.setattr(build_module, "build_artifact", fake_build)
+    # No layer_group_size given: the group is chosen from the model's config and host RAM.
+    monkeypatch.setattr(build_module, "_auto_layer_group_size",
+                        lambda model_id, reservoir_size, itemsize: 5)
+
+    out = build_artifact_self_generated("m", tmp_path / "art.pt",
+                                        SelfGenOptions(max_samples=123, gmm_k=4))
+
+    assert out == tmp_path / "art.pt"
+    assert seen["corpus"] == str(tmp_path / "art.corpus.jsonl")
+    assert seen["max_samples"] == 123 and seen["gmm_k"] == 4
+    assert seen["provenance"] == "self-generated" and seen["corpus_sha256"] == "d" * 64
+    assert seen["layer_group_size"] == 5
+
+
+def test_build_artifact_self_generated_keeps_a_given_layer_group_size(tmp_path, monkeypatch):
+    import lfa.artifact.build as build_module
+    from lfa.artifact.build import build_artifact_self_generated
+    from lfa.selfgen.artifact_corpus import SelfGenOptions
+
+    seen = {}
+
+    def never(*args, **kwargs):
+        raise AssertionError("a given layer_group_size must not be re-chosen")
+
+    monkeypatch.setattr(build_module, "write_artifact_corpus",
+                        lambda *a, **k: {"corpus_sha256": "d" * 64})
+    monkeypatch.setattr(build_module, "build_artifact",
+                        lambda model_id, corpus_path, out_path, **kwargs: seen.update(kwargs))
+    monkeypatch.setattr(build_module, "_auto_layer_group_size", never)
+
+    build_artifact_self_generated("m", tmp_path / "art.pt", SelfGenOptions(layer_group_size=3))
+    assert seen["layer_group_size"] == 3
+
+
+QWEN3_WIDTHS = dict(hidden_size=1024, pre_o_width=2048, num_layers=28, reservoir_size=200_000,
+                    itemsize=2)
+
+
+@pytest.mark.parametrize("available, expected", [
+    (25 * 2**30, 8),       # 0.5 * 25 GiB / (200k * 4096 * 2 B = 1.64 GB per layer) = 8.19
+    (1, 1),                # never below one layer
+    (2**50, 28),           # never above the model's depth
+    (None, 7),             # unreadable: the documented Qwen3 setting
+])
+def test_choose_layer_group_size_fits_the_reservoirs_in_half_the_available_ram(available,
+                                                                               expected):
+    from lfa.artifact.build import choose_layer_group_size
+
+    assert choose_layer_group_size(**QWEN3_WIDTHS, available_bytes=available) == expected
+
+
+def test_auto_layer_group_size_reads_the_config_not_the_model(monkeypatch, caplog):
+    import logging
+    from types import SimpleNamespace
+
+    import lfa.artifact.build as build_module
+
+    configs = {
+        "with-head-dim": SimpleNamespace(hidden_size=1024, num_attention_heads=16, head_dim=128,
+                                         num_hidden_layers=28),
+        # No head_dim: the pre_o width is hidden_size, as for a Llama.
+        "no-head-dim": SimpleNamespace(hidden_size=1024, num_attention_heads=16,
+                                       num_hidden_layers=28),
+    }
+    monkeypatch.setattr(build_module, "AutoConfig",
+                        SimpleNamespace(from_pretrained=lambda path: configs[path]))
+    monkeypatch.setattr(build_module, "_available_memory_bytes", lambda: 25 * 2**30)
+
+    with caplog.at_level(logging.INFO, logger="lfa.artifact.build"):
+        assert build_module._auto_layer_group_size("with-head-dim", 200_000, 2) == 8
+    assert "layer_group_size=8" in caplog.text and "GiB" in caplog.text
+    # 200k * (2*1024 + 1024) * 2 B = 1.23 GB per layer: 0.5 * 25 GiB / that = 10.9
+    assert build_module._auto_layer_group_size("no-head-dim", 200_000, 2) == 10

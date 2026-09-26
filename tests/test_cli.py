@@ -443,3 +443,48 @@ def test_fuse_defaults_the_workspace_to_the_working_directory(trained, tmp_path,
 
     assert (out / "config.json").is_file()
     assert not (out / "adapter_config.json").exists()      # merged, not an adapter
+
+
+def test_build_artifact_refuses_both_a_corpus_and_self_generated(capsys):
+    with pytest.raises(SystemExit) as exit_info:
+        main(["build-artifact", "--model", "m", "--out", "x.pt", "--corpus", "c.jsonl",
+              "--self-generated"])
+    assert exit_info.value.code == 2
+    assert "not allowed with" in capsys.readouterr().err
+
+
+def test_build_artifact_needs_one_of_them(capsys):
+    with pytest.raises(SystemExit) as exit_info:
+        main(["build-artifact", "--model", "m", "--out", "x.pt"])
+    assert exit_info.value.code == 2
+
+
+def test_build_artifact_self_generated_takes_the_recorded_frame(monkeypatch, capsys):
+    import lfa.cli as cli
+
+    seen = {}
+
+    def fake(model_id, out_path, options, *, quantize, seed):
+        seen.update(options=options, quantize=quantize, seed=seed)
+        return out_path
+
+    monkeypatch.setattr(cli, "build_artifact_self_generated", fake)
+    assert main(["build-artifact", "--model", "m", "--out", "x.pt", "--self-generated"]) == 0
+    options = seen["options"]
+    assert options.max_samples == 600_000 and options.gmm_k == 32
+    assert options.n_raw == 2500 and options.n_chat == 250 and options.seed == 42
+    assert options.layer_group_size is None                # chosen from host RAM by the library
+
+    assert main(["build-artifact", "--model", "m", "--out", "x.pt", "--self-generated",
+                 "--layer-group-size", "4", "--max-samples", "1000"]) == 0
+    assert seen["options"].layer_group_size == 4 and seen["options"].max_samples == 1000
+
+
+def test_build_artifact_over_a_corpus_keeps_its_own_sample_count(monkeypatch, capsys):
+    import lfa.cli as cli
+
+    seen = {}
+    monkeypatch.setattr(cli, "build_artifact",
+                        lambda model_id, corpus, out, **kwargs: seen.update(kwargs) or out)
+    assert main(["build-artifact", "--model", "m", "--out", "x.pt", "--corpus", "c.jsonl"]) == 0
+    assert seen["max_samples"] == 1_500_000

@@ -9,6 +9,9 @@ from __future__ import annotations
 import pytest
 import torch
 
+from lfa.artifact.build import build_artifact_self_generated
+from lfa.artifact.schema import load_artifact
+from lfa.sampler import Sampler
 from lfa.selfgen.artifact_corpus import SelfGenOptions, write_artifact_corpus
 from lfa.selfgen.generate import (boundary_markers, chat_user_header, clean_raw, generate_texts,
                                   load_writer, pick_seed_prefix)
@@ -67,3 +70,22 @@ def test_the_artifact_corpus_has_both_shares_and_a_manifest(small_corpus):
                if r["source"] == "selfgen_chatfmt")
     assert not any("<|endoftext|>" in r["text"] for r in rows)
     assert len(manifest["writer_sha256"]) == 64
+
+
+@pytest.fixture(scope="module")
+def small_artifact(tmp_path_factory, writer):
+    out = tmp_path_factory.mktemp("selfgen_art") / "art.pt"
+    build_artifact_self_generated(MODEL, out, SMALL, writer=writer)
+    return out
+
+
+def test_a_self_generated_artifact_fits_carries_provenance_and_samples(small_artifact):
+    params = load_artifact(small_artifact)
+    meta = params["__meta__"]
+    assert meta["provenance"] == "self-generated" and len(meta["corpus_sha256"]) == 64
+    assert meta["model_id"] == MODEL and meta["num_layers"] == 28
+    assert small_artifact.with_suffix(".corpus.jsonl").is_file()
+
+    sampler = Sampler(small_artifact, device=DEVICE, seed=0)
+    draw = sampler.sample_best(5, "pre_mlp", 8)
+    assert draw is not None and draw.shape == (8, 1024)

@@ -15,19 +15,24 @@ from __future__ import annotations
 
 import gc
 import logging
+import math
 from pathlib import Path
 
 import torch
+from transformers import AutoConfig
 
 from ..adapters import get_adapter
-from ..corpus import load_texts
-from ..models import load_teacher, load_tokenizer
+from ..corpus import _available_memory_bytes, load_texts
+from ..models import load_teacher, load_tokenizer, resolve_model_path
+from ..selfgen.artifact_corpus import SelfGenOptions, write_artifact_corpus
+from ..selfgen.generate import generate_texts
 from .collect import collect_hidden_states
 from .fit import fit_site
 from .schema import (
     EMBEDDING_LOOKUP_KEY,
     LM_HEAD_SITE,
     META_KEY,
+    SELF_GENERATED,
     SITES,
     make_meta,
     parse_site_key,
@@ -35,7 +40,7 @@ from .schema import (
     validate_against_model,
 )
 
-__all__ = ["build_artifact"]
+__all__ = ["build_artifact", "build_artifact_self_generated", "choose_layer_group_size"]
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +68,8 @@ def build_artifact(
     device: str = "cuda:0",
     seed: int = 0,
     dtype: torch.dtype = torch.float16,
+    provenance: str | None = None,
+    corpus_sha256: str | None = None,
 ) -> Path:
     """Collect, fit and save the p(h) artifact for ``model_id`` over ``corpus_path``.
 
@@ -88,6 +95,11 @@ def build_artifact(
         dtype: storage dtype of the retained reservoir samples. fp16 (the default, and what the
             shipped qwen3-0.6b artifact used) halves the figures below; fp32 keeps the samples
             exact and doubles them.
+        provenance: recorded in the meta block. :data:`~lfa.artifact.schema.SELF_GENERATED` when
+            ``corpus_path`` is text the model wrote (see :func:`build_artifact_self_generated`);
+            ``None`` for real text.
+        corpus_sha256: the hash of a generated corpus, recorded in the meta block beside
+            ``provenance``.
 
     Returns:
         The path written.
@@ -163,6 +175,8 @@ def build_artifact(
         num_layers=num_layers,
         sites=list(SITES) + [LM_HEAD_SITE],
         n_samples_total=max(site_counts),
+        provenance=provenance,
+        corpus_sha256=corpus_sha256,
     )
     if token_counts is not None:
         frequencies = token_counts.float()
@@ -175,3 +189,80 @@ def build_artifact(
     path = save_artifact(params, out_path, quantize=quantize)
     logger.info("Wrote %s (%.1f MB)", path, path.stat().st_size / 1e6)
     return path
+
+
+#: The group size documented for Qwen3-0.6B (~12 GB per group in fp16), used when host memory
+#: cannot be read.
+_DOCUMENTED_LAYER_GROUP_SIZE = 7
+
+
+def choose_layer_group_size(hidden_size: int, pre_o_width: int, num_layers: int,
+                            reservoir_size: int, itemsize: int, available_bytes: int | None,
+                            share: float = 0.5) -> int:
+    """The most layers whose reservoirs fit in ``share`` of ``available_bytes``, at least one.
+
+    One layer holds two sites of width ``hidden_size`` (``pre_qkv``, ``pre_mlp``) and one of width
+    ``pre_o_width``, so it costs ``reservoir_size * (2 * hidden_size + pre_o_width) * itemsize``
+    bytes; the LM-head site rides on the last group and is inside the margin ``share`` leaves.
+    With ``available_bytes`` unreadable (``None``) this returns 7, the Qwen3-0.6B setting
+    documented on :func:`build_artifact`.
+    """
+    if available_bytes is None:
+        return _DOCUMENTED_LAYER_GROUP_SIZE
+    per_layer = reservoir_size * (2 * hidden_size + pre_o_width) * itemsize
+    return max(1, min(num_layers, math.floor(share * available_bytes / per_layer)))
+
+
+def _auto_layer_group_size(model_id: str, reservoir_size: int, itemsize: int) -> int:
+    """:func:`choose_layer_group_size` for ``model_id``, read from its config (no model load)."""
+    config = AutoConfig.from_pretrained(resolve_model_path(model_id))
+    hidden_size = config.hidden_size
+    head_dim = getattr(config, "head_dim", None) or hidden_size // config.num_attention_heads
+    pre_o_width = config.num_attention_heads * head_dim
+    num_layers = config.num_hidden_layers
+    available = _available_memory_bytes()
+    size = choose_layer_group_size(hidden_size, pre_o_width, num_layers, reservoir_size,
+                                   itemsize, available)
+    per_group = min(size, num_layers) * reservoir_size * (2 * hidden_size + pre_o_width) * itemsize
+    logger.info("layer_group_size=%d for %s: ~%.1f GiB of reservoirs per group against %s "
+                "available", size, model_id, per_group / 2**30,
+                "unreadable memory" if available is None else f"{available / 2**30:.1f} GiB")
+    return size
+
+
+def build_artifact_self_generated(
+    model_id: str,
+    out_path,
+    options: SelfGenOptions | None = None,
+    *,
+    corpus_path=None,
+    quantize: bool = True,
+    seed: int = 0,
+    writer=None,
+    generate=generate_texts,
+) -> Path:
+    """Write a corpus with the model itself, then fit p(h) on it at the recorded frame.
+
+    The corpus lands at ``corpus_path`` (default ``<out>.corpus.jsonl``) with its manifest, so
+    what the artifact was fitted on is inspectable. The artifact's meta carries
+    ``provenance = "self-generated"`` and the corpus hash; :meth:`lfa.recipe.Recipe.warnings`
+    reads both.
+
+    ``options`` defaults to :class:`SelfGenOptions`, the frame of the artifact behind C12
+    (2,500 + 250 documents; 600k samples per site; K=32). Scale it down for a smoke run. When
+    ``options.layer_group_size`` is ``None`` the group is chosen from the model's config and the
+    host's available memory (:func:`choose_layer_group_size`), and the choice is logged.
+    """
+    options = options or SelfGenOptions()
+    out_path = Path(out_path)
+    corpus_path = Path(corpus_path) if corpus_path else out_path.with_suffix(".corpus.jsonl")
+    manifest = write_artifact_corpus(model_id, corpus_path, options, generate=generate,
+                                     writer=writer)
+    build_kwargs = options.build_kwargs()
+    if build_kwargs["layer_group_size"] is None:
+        # The reservoirs are stored at build_artifact's default dtype, fp16.
+        build_kwargs["layer_group_size"] = _auto_layer_group_size(
+            model_id, options.reservoir_size, torch.float16.itemsize)
+    return build_artifact(model_id, corpus_path, out_path, quantize=quantize, seed=seed,
+                          provenance=SELF_GENERATED, corpus_sha256=manifest["corpus_sha256"],
+                          **build_kwargs)

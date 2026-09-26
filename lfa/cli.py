@@ -27,7 +27,7 @@ import argparse
 import logging
 import sys
 
-from .artifact.build import build_artifact
+from .artifact.build import build_artifact, build_artifact_self_generated
 from .artifact.fetch import (ArtifactNotPublished, ChecksumMismatch, DownloadFailed,
                             fetch_artifact,
                              list_artifacts)
@@ -36,6 +36,7 @@ from .models import (DEFAULT_DEVICE, TEACHER_MODES, MissingBuildToolchain,
                      NoTrainableParameters, ShardingRefused)
 from .prepare_domain import MissingExtra, prepare_domain
 from .seed_corpus import SourceUnavailable, prepare_seed_corpus
+from .selfgen.artifact_corpus import SelfGenOptions
 from .train import ResumeSourceHasNoAdapter
 from .workspace import StageOrderError, Workspace, WorkspaceNotReady
 
@@ -153,7 +154,19 @@ def _chain(args) -> int:
 
 
 def _build_artifact(args) -> int:
-    print(build_artifact(args.model, args.corpus, args.out, max_samples=args.max_samples,
+    # `--max-samples` has no argparse default: the two routes were measured at different
+    # counts (1,500,000 over the seed corpus, 600,000 over the self-generated one).
+    if args.self_generated:
+        options = SelfGenOptions(n_raw=args.n_raw, n_chat=args.n_chat,
+                                 max_new_tokens=args.max_new_tokens, seed=args.gen_seed,
+                                 max_samples=args.max_samples or 600_000, gmm_k=args.gmm_k,
+                                 pca_variance=args.pca_variance,
+                                 layer_group_size=args.layer_group_size, device=args.device)
+        print(build_artifact_self_generated(args.model, args.out, options,
+                                            quantize=args.quantize, seed=args.seed))
+        return 0
+    print(build_artifact(args.model, args.corpus, args.out,
+                         max_samples=args.max_samples or 1_500_000,
                          pca_variance=args.pca_variance, gmm_k=args.gmm_k,
                          layer_group_size=args.layer_group_size, quantize=args.quantize,
                          device=args.device, seed=args.seed))
@@ -319,19 +332,37 @@ def build_parser() -> argparse.ArgumentParser:
         "build-artifact", help="collect and fit a p(h) artifact for a model over a seed corpus")
     build.add_argument("--model", required=True, metavar="ID",
                        help="a Hub id or a local checkpoint path")
-    build.add_argument("--corpus", required=True, metavar="JSONL",
-                       help="the seed corpus (see `lfa prepare-seed-corpus`)")
+    source = build.add_mutually_exclusive_group(required=True)
+    source.add_argument("--corpus", metavar="JSONL",
+                        help="the seed corpus (see `lfa prepare-seed-corpus`)")
+    source.add_argument("--self-generated", dest="self_generated", action="store_true",
+                        help="write the corpus with the model itself first: 2,500 documents "
+                             "from its document boundary plus 250 chat-format ones, then fit "
+                             "at 600k samples per site (the frame of the C12 artifact). No "
+                             "download.")
     build.add_argument("--out", required=True, metavar="PATH",
                        help="where to write distribution_stats.pt")
-    build.add_argument("--max-samples", type=int, default=1_500_000, metavar="N",
-                       help="hidden vectors to collect per site (default: %(default)s)")
+    build.add_argument("--n-raw", dest="n_raw", type=int, default=2500, metavar="N",
+                       help="--self-generated: raw documents to write (default: %(default)s)")
+    build.add_argument("--n-chat", dest="n_chat", type=int, default=250, metavar="N",
+                       help="--self-generated: chat-format documents (default: %(default)s)")
+    build.add_argument("--max-new-tokens", dest="max_new_tokens", type=int, default=2048,
+                       metavar="N", help="--self-generated: tokens per document (default: "
+                                        "%(default)s)")
+    build.add_argument("--gen-seed", dest="gen_seed", type=int, default=42, metavar="N",
+                       help="--self-generated: the writer's seed (default: %(default)s)")
+    build.add_argument("--max-samples", type=int, default=None, metavar="N",
+                       help="hidden vectors to collect per site (default: 1,500,000 with "
+                            "--corpus, 600,000 with --self-generated)")
     build.add_argument("--gmm-k", type=int, default=32, metavar="K",
                        help="mixture components per site (default: %(default)s)")
     build.add_argument("--pca-variance", type=float, default=0.95, metavar="V",
                        help="variance the stored basis must span (default: %(default)s)")
     build.add_argument("--layer-group-size", type=int, metavar="N",
                        help="collect this many layers at a time; host RAM is the binding "
-                            "constraint, so this is normally set (7 for Qwen3-0.6B)")
+                            "constraint, so this is normally set (7 for Qwen3-0.6B). With "
+                            "--self-generated and no value, it is chosen from the model's "
+                            "config and the available host RAM")
     build.add_argument("--no-quantize", dest="quantize", action="store_false",
                        help="store the large fields in full precision instead of int8, which "
                             "doubles the file")
