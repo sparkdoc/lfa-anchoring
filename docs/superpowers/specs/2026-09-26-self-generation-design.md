@@ -35,6 +35,16 @@ wherever a number appears and quote nothing as the package's own measurement.
 * Pairs record `source_index` (position in the seed-shuffled training side) rather than a file
   name, because the loader hands documents on as strings.
 
+## 1b. Correction found at review (2026-09-26, Task 12)
+
+The C12 summary used above and in §2 ("ties at every λ tried" against the published artifact) is
+inaccurate. The record (mr-fusion `docs/results.md` Table 4.5, `docs/claims.md` C12): the six ties
+at λ 50k/100k/200k are against the **sample-count-matched real-corpus artifact**; against the
+published `gmm1543k` only λ=100k was paired, where the self-generated artifact was **ahead** at e15
+and tied at e20. Every package document states it as: "matched the real-corpus artifact at every λ
+tried and was at least as good as the published one at the recipe's λ; one model, one seed, one
+domain."
+
 ## 2. Decisions taken in conversation
 
 | decision | choice | why |
