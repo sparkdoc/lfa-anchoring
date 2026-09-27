@@ -182,8 +182,9 @@ documents asked for coming out empty, is refused before any fit: an artifact fit
 fail nowhere downstream. `--n-raw`, `--n-chat`, `--max-new-tokens` and `--max-samples` scale the
 frame down for a smoke run (`init` takes the first three), which is then not the recorded frame.
 
-**What it is worth.** On Qwen3-0.6B the self-generated artifact tied the `gmm1543k` artifact at
-every λ tried — one model, one seed, one domain (C12). That is why the bundled recipe carries
+**What it is worth.** On Qwen3-0.6B the self-generated artifact matched the real-corpus artifact
+at every λ tried and was at least as good as the published `gmm1543k` one at the recipe's λ — one
+model, one seed, one domain (C12). That is why the bundled recipe carries
 `calibrated_self_generated: true` and warns about nothing when a Qwen3-0.6B workspace uses one. On
 any other model nothing has been measured: the route gives a first artifact, and λ is calibrated
 against it ([adding-a-model.md](adding-a-model.md)).

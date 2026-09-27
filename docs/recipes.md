@@ -118,8 +118,9 @@ third is what [a chain](multi-domain-chains.md) multiplies λ by from stage 2 on
 that an artifact fitted on *this recipe's model's* own text (meta `provenance: "self-generated"`,
 [rebuilding-the-artifact.md](rebuilding-the-artifact.md#the-self-generated-route)) is a calibrated
 substitute for `calibrated_artifact`, so no warning fires for it. It is `true` here on the strength
-of the LFA record's C12 — on Qwen3-0.6B the self-generated artifact tied `gmm1543k` at every λ
-tried; one model, one seed, one domain — and `false` is the default for any other recipe.
+of the LFA record's C12 — on Qwen3-0.6B the self-generated artifact matched the real-corpus
+artifact at every λ tried and was at least as good as the published `gmm1543k` one at the recipe's
+λ; one model, one seed, one domain — and `false` is the default for any other recipe.
 
 ## The couplings, and what the warnings mean
 

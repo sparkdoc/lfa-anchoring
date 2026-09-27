@@ -79,8 +79,9 @@ stage2_lambda_multiplier: 3.0
 calibrated_rank: 32
 calibrated_artifact: qwen3-0.6b-gmm1543k-int8
 
-# -- self-generation (C12: one model, one seed). An artifact fitted on this model's own text tied
-#    the gmm1543k artifact at every lambda tried, so it is a calibrated substitute here; the
+# -- self-generation (C12: one model, one seed, one domain). An artifact fitted on this model's own
+#    text matched the real-corpus artifact at every lambda tried and was at least as good as the
+#    published gmm1543k one at the recipe's lambda, so it is a calibrated substitute here; the
 #    supplement the entry model writes is mixed in at the fraction the lambda was tuned at.
 calibrated_self_generated: true
 supplement_fraction: 0.13

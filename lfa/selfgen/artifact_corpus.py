@@ -4,8 +4,9 @@ The recorded frame (mr-fusion ``scripts/_w11_artifact_corpus.sh``, the artifact 
 2,500 raw documents of up to 2,048 tokens started from the model's document-boundary token at
 temperature 1.0 and top-p 1.0, **unfiltered**, seed 42; plus 250 documents started from the
 bare user-turn header with the header kept, seed 43, so the corpus carries the chat-format share
-the real seed corpus has. The artifact fitted on it at 600k samples per site, K=32, tied the
-shipped artifact at every lambda tried -- one model, one seed.
+the real seed corpus has. The artifact fitted on it at 600k samples per site, K=32, matched the
+real-corpus artifact at every lambda tried and was at least as good as the published one at the
+recipe's lambda -- one model, one seed, one domain.
 """
 
 from __future__ import annotations

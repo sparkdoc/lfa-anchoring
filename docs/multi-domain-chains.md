@@ -94,8 +94,8 @@ A per-domain `artifact` key is refused at load: the route is chosen once for the
 as good as the chain anchored on the real-seed-corpus artifact on every judge, perplexity and skill
 benchmark (at stage 2 it had one judged deficit, on the second domain, which stage 3 erased). The
 text it was anchored on drifted toward the last domain learned: in the corpora written by the base
-model, the first-domain model and the two-domain model, the first domain's terms made up
-0.5 / 68.2 / 2.5 % and the second domain's 2.7 / 9.6 / 86.1 % — yet the anchor fitted on that
+model, the first-domain model and the two-domain model, 0.5 / 68.2 / 2.5 % of the documents
+mentioned the first domain, and 2.7 / 9.6 / 86.1 % the second — yet the anchor fitted on that
 drifting text did not compound into a worse chain. Scope: rank 4, one seed, three domains, judged by
 `gpt-5.6-luna@medium`. These are the record's measurements, not this package's.
 

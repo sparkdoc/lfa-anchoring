@@ -85,10 +85,10 @@ No download: the model writes 2,750 documents of its own — 2,500 started from 
 boundary, 250 from the bare user-turn header of its chat template — and p(h) is fitted on them at
 600k samples per site. The corpus stays beside the artifact as `artifacts/v1.corpus.jsonl`, with
 a manifest, and the workspace records the artifact as `self-generated:<corpus sha256[:12]>`.
-The cost is an estimate, not a timed full run: on an RTX 2070 about 2 h of generation and about
-40 min of fitting; on an RTX 3090 about half ([faq.md](faq.md) has the pieces that were timed).
-On Qwen3-0.6B this artifact tied the published one at every λ tried — the LFA record's C12, one
-model, one seed, one domain — so the bundled recipe treats it as calibrated and says nothing; on
+The cost: several hours on an 8 GB card; not timed ([faq.md](faq.md) has the pieces that were
+timed). On Qwen3-0.6B this artifact matched the real-corpus artifact at every λ tried and was at
+least as good as the published one at the recipe's λ — the LFA record's C12, one model, one seed,
+one domain — so the bundled recipe treats it as calibrated and says nothing; on
 any other model it is the way to a first artifact, and λ is then calibrated against it
 ([adding-a-model.md](adding-a-model.md)). [rebuilding-the-artifact.md](rebuilding-the-artifact.md)
 has the recorded frame.

@@ -109,13 +109,13 @@ the Python flow as a script:
 
 **No artifact download?**
 `lfa init runs/my_domain --model Qwen/Qwen3-0.6B --artifact self-generated` has the model write
-2,750 documents from its own document boundary and fits p(h) on them (by estimate about two
-hours on an 8 GB card, half that on a 3090). On Qwen3-0.6B that artifact tied the published one
-at every λ tried, one seed; on any other model it is the way to a first artifact, and λ is then
-calibrated against it. `train` also writes the domain's
-question-and-answer supplement with the model before training and mixes it in at 0.13 of training
-tokens, the frame the shipped λ was tuned at; `--no-supplement` trains on the raw corpus alone and
-says so.
+2,750 documents from its own document boundary and fits p(h) on them (several hours on an 8 GB
+card; not timed). On Qwen3-0.6B that artifact matched the real-corpus artifact at every λ tried
+and was at least as good as the published one at the recipe's λ; one model, one seed, one domain.
+On any other model it is the way to a first artifact, and λ is then calibrated against it. `train`
+also writes the domain's question-and-answer supplement with the model before training and mixes
+it in at 0.13 of training tokens, the frame the shipped λ was tuned at; `--no-supplement` trains on
+the raw corpus alone and says so.
 
 ## Assemble them: a second domain, and a chain
 

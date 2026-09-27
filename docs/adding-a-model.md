@@ -78,8 +78,9 @@ document from the model's document-boundary token — its declared
 `generation_config.bos_token_id`, else the tokenizer's BOS, else its EOS — and, for the
 chat-format share, from the user-turn header of its chat template; without a chat template that
 share is skipped and the log says so. The recipe will warn that λ is uncalibrated against it,
-which is true: go to §3. The recorded frame, and what it was worth on Qwen3-0.6B (a tie with the
-published artifact at every λ tried; one model, one seed, one domain), are in
+which is true: go to §3. The recorded frame, and what it was worth on Qwen3-0.6B (it matched the
+real-corpus artifact at every λ tried and was at least as good as the published one at the
+recipe's λ; one model, one seed, one domain), are in
 [rebuilding-the-artifact.md](rebuilding-the-artifact.md#the-self-generated-route); on any other
 model nothing has been measured.
 

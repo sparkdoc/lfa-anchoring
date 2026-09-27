@@ -117,7 +117,8 @@ class Recipe:
     calibrated_rank: int = 32
     calibrated_artifact: str = "qwen3-0.6b-gmm1543k-int8"
     # True when an artifact fitted on this model's OWN text is a calibrated substitute for
-    # `calibrated_artifact` (Qwen3-0.6B: C12, a tie at every lambda tried; one seed).
+    # `calibrated_artifact` (Qwen3-0.6B, C12: it matched the real-corpus artifact at every lambda
+    # tried and was at least as good as the published one at the recipe's lambda; one seed).
     calibrated_self_generated: bool = False
 
     def __post_init__(self) -> None:

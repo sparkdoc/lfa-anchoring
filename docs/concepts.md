@@ -178,8 +178,9 @@ perplexity below base is still not by itself evidence that anything was preserve
 [faq.md](faq.md).) That is the paper's measurement, on the paper's corpus and instruments; this
 repository does not reproduce it and does not claim to.
 
-**This package's own measured point.** One full run of the bundled recipe was compared against a
-research-code run of the *identical* configuration. (Measured before the loader change of
+**This package's own measured point.** One full run of the bundled recipe (the 0.1.x recipe,
+before the supplement; it trained on the raw corpus alone) was compared against a research-code
+run of the *identical* configuration. (Measured before the loader change of
 2026-09-08, which made the per-epoch chunk offset rotate the chunk boundaries rather than discard
 each document's leading tokens. The corpus counts below are read at offset 0 and are unaffected;
 the per-epoch series are, from the second epoch on, and the stream they were measured under is no
