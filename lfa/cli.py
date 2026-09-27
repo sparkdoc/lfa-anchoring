@@ -149,6 +149,11 @@ def _extend(args) -> int:
     return 0
 
 
+def _regenerate_artifact(args) -> int:
+    print(_open(args).regenerate_artifact(device=args.device))
+    return 0
+
+
 def _evaluate(args) -> int:
     print(_open(args).evaluate(args.corpus, compare_unanchored=args.compare_unanchored,
                                n_windows=args.n_windows, device=args.device)["table"])
@@ -333,6 +338,15 @@ def build_parser() -> argparse.ArgumentParser:
                         help="mixture components to fit per site (default: %(default)s)")
     _add_device(extend)
     extend.set_defaults(handler=_extend)
+
+    # --------------------------------------------------------------------- regenerate-artifact
+    regen = subcommands.add_parser(
+        "regenerate-artifact",
+        help="fold the trained stage into the model and fit a fresh p(h) on that model's own "
+             "text (the alternative to extend; the C15 route)")
+    _add_workspace(regen)
+    _add_device(regen)
+    regen.set_defaults(handler=_regenerate_artifact)
 
     # ------------------------------------------------------------------------------ evaluate
     evaluate = subcommands.add_parser(

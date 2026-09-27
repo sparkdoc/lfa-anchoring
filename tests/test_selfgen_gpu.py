@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import pytest
 import torch
+import yaml
 
 from lfa import Recipe
 from lfa.artifact.build import build_artifact_self_generated
@@ -162,3 +163,27 @@ def test_a_stage_trains_with_the_self_written_supplement_mixed_in(tmp_path, darw
     assert len(supp["writer_sha256"]) == 64
     assert entry["n_val_docs"] == 1 and entry["n_train_docs"] == 3 + supp["n_pairs_used"]
     assert (tmp_path / "ws" / "supplements").is_dir()
+
+
+def test_a_two_stage_chain_under_regenerate_refits_v2_from_the_fused_model(tmp_path, darwin_corpus):
+    second = tmp_path / "cookery"
+    second.mkdir()
+    for i in range(4):
+        (second / f"recipe_{i}.txt").write_text(
+            ("Take a pound of flour and rub in the butter. Add the eggs one at a time, beating "
+             "well, and bake in a moderate oven for forty minutes.\n\n") * 12)
+    recipe_path = _small_recipe().save(tmp_path / "small.yaml")
+    ws = Workspace.init(tmp_path / "ws", MODEL, artifact="self-generated", selfgen=SMALL,
+                        recipe=str(recipe_path))                # a chain uses the workspace's recipe
+    spec = tmp_path / "domains.yaml"
+    spec.write_text(yaml.safe_dump({"artifact": "regenerate", "domains": [
+        {"name": "darwin", "corpus": str(darwin_corpus)}, {"name": "cookery", "corpus": str(second)}]}))
+
+    entries = ws.chain(spec, device=DEVICE, selfgen=SMALL)
+
+    assert [e["stage"] for e in entries] == [1, 2]
+    assert entries[1]["artifact_route"] == "regenerate" and entries[1]["artifact_version"] == 2
+    meta = ws._artifact_meta()
+    assert meta["provenance"] == "self-generated"
+    assert meta["model_id"] == str(tmp_path / "ws" / "models" / "stage1_fused")
+    assert (tmp_path / "ws" / "artifacts" / "v2.corpus.jsonl.manifest.json").is_file()

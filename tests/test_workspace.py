@@ -1436,3 +1436,97 @@ def test_a_sharded_map_with_allow_sharding_gets_past_the_supplement_step(tmp_pat
     except Exception:                                     # a fake map may fail at load on CPU
         pass
     assert len(supplement_writer) == 1 and supplement_writer[0]["device"] == "cpu"
+
+
+# ------------------------------------------------------------------- regenerate-artifact (C15)
+
+def _fake_regenerate_builder(monkeypatch, tiny_artifact):
+    import lfa.workspace as ws_module
+    _, fixture = tiny_artifact
+    calls = []
+
+    def fake_build(model_id, out_path, options, *, corpus_path=None, **kwargs):
+        calls.append(dict(model_id=model_id, n_chat=options.n_chat))
+        # The tiny fixture with the meta a real self-generated build writes, so that the next
+        # stage reads the artifact as the fused model's own text.
+        params = torch.load(fixture, map_location="cpu", weights_only=False)
+        params["__meta__"]["provenance"] = "self-generated"
+        params["__meta__"]["model_id"] = model_id
+        torch.save(params, out_path)
+        Path(corpus_path).write_text('{"text": "x"}\n')
+        Path(str(corpus_path) + ".manifest.json").write_text(
+            '{"corpus_sha256": "%s", "writer_sha256": "%s"}' % ("9" * 64, "8" * 64))
+        return Path(out_path)
+    monkeypatch.setattr(ws_module, "build_artifact_self_generated", fake_build)
+    return calls
+
+
+def test_regenerate_before_a_trained_stage_is_a_stage_order_error(tmp_path, registry, base_dir):
+    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact="tiny")
+    with pytest.raises(StageOrderError, match="Nothing to"):
+        ws.regenerate_artifact(device="cpu")
+
+
+def test_regenerate_writes_v2_from_the_fused_model_with_no_chat_share(tmp_path, registry,
+                                                                       base_dir, corpus_a,
+                                                                       tiny_artifact, monkeypatch):
+    calls = _fake_regenerate_builder(monkeypatch, tiny_artifact)
+    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact="tiny")
+    ws.train(corpus_a, recipe=tiny_recipe(base_dir, supplement_fraction=0.0), device="cpu")
+
+    out = ws.regenerate_artifact(device="cpu")
+
+    assert out == tmp_path / "ws" / "artifacts" / "v2.pt" and out.is_file()
+    assert (tmp_path / "ws" / "artifacts" / "v2.corpus.jsonl").is_file()
+    assert calls[0]["model_id"] == str(tmp_path / "ws" / "models" / "stage1_fused")
+    assert calls[0]["n_chat"] == 0                                  # the C15 frame
+    assert ws.state["artifact_version"] == 2 and ws.state["artifact_route"] == "regenerate"
+    assert ws.state["pending_extend"] is False
+
+
+def test_the_next_stage_records_the_route_it_anchored_under(tmp_path, registry, base_dir,
+                                                             corpus_a, corpus_b, tiny_artifact,
+                                                             monkeypatch):
+    _fake_regenerate_builder(monkeypatch, tiny_artifact)
+    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact="tiny")
+    recipe = tiny_recipe(base_dir, supplement_fraction=0.0)
+    ws.train(corpus_a, recipe=recipe, device="cpu")
+    ws.regenerate_artifact(device="cpu")
+    entry = ws.train(corpus_b, recipe=recipe, device="cpu")
+    assert entry["artifact_route"] == "regenerate" and entry["artifact_version"] == 2
+
+
+def test_a_chain_spec_accepts_a_top_level_artifact_route_and_refuses_a_per_domain_one(
+        tmp_path, registry, base_dir, corpus_a, corpus_b, tiny_artifact, monkeypatch):
+    calls = _fake_regenerate_builder(monkeypatch, tiny_artifact)
+    ws = _chain_workspace(tmp_path, base_dir)
+    spec = tmp_path / "domains.yaml"
+
+    spec.write_text(yaml.safe_dump({"artifact": "regenerate", "domains": [
+        {"name": "a", "corpus": str(corpus_a)}, {"name": "b", "corpus": str(corpus_b)}]}))
+    entries = ws.chain(spec, device="cpu", need=NEED, k_domain=K_DOMAIN)
+    assert len(entries) == 2 and len(calls) == 1 and entries[1]["artifact_route"] == "regenerate"
+
+    spec.write_text(yaml.safe_dump({"artifact": "sideways", "domains": [
+        {"name": "a", "corpus": str(corpus_a)}]}))
+    with pytest.raises(ValueError, match="extend, regenerate"):
+        ws.chain(spec, device="cpu", need=NEED, k_domain=K_DOMAIN)
+
+    spec.write_text(yaml.safe_dump({"domains": [
+        {"name": "a", "corpus": str(corpus_a), "artifact": "regenerate"}]}))
+    with pytest.raises(ValueError, match="top level"):
+        ws.chain(spec, device="cpu", need=NEED, k_domain=K_DOMAIN)
+
+
+def test_regenerate_warns_off_calibration_and_continues(tmp_path, registry, base_dir, corpus_a,
+                                                        corpus_b, tiny_artifact, monkeypatch,
+                                                        caplog):
+    _fake_regenerate_builder(monkeypatch, tiny_artifact)
+    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact="tiny")
+    recipe = tiny_recipe(base_dir, supplement_fraction=0.0, calibrated_self_generated=False)
+    ws.train(corpus_a, recipe=recipe, device="cpu")
+    ws.regenerate_artifact(device="cpu")
+    with caplog.at_level("WARNING", logger="lfa.workspace"):
+        entry = ws.train(corpus_b, recipe=recipe, device="cpu")
+    assert entry["stage"] == 2
+    assert any("C15" in r.getMessage() and "rank 4" in r.getMessage() for r in caplog.records)

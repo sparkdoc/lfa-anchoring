@@ -79,7 +79,7 @@ from .train import train as run_training
 logger = logging.getLogger("lfa.workspace")
 
 __all__ = ["Workspace", "StageOrderError", "WorkspaceNotReady", "WORKSPACE_FILE", "HISTORY_FILE",
-           "LOADER_FRAME_NOTICE", "DOMAIN_FIELDS", "code_identity",
+           "LOADER_FRAME_NOTICE", "DOMAIN_FIELDS", "CHAIN_ARTIFACT_ROUTES", "code_identity",
            "source_digest"]
 
 WORKSPACE_FILE = "workspace.json"
@@ -92,6 +92,17 @@ SELF_GENERATED_ARTIFACT = "self-generated"
 #: Every field a chain spec's domain entry may carry (see :meth:`Workspace.chain`). Anything
 #: else is refused at load, as an unknown field in a recipe file is.
 DOMAIN_FIELDS = frozenset({"name", "corpus", "epochs"})
+
+#: The two ways a chain spec's top-level ``artifact`` field may fold one domain into p(h) before
+#: the next: :meth:`Workspace.extend` (the default) or :meth:`Workspace.regenerate_artifact`.
+CHAIN_ARTIFACT_ROUTES = ("extend", "regenerate")
+
+#: Appended to a recipe's self-generated note when the artifact was regenerated between stages:
+#: the evidence for that route is one configuration, so the multiplier has not been measured on it.
+REGENERATED_NOTE = (
+    " A regenerated artifact is the C15 route (rank 4, one seed): the stage multiplier is a "
+    "starting point there, not a calibrated constant."
+)
 
 #: Logged once per run whose corpus loader trains short documents whole (the default). Said out
 #: loud because it changes the training stream and is invisible in every metric a run reports: a
@@ -320,6 +331,9 @@ class Workspace:
                 it was written -- read by :meth:`extend`, :meth:`evaluate` and :meth:`fuse`.
             ``pending_extend``
                 Whether a trained stage is still waiting to be folded into the model and p(h).
+            ``artifact_route``
+                How the current artifact came from the last one: ``"extend"`` (:meth:`extend`),
+                ``"regenerate"`` (:meth:`regenerate_artifact`), or absent before the first fold.
 
         history: the list persisted to ``history.json``; one entry per training run.
     """
@@ -646,8 +660,11 @@ class Workspace:
 
         # Said before anything is loaded: an off-calibration lambda is not a refusal, but it is
         # also not the measured operating point, and a run is worth more than the warning is.
-        for note in resolved.warnings(config.lora_rank, self._artifact_id(),
-                                      self._artifact_meta()):
+        notes = resolved.warnings(config.lora_rank, self._artifact_id(), self._artifact_meta())
+        if self.state.get("artifact_route") == "regenerate":
+            notes = [note + REGENERATED_NOTE if "self-generated" in note or "own text" in note
+                     else note for note in notes]
+        for note in notes:
             logger.warning(note)
         if config.keep_short_whole:
             logger.info(LOADER_FRAME_NOTICE)
@@ -696,6 +713,9 @@ class Workspace:
             "lambda_mlp_applied": config.lambda_mlp,
             "artifact_version": self.state["artifact_version"],
             "artifact": artifact,
+            # How that artifact came from the previous one: "extend" or "regenerate"; None at
+            # stage 1, which anchors on the artifact the workspace started with.
+            "artifact_route": self.state.get("artifact_route"),
             "base_model": str(base_model),
             "adapter": str(output_dir / "final_model"),
             "output_dir": str(output_dir),
@@ -851,6 +871,14 @@ class Workspace:
         if not unknown:
             return
         named = ", ".join(repr(key) for key in unknown)
+        if "artifact" in unknown:
+            raise ValueError(
+                f"{spec_path}: domain {position} carries 'artifact', which is a chain-wide "
+                f"choice: put `artifact: {domain['artifact']}` at the spec's top level (one of "
+                f"{', '.join(CHAIN_ARTIFACT_ROUTES)}). Every fold in a chain takes the same "
+                "route, so that the stages anchor on artifacts made the same way. A domain takes "
+                f"{', '.join(sorted(DOMAIN_FIELDS))}."
+            )
         if "extend_between" in unknown:
             raise ValueError(
                 f"{spec_path}: domain {position} carries {named}. A chain always folds each "
@@ -1103,15 +1131,7 @@ class Workspace:
         # a second rather than after merging a model.
         base_n = self._resolve_base_n()
 
-        adapter_dir = Path(self.state["last_stage_adapter"])
-        if (adapter_dir / "adapter_config.json").is_file():
-            fused = fuse(adapter_dir, str(self.state["last_stage_base"]),
-                         self.path / "models" / f"stage{stage}_fused", dtype=_stage_dtype(entry))
-        else:
-            # A full-weight stage has no adapter to merge: its checkpoint is already the model
-            # the next stage adapts.
-            fused = adapter_dir
-            logger.info("Stage %d trained full weights; its checkpoint is the fused model", stage)
+        fused = self._fuse_last_stage()
 
         out = self.path / "artifacts" / f"v{self.state['artifact_version'] + 1}.pt"
         extend_artifact(
@@ -1129,10 +1149,75 @@ class Workspace:
             current_artifact=str(out),
             artifact_version=self.state["artifact_version"] + 1,
             pending_extend=False,
+            artifact_route="extend",
         )
         self._save_state()
         logger.info("Stage %d folded in: model %s, artifact v%d", stage, fused,
                     self.state["artifact_version"])
+        return out
+
+    def _fuse_last_stage(self) -> Path:
+        """Merge the last stage's adapter into the model it trained over: ``models/stage{N}_fused``.
+
+        The first half of both folds, :meth:`extend` and :meth:`regenerate_artifact`.
+        """
+        entry = self.history[-1]
+        stage = self.state["stage"]
+        adapter_dir = Path(self.state["last_stage_adapter"])
+        if (adapter_dir / "adapter_config.json").is_file():
+            return fuse(adapter_dir, str(self.state["last_stage_base"]),
+                        self.path / "models" / f"stage{stage}_fused", dtype=_stage_dtype(entry))
+        # A full-weight stage has no adapter to merge: its checkpoint is already the model the
+        # next stage adapts.
+        logger.info("Stage %d trained full weights; its checkpoint is the fused model", stage)
+        return adapter_dir
+
+    def regenerate_artifact(self, *, selfgen: SelfGenOptions | None = None,
+                            device: str | dict = DEFAULT_DEVICE) -> Path:
+        """Fold the last stage into the model, then fit p(h) FROM SCRATCH on the fused model's
+        own text: the alternative to :meth:`extend` between two domains.
+
+        The C15 frame: 2,500 documents from the document-boundary token, no chat-format share,
+        600k samples per site, K=32, no base component and no merge. The record (rank 4, one
+        seed, three domains) found a chain anchored this way as good as one on the real seed
+        corpus on every judge, perplexity and skill benchmark, with the generated text drifting
+        toward the last domain (two-thirds after the first, six-sevenths after the second).
+
+        Args:
+            selfgen: the generation and fit frame (default :class:`SelfGenOptions`, the record).
+                Its ``n_chat`` is forced to 0 and its ``device`` to ``device``'s primary device.
+            device: where to generate and fit.
+
+        Returns:
+            The path of the regenerated artifact, ``artifacts/v{N+1}.pt``; its corpus and
+            manifest sit beside it as ``v{N+1}.corpus.jsonl``.
+
+        Raises:
+            StageOrderError: nothing has been trained since the last extension or regeneration.
+        """
+        if not self.state["pending_extend"]:
+            raise StageOrderError(
+                "Nothing to regenerate from: no stage has been trained since the last extension "
+                "or regeneration. Train a domain first (`lfa train --corpus ...`).")
+        stage = self.state["stage"]
+        # Resolved before the fuse, as in `extend`: a device that cannot be used fails in a
+        # second rather than after merging a model.
+        options = dataclasses.replace(selfgen or SelfGenOptions(), n_chat=0,
+                                      device=_primary_device(resolve_device(device)))
+        fused = self._fuse_last_stage()
+
+        version = self.state["artifact_version"] + 1
+        out = self.path / "artifacts" / f"v{version}.pt"
+        build_artifact_self_generated(
+            str(fused), out, options,
+            corpus_path=self.path / "artifacts" / f"v{version}.corpus.jsonl")
+
+        self.state.update(current_model=str(fused), current_artifact=str(out),
+                          artifact_version=version, pending_extend=False,
+                          artifact_route="regenerate")
+        self._save_state()
+        logger.info("Stage %d folded in: model %s, artifact v%d regenerated from its own text",
+                    stage, fused, version)
         return out
 
     def _resolve_base_n(self) -> int | None:
@@ -1378,11 +1463,13 @@ class Workspace:
         allow_sharding: bool = False,
         need: int = 40_000,
         k_domain: int = 8,
+        selfgen: SelfGenOptions | None = None,
     ) -> list[dict]:
         """Run a whole sequence of domains from a YAML spec: train, extend, train, ...
 
         The spec::
 
+            artifact: extend              # or regenerate (optional; default extend)
             domains:
               - name: philosophy          # the run directory under runs/ (optional)
                 corpus: data/domain_a     # relative paths resolve against the spec file
@@ -1395,10 +1482,17 @@ class Workspace:
         that domain N has been merged into. Every stage uses the workspace's default recipe, and
         the stage multiplier on lambda is applied by :meth:`train` as usual.
 
+        The top-level ``artifact`` field picks how each domain is folded into p(h), once for the
+        whole chain: ``extend`` (:meth:`extend`, the paper's protocol) adds the domain to the
+        artifact; ``regenerate`` (:meth:`regenerate_artifact`, the C15 route) fits a fresh one
+        on the fused model's own text. It is refused on a domain entry.
+
         Args:
             spec_path: the YAML file.
             device, allow_sharding, need, k_domain: forwarded to every :meth:`train` and
                 :meth:`extend` in the chain.
+            selfgen: forwarded to every :meth:`regenerate_artifact` under ``artifact:
+                regenerate``; unused under ``extend``.
 
         Returns:
             The history entries the chain appended, in order.
@@ -1407,7 +1501,9 @@ class Workspace:
             ValueError: the spec is not valid YAML, is not a mapping, has no non-empty
                 ``domains`` list, has a domain without a ``corpus``, has a domain carrying a
                 field that is not one of :data:`DOMAIN_FIELDS`, gives two domains the same
-                ``name``, or asks not to extend between domains. Each names the spec file.
+                ``name``, asks not to extend between domains, or names an ``artifact`` route
+                that is not one of :data:`CHAIN_ARTIFACT_ROUTES` (or names one on a domain).
+                Each names the spec file.
             FileNotFoundError: a domain names a corpus that is not there.
 
             Every one of these is raised before the first stage trains, for every domain in the
@@ -1433,6 +1529,10 @@ class Workspace:
                 "a p(h) that does not describe it. To train several domains from the same "
                 "starting point instead, run them as separate workspaces."
             )
+        route = spec.get("artifact", "extend")
+        if route not in CHAIN_ARTIFACT_ROUTES:
+            raise ValueError(f"{spec_path}: 'artifact' must be one of "
+                             f"{', '.join(CHAIN_ARTIFACT_ROUTES)}; got {route!r}.")
 
         # EVERY domain, before the FIRST one trains. A spec is checked as a whole because its
         # cost is paid as a whole: a typo in domain 3 that surfaces when domain 3 starts has
@@ -1450,6 +1550,8 @@ class Workspace:
                 device=device,
                 allow_sharding=allow_sharding,
             ))
-            if position < len(domains):
+            if position < len(domains) and route == "regenerate":
+                self.regenerate_artifact(selfgen=selfgen, device=device)
+            elif position < len(domains):
                 self.extend(need=need, k_domain=k_domain, device=device)
         return entries
