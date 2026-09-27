@@ -525,6 +525,12 @@ def select_supplement_prefix(raw_tokens: list[int], pair_tokens: list[int],
     Ported verbatim from the research mixer (``prepare_domain_qa.select_qa_for_fraction``):
     pairs are added in order, the largest count under the need is compared with the first count
     over it, and the closer one wins.
+
+    ``under_target`` is True only when the pool was exhausted and still fell short of ``target``.
+    This deliberately departs from the research *expression* (``achieved < target``), which also
+    fires whenever the closer candidate happens to land just below the target with pairs to
+    spare -- about half of ordinary runs -- and implements what the research docstring says the
+    flag means: "True when the pool was too small".
     """
     if not (0.0 <= target < 1.0):
         raise ValueError(f"target must be in [0, 1): got {target}")
@@ -549,7 +555,9 @@ def select_supplement_prefix(raw_tokens: list[int], pair_tokens: list[int],
 
     candidates = [k] + ([k + 1] if k < len(pair_tokens) else [])
     best = min(candidates, key=lambda n: abs(achieved(n) - target))
-    return Selection(best, achieved(best), under_target=achieved(best) < target - 1e-9)
+    exhausted = best == len(pair_tokens)
+    return Selection(best, achieved(best),
+                     under_target=exhausted and achieved(best) < target - 1e-9)
 
 
 def _load_json_texts(file_path: Path, tokenizer=None) -> list[str]:

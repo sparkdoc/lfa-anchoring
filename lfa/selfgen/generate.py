@@ -17,6 +17,7 @@ draws the same text.
 from __future__ import annotations
 
 import hashlib
+import os
 from collections import Counter
 from pathlib import Path
 from typing import Iterable
@@ -177,13 +178,20 @@ def generate_texts(model, tokenizer, prompts: list[str], *, max_new_tokens: int,
 def checkpoint_sha256(model_id: str) -> str:
     """One hash over every ``*.safetensors`` file of the checkpoint, in sorted order.
 
-    A Hub id is resolved to its local cache snapshot (``local_files_only=True``): resolved online,
-    it stays a bare id, which is no directory, and the hash would be that of empty input.
+    A local directory is hashed as it is. Anything else is taken for a Hub id and resolved with
+    ``huggingface_hub.snapshot_download`` restricted to the weights and the JSON configs: a no-op
+    when the snapshot is cached, a download on a cold cache (this runs before any model load, so
+    a fresh machine must not fail here), and cache-only under ``HF_HUB_OFFLINE``.
 
     Raises:
         ValueError: when no ``*.safetensors`` file is found under the resolved directory.
     """
-    root = Path(resolve_model_path(model_id, local_files_only=True))
+    if os.path.exists(model_id):
+        root = Path(model_id)
+    else:
+        from huggingface_hub import snapshot_download
+
+        root = Path(snapshot_download(model_id, allow_patterns=["*.safetensors", "*.json"]))
     files = sorted(root.rglob("*.safetensors"))
     if not files:
         raise ValueError(f"No *.safetensors files under {root} (resolved from {model_id!r}).")

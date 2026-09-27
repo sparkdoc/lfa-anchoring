@@ -1016,11 +1016,13 @@ class Workspace:
                         placement: str | dict, force: bool = False) -> tuple[Path, dict]:
         """The supplement for ``corpus_path``: reused when its manifest matches, else written.
 
-        A match is the training side's corpus hash, the writer checkpoint's hash and the
-        template's hash. The writer is the workspace's CURRENT model -- the stage's entry model
-        -- so in a chain the fused model writes the next domain's pairs (the C15 protocol).
-        ``placement`` is already resolved by the caller (so a sharding the caller allowed is
-        not refused here); the writer runs on its primary device.
+        A match is the training side's corpus hash, the writer checkpoint's hash, the template's
+        hash and the domain description (explicit, or derived from the corpus path), so a
+        different ``domain_description`` rewrites rather than being silently ignored. The writer
+        is the workspace's CURRENT model -- the stage's entry model -- so in a chain the fused
+        model writes the next domain's pairs (the C15 protocol). ``placement`` is already
+        resolved by the caller (so a sharding the caller allowed is not refused here); the
+        writer runs on its primary device.
         """
         train_docs, _ = split_documents(corpus_path, recipe.val_fraction, recipe.seed)
         corpus_hash = sha256_text(train_docs)
@@ -1029,14 +1031,15 @@ class Workspace:
         directory = self.path / "supplements" / corpus_hash[:12]
         out = directory / "supplement.jsonl"
         manifest_path = Path(str(out) + ".manifest.json")
+        description = domain_description or _domain_description_for(corpus_path)
         if out.is_file() and manifest_path.is_file() and not force:
             manifest = json.loads(manifest_path.read_text())
             if (manifest.get("corpus_sha256") == corpus_hash
                     and manifest.get("writer_sha256") == writer_hash
-                    and manifest.get("template_sha256") == template_sha256()):
+                    and manifest.get("template_sha256") == template_sha256()
+                    and manifest.get("domain_description") == description):
                 logger.info("Supplement reused: %s", out)
                 return out, manifest
-        description = domain_description or _domain_description_for(corpus_path)
         logger.info("Writing the supplement for %s with %s (%d training documents)", corpus_path,
                     writer_id, len(train_docs))
         manifest = write_supplement(writer_id, train_docs, out, domain_description=description,

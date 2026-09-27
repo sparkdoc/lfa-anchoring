@@ -136,8 +136,7 @@ training-side passage and writes six question-and-answer pairs about it, and tho
 only the question-forming, the answer construction and the assistant's voice come from the model.
 
 **What it does: reachability.** In the LFA record (C12) the supplement's measured job is to make
-the new knowledge answerable in question-and-answer form: with it, the judged correctness of
-answers and domain accuracy move, while completeness barely does. The shipped λ was tuned with a
+the new knowledge answerable in question-and-answer form. The shipped λ was tuned with a
 supplement at 0.13 in the mix, which is why `train` writes one by default.
 
 **What it does not do: protect skills.** A supplement written in a skill's style does not protect

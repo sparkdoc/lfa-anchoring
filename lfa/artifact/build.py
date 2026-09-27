@@ -257,9 +257,10 @@ def build_artifact_self_generated(
     reads both.
 
     ``options`` defaults to :class:`SelfGenOptions`, the frame of the artifact behind C12
-    (2,500 + 250 documents; 600k samples per site; K=32). Scale it down for a smoke run. When
-    ``options.layer_group_size`` is ``None`` the group is chosen from the model's config and the
-    host's available memory (:func:`choose_layer_group_size`), and the choice is logged.
+    (2,500 raw documents, no chat-format share; 600k samples per site; K=32). Scale it down for a
+    smoke run. When ``options.layer_group_size`` is ``None`` the group is chosen from the model's
+    config and the host's available memory (:func:`choose_layer_group_size`), and the choice is
+    logged.
     Grouping changes the reservoir draws and the fitted mixtures, not the exact moments, so the
     value used (chosen or given) is recorded in the artifact's meta as ``layer_group_size``; to
     reproduce a build, pass ``--layer-group-size`` with that value.

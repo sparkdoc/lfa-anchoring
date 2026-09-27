@@ -135,3 +135,30 @@ def test_checkpoint_sha256_hashes_every_safetensors_file_and_refuses_an_empty_di
     empty.mkdir()
     with pytest.raises(ValueError, match="empty"):
         checkpoint_sha256(str(empty))
+
+
+def test_checkpoint_sha256_downloads_a_hub_id_and_hashes_the_snapshot(tmp_path, monkeypatch):
+    import huggingface_hub
+
+    snapshot = tmp_path / "snapshot"
+    calls = []
+
+    def fake_snapshot_download(repo_id, **kwargs):
+        calls.append((repo_id, kwargs))
+        snapshot.mkdir(exist_ok=True)                  # a cold cache: the files appear on download
+        (snapshot / "model-00001.safetensors").write_bytes(b"alpha")
+        (snapshot / "model-00002.safetensors").write_bytes(b"beta")
+        (snapshot / "config.json").write_text("{}")
+        return str(snapshot)
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot_download)
+
+    from_hub = checkpoint_sha256("some-org/not-a-local-path")
+    assert calls == [("some-org/not-a-local-path",
+                      {"allow_patterns": ["*.safetensors", "*.json"]})]
+    assert from_hub == checkpoint_sha256(str(snapshot))   # the hash covers the downloaded files
+    assert len(calls) == 1                                # a local directory never downloads
+
+    (snapshot / "model-00002.safetensors").write_bytes(b"betb")
+    assert checkpoint_sha256(str(snapshot)) != from_hub
+    assert len(calls) == 1

@@ -159,9 +159,9 @@ behind the LFA record's C12 artifact, and the defaults of both commands — is:
 * **2,500 raw documents** of up to 2,048 new tokens each, started from the model's document
   boundary (Qwen3's `<|endoftext|>`, its declared `generation_config.bos_token_id`), sampled at
   temperature 1.0 and top-p 1.0, stopped at the next boundary, **unfiltered**, seed 42;
-* **250 chat-format documents** started from the bare user-turn header of the model's chat
-  template (`<|im_start|>user\n` for Qwen3, read from the template rather than hard-coded), with
-  the header kept, seed 43 — the chat-format share the real seed corpus carries;
+* **no chat-format documents** (`--n-chat 0`): the launcher behind C12 intended 250 documents
+  started from the bare user-turn header, but the record's own audit found the fitted corpus held
+  none, so the frame is the 2,500 raw documents alone;
 * the fit at **600k samples per site**, K = 32, PCA variance 0.95 (`--max-samples` defaults to
   600,000 on this route and to 1,500,000 over a seed corpus).
 
@@ -170,17 +170,22 @@ behind the LFA record's C12 artifact, and the defaults of both commands — is:
 top-20 out of a 151,936-token vocabulary while looking untruncated.
 
 The corpus is written beside the artifact, the `--out` path with its suffix replaced
-(`artifacts/selfgen.corpus.jsonl` above; `artifacts/v1.corpus.jsonl` in a workspace), as
-`{"text", "source"}` rows, `source` being `selfgen_raw` or `selfgen_chatfmt`, with
-`<corpus>.manifest.json` beside it: the writer's model id and checkpoint sha256, the seed prefix
-and chat header used, the generation frame, the decoding settings, the counts (raw, chat, empty),
-the corpus sha256 and the `lfa` version. The artifact's meta records `provenance:
+(`artifacts/selfgen.corpus.jsonl` above; `artifacts/v1.corpus.jsonl` in a workspace), as `{"text",
+"source"}` rows, `source` being `selfgen_raw` (or `selfgen_chatfmt` for the optional chat-format
+share below), with `<corpus>.manifest.json` beside it: the writer's model id and checkpoint sha256,
+the seed prefix and chat header used, the generation frame, the decoding settings, the counts (raw,
+chat, empty), the corpus sha256 and the `lfa` version. The artifact's meta records `provenance:
 "self-generated"`, that `corpus_sha256`, and the `layer_group_size` the fit used (see the memory
 section above: the group is chosen from host RAM when none is given, and a rebuild passes the
 recorded value). A corpus with fewer than 50 non-empty documents, or with more than 20 % of the
-documents asked for coming out empty, is refused before any fit: an artifact fitted on it would
-fail nowhere downstream. `--n-raw`, `--n-chat`, `--max-new-tokens` and `--max-samples` scale the
-frame down for a smoke run (`init` takes the first three), which is then not the recorded frame.
+documents asked for coming out empty, is refused before any fit: an artifact fitted on it would fail
+nowhere downstream. `--n-raw`, `--n-chat`, `--max-new-tokens` and `--max-samples` scale the frame
+down for a smoke run (`init` takes the first three), which is then not the recorded frame.
+
+`--n-chat N` adds N documents started from the bare user-turn header of the model's chat
+template (`<|im_start|>user\n` for Qwen3, read from the template rather than hard-coded), header
+kept, seed 43. It is an option outside the recorded frame, and what it does to the artifact is
+unmeasured.
 
 **What it is worth.** On Qwen3-0.6B the self-generated artifact matched the real-corpus artifact
 at every λ tried and was at least as good as the published `gmm1543k` one at the recipe's λ — one
@@ -189,8 +194,8 @@ model, one seed, one domain (C12). That is why the bundled recipe carries
 any other model nothing has been measured: the route gives a first artifact, and λ is calibrated
 against it ([adding-a-model.md](adding-a-model.md)).
 
-A model without a chat template gets no chat-format share; the log says so. What each piece cost on
-an 8 GB card is in [faq.md](faq.md).
+A model without a chat template gets no chat-format share even when `--n-chat` asks for one; the
+log says so. What each piece cost on an 8 GB card is in [faq.md](faq.md).
 
 ## What a locally-built artifact does not share with the shipped one
 

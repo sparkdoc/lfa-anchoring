@@ -69,7 +69,8 @@ def test_writes_raw_and_chat_shares_with_a_manifest(tmp_path, monkeypatch):
 
 def test_the_recorded_frame_is_the_default():
     o = SelfGenOptions()
-    assert (o.n_raw, o.n_chat, o.max_new_tokens, o.seed, o.chat_seed) == (2500, 250, 2048, 42, 43)
+    # The C12 corpus held no chat-format documents (the record's audit); the share is an option.
+    assert (o.n_raw, o.n_chat, o.max_new_tokens, o.seed, o.chat_seed) == (2500, 0, 2048, 42, 43)
     assert (o.max_samples, o.gmm_k, o.pca_variance) == (600_000, 32, 0.95)
 
 

@@ -260,9 +260,10 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--n-raw", dest="n_raw", type=int, default=2500, metavar="N",
                       help="--artifact self-generated: raw documents to write (default: "
                            "%(default)s)")
-    init.add_argument("--n-chat", dest="n_chat", type=int, default=250, metavar="N",
-                      help="--artifact self-generated: chat-format documents (default: "
-                           "%(default)s)")
+    init.add_argument("--n-chat", dest="n_chat", type=int, default=0, metavar="N",
+                      help="--artifact self-generated: chat-format documents started from the "
+                           "user-turn header (default: %(default)s). An unmeasured option "
+                           "outside the recorded frame")
     init.add_argument("--max-new-tokens", dest="max_new_tokens", type=int, default=2048,
                       metavar="N", help="--artifact self-generated: tokens per document "
                                        "(default: %(default)s)")
@@ -400,15 +401,16 @@ def build_parser() -> argparse.ArgumentParser:
                         help="the seed corpus (see `lfa prepare-seed-corpus`)")
     source.add_argument("--self-generated", dest="self_generated", action="store_true",
                         help="write the corpus with the model itself first: 2,500 documents "
-                             "from its document boundary plus 250 chat-format ones, then fit "
-                             "at 600k samples per site (the frame of the C12 artifact). No "
-                             "download.")
+                             "from its bare document-start token, then fit at 600k samples "
+                             "per site (the frame of the C12 artifact). No download.")
     build.add_argument("--out", required=True, metavar="PATH",
                        help="where to write distribution_stats.pt")
     build.add_argument("--n-raw", dest="n_raw", type=int, default=2500, metavar="N",
                        help="--self-generated: raw documents to write (default: %(default)s)")
-    build.add_argument("--n-chat", dest="n_chat", type=int, default=250, metavar="N",
-                       help="--self-generated: chat-format documents (default: %(default)s)")
+    build.add_argument("--n-chat", dest="n_chat", type=int, default=0, metavar="N",
+                       help="--self-generated: chat-format documents started from the user-turn "
+                            "header (default: %(default)s). An unmeasured option outside the "
+                            "recorded frame")
     build.add_argument("--max-new-tokens", dest="max_new_tokens", type=int, default=2048,
                        metavar="N", help="--self-generated: tokens per document (default: "
                                         "%(default)s)")

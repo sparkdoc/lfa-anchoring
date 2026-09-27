@@ -107,13 +107,13 @@ Timed on an RTX 2070 (8 GB, 2026-09-26), Qwen3-0.6B:
 | a small artifact build | 20k samples per site, K = 4, model loads included | about 3 min |
 | a supplement | about six passages at 6 pairs each, batch 4 | 47 s |
 
-None of those is the recorded frame. The full frame — 2,750 documents of up to 2,048 tokens, then
+None of those is the recorded frame. The full frame — 2,500 documents of up to 2,048 tokens, then
 the fit at 600k samples per site — takes several hours on an 8 GB card; not timed. A supplement
 costs one generation per 4,000-character passage of the training side (the
 default batch is 16 passages), once per corpus and writer: it is cached under
 `<workspace>/supplements/<corpus sha256[:12]>/` and reused while the training side's hash, the
-writer checkpoint's hash and the template's hash all match. `lfa prepare-supplement --force`
-rewrites it.
+writer checkpoint's hash, the template's hash and the domain description all match.
+`lfa prepare-supplement --force` rewrites it.
 
 ## Why does the chunk count change from epoch to epoch?
 

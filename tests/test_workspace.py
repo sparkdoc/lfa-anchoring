@@ -1305,7 +1305,8 @@ def _fake_supplement_writer(calls):
         Path(out_path).write_text('{"prompt": "q?", "response": "%s", "source_index": 0}\n'
                                   % ("an answer " * 8) * 6)
         manifest = {"writer_sha256": "w" * 64, "corpus_sha256": corpus_sha256,
-                    "template_sha256": "t" * 64, "n_pairs": 6, "lfa_version": "0.2.0"}
+                    "template_sha256": "t" * 64, "domain_description": domain_description,
+                    "n_pairs": 6, "lfa_version": "0.2.0"}
         Path(str(out_path) + ".manifest.json").write_text(json.dumps(manifest))
         return manifest
     return write
@@ -1347,6 +1348,21 @@ def test_a_matching_supplement_is_reused_not_rewritten(tmp_path, registry, base_
     ws.train(corpus_a, recipe=recipe, device="cpu")
     ws.train(corpus_a, recipe=recipe, device="cpu")                # a repeat of the stage
     assert len(supplement_writer) == 1
+    ws.train(corpus_a, recipe=recipe, device="cpu", domain_description="domain a")
+    assert len(supplement_writer) == 1                              # the same description reuses
+
+
+def test_a_different_domain_description_rewrites_the_supplement(tmp_path, registry, base_dir,
+                                                                corpus_a, supplement_writer):
+    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact="tiny")
+    recipe = tiny_recipe(base_dir, supplement_fraction=0.2)
+    ws.train(corpus_a, recipe=recipe, device="cpu")
+    ws.train(corpus_a, recipe=recipe, device="cpu", domain_description="Bronze Age metallurgy")
+    assert [c["domain"] for c in supplement_writer] == ["domain a", "Bronze Age metallurgy"]
+    ws.train(corpus_a, recipe=recipe, device="cpu", domain_description="Bronze Age metallurgy")
+    assert len(supplement_writer) == 2                              # now that one is cached
+    ws.prepare_supplement(corpus_a, recipe=recipe, device="cpu", domain_description="geology")
+    assert [c["domain"] for c in supplement_writer][-1] == "geology"
 
 
 def test_an_edited_corpus_regenerates_the_supplement(tmp_path, registry, base_dir,

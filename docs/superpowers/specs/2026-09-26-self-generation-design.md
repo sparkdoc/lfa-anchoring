@@ -45,6 +45,18 @@ and tied at e20. Every package document states it as: "matched the real-corpus a
 tried and was at least as good as the published one at the recipe's λ; one model, one seed, one
 domain."
 
+## 1c. Correction found at final review (2026-09-26)
+
+The artifact-corpus frame stated in §3.2 (`n_chat=250`, a 250-document chat-format share) is
+inaccurate. The record's own audit (mr-fusion commit 25614b6; `docs/claims.md` C12 cell of record;
+`docs/results.md` Table 4.5 frame; `docs/self_generated_data_2026-09.md`): the C12 artifact was
+fitted on **2,500 raw documents from a bare document-start token**, and the chat-format share had
+**zero lines** in the fitted corpus; the 250 chat-header documents existed only in the launcher's
+intent. `SelfGenOptions.n_chat` therefore defaults to **0**, `--n-chat` on `build-artifact` and
+`init` defaults to 0 and is described as an unmeasured option outside the recorded frame, and every
+package document states the frame as the 2,500 raw documents alone. The chat-format code path and
+its tests stay: it is an option, not the record.
+
 ## 2. Decisions taken in conversation
 
 | decision | choice | why |

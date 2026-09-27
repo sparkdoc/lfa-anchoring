@@ -75,9 +75,10 @@ The shortest route is `lfa build-artifact --model <id> --self-generated --out ar
 (or `lfa init <workspace> --model <id> --artifact self-generated`, which builds the same thing into
 a workspace): the model writes its own seed corpus and no dataset is downloaded. It starts each
 document from the model's document-boundary token — its declared
-`generation_config.bos_token_id`, else the tokenizer's BOS, else its EOS — and, for the
-chat-format share, from the user-turn header of its chat template; without a chat template that
-share is skipped and the log says so. The recipe will warn that λ is uncalibrated against it,
+`generation_config.bos_token_id`, else the tokenizer's BOS, else its EOS. The optional
+chat-format share (`--n-chat`, outside the recorded frame and off by default) starts from the
+user-turn header of its chat template; without a chat template that share is skipped and the log
+says so. The recipe will warn that λ is uncalibrated against it,
 which is true: go to §3. The recorded frame, and what it was worth on Qwen3-0.6B (it matched the
 real-corpus artifact at every λ tried and was at least as good as the published one at the
 recipe's λ; one model, one seed, one domain), are in

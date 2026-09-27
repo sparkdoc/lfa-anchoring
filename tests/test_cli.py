@@ -473,7 +473,7 @@ def test_build_artifact_self_generated_takes_the_recorded_frame(monkeypatch, cap
     assert main(["build-artifact", "--model", "m", "--out", "x.pt", "--self-generated"]) == 0
     options = seen["options"]
     assert options.max_samples == 600_000 and options.gmm_k == 32
-    assert options.n_raw == 2500 and options.n_chat == 250 and options.seed == 42
+    assert options.n_raw == 2500 and options.n_chat == 0 and options.seed == 42  # no chat share
     assert options.layer_group_size is None                # chosen from host RAM by the library
 
     assert main(["build-artifact", "--model", "m", "--out", "x.pt", "--self-generated",

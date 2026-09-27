@@ -681,6 +681,16 @@ def test_a_pool_too_small_takes_all_and_flags_under_target():
     assert r.achieved_fraction == pytest.approx(20 / 120, abs=1e-4)
 
 
+def test_an_ample_pool_is_not_under_target():
+    # needed=50: n=2 gives 60/260=0.231, closest to 0.2, with 18 pairs to spare
+    r = select_supplement_prefix([100, 100], [30] * 20, 0.2)
+    assert r.n_used == 2 and r.under_target is False
+    # needed=32.6: n=1 gives 30/230=0.130, closest to 0.14 and BELOW it, with 19 pairs to spare --
+    # a rounding-to-nearest shortfall, not a pool too small, so no flag
+    r = select_supplement_prefix([100, 100], [30] * 20, 0.14)
+    assert r.n_used == 1 and r.achieved_fraction < 0.14 and r.under_target is False
+
+
 def test_an_empty_pool_with_a_positive_target_is_under():
     r = select_supplement_prefix([100], [], 0.25)
     assert (r.n_used, r.achieved_fraction, r.under_target) == (0, 0.0, True)

@@ -81,10 +81,10 @@ its own λ, not a cheaper equivalent.
 lfa init runs/my_domain --model Qwen/Qwen3-0.6B --artifact self-generated
 ```
 
-No download: the model writes 2,750 documents of its own — 2,500 started from its document
-boundary, 250 from the bare user-turn header of its chat template — and p(h) is fitted on them at
-600k samples per site. The corpus stays beside the artifact as `artifacts/v1.corpus.jsonl`, with
-a manifest, and the workspace records the artifact as `self-generated:<corpus sha256[:12]>`.
+No download: the model writes 2,500 documents of its own, each started from its bare
+document-start token, and p(h) is fitted on them at 600k samples per site. The corpus stays
+beside the artifact as `artifacts/v1.corpus.jsonl`, with a manifest, and the workspace records
+the artifact as `self-generated:<corpus sha256[:12]>`.
 The cost: several hours on an 8 GB card; not timed ([faq.md](faq.md) has the pieces that were
 timed). On Qwen3-0.6B this artifact matched the real-corpus artifact at every λ tried and was at
 least as good as the published one at the recipe's λ — the LFA record's C12, one model, one seed,
@@ -143,10 +143,11 @@ lfa fuse     --workspace runs/my_domain
 
    `train` first writes the supplement: the entry model reads each training-side passage and
    writes six question-and-answer pairs from a fixed template, cached under `supplements/` and
-   reused while the corpus, the writer and the template are unchanged. `--no-supplement` opts
-   out; `lfa prepare-supplement` writes it ahead of time to inspect. The pairs are mixed into the
-   training side at the recipe's `supplement_fraction` (0.13 of training tokens, the frame the
-   shipped λ was tuned at); the held-out tenth is split off first and stays raw text.
+   reused while the corpus, the writer, the template and the domain description are unchanged.
+   `--no-supplement` opts out; `lfa prepare-supplement` writes it ahead of time to inspect. The
+   pairs are mixed into the training side at the recipe's `supplement_fraction` (0.13 of
+   training tokens, the frame the shipped λ was tuned at); the held-out tenth is split off first
+   and stays raw text.
    `--supplement <file.jsonl>` mixes a prompt/response file of your own instead, and
    `--domain-description "<text>"` says what the template calls the text (default: the corpus
    directory's name). With `--no-supplement` the run trains on the raw corpus alone, off the

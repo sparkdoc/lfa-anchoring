@@ -1,12 +1,15 @@
 """The corpus p(h) is estimated on, written by the model with no input data.
 
 The recorded frame (mr-fusion ``scripts/_w11_artifact_corpus.sh``, the artifact behind C12):
-2,500 raw documents of up to 2,048 tokens started from the model's document-boundary token at
-temperature 1.0 and top-p 1.0, **unfiltered**, seed 42; plus 250 documents started from the
-bare user-turn header with the header kept, seed 43, so the corpus carries the chat-format share
-the real seed corpus has. The artifact fitted on it at 600k samples per site, K=32, matched the
-real-corpus artifact at every lambda tried and was at least as good as the published one at the
-recipe's lambda -- one model, one seed, one domain.
+2,500 raw documents of up to 2,048 tokens started from the model's bare document-start token at
+temperature 1.0 and top-p 1.0, **unfiltered**, seed 42, and nothing else. The artifact fitted on
+it at 600k samples per site, K=32, matched the real-corpus artifact at every lambda tried and was
+at least as good as the published one at the recipe's lambda -- one model, one seed, one domain.
+
+The chat-format share (``n_chat`` documents started from the bare user-turn header, header kept,
+seed 43) is an option outside that frame and off by default: the launcher intended 250 such
+documents, but the record's own audit found the fitted corpus held none of them. Its effect on
+the artifact is unmeasured.
 """
 
 from __future__ import annotations
@@ -39,7 +42,7 @@ class SelfGenOptions:
 
     # -- generation
     n_raw: int = 2500
-    n_chat: int = 250
+    n_chat: int = 0                    # the recorded frame has no chat-format share
     max_new_tokens: int = 2048
     batch_size: int = 32
     seed: int = 42
