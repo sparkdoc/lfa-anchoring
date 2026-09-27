@@ -168,7 +168,7 @@ interrupted fetch never leaves something that looks like an artifact.
 ## 5. Tag and build the package
 
 ```bash
-git tag -a v0.1.1 -m "lfa-anchoring 0.1.1"
+git tag -a v0.2.0 -m "lfa-anchoring 0.2.0"
 pip install -e ".[dev]"    # `build` is in the dev extra; `python -m build` needs it installed
 python -m build            # sdist + wheel
 ```
@@ -176,11 +176,13 @@ python -m build            # sdist + wheel
 Check what the sdist carries (`MANIFEST.in` governs it): `lfa/`, `docs/`, `examples/`, `tests/`,
 `LICENSE`, `README.md`, `RELEASING.md`, `constraints-tested.txt`. Rehearsed 2026-09-08 at 0.1.0:
 **73 files, 240 KiB** (`tar -tzf dist/*.tar.gz | grep -v '/$' | wc -l`; the same listing is 82
-lines with the directory entries counted). ⚠ 0.1.1 adds `tests/test_teacher_mode.py`, so that
-count has moved and has **not** been re-measured — re-measure rather than trusting the figure,
-which is what this paragraph has always said.
+lines with the directory entries counted). ⚠ 0.1.1 adds `tests/test_teacher_mode.py`, and 0.2.0
+adds `lfa/selfgen/` and four `tests/test_selfgen_*.py` files, so that count has moved and has
+**not** been re-measured — re-measure rather than trusting the figure, which is what this paragraph
+has always said.
 
-The **wheel** is 34 files: the package, `lfa/recipes/qwen3-0.6b.yaml`, and `lfa/examples/` — the
+The **wheel** was 34 files at 0.1.0 (0.2.0 adds the four modules of `lfa/selfgen/`; re-measure it
+too): the package, `lfa/recipes/qwen3-0.6b.yaml`, and `lfa/examples/` — the
 top-level `examples/` directory, mapped into the package by `[tool.setuptools.package-dir]` so
 that a pip-installed user has the two scripts the documentation sends them to
 (`python -m lfa.examples.quickstart`). Docs and tests are deliberately sdist-only; what carries
@@ -192,7 +194,7 @@ four `Project-URL:` lines with no `<org>` left in them.
 
 ```bash
 python -m venv /tmp/lfa-release
-/tmp/lfa-release/bin/pip install -c constraints-tested.txt dist/lfa_anchoring-0.1.1-*.whl
+/tmp/lfa-release/bin/pip install -c constraints-tested.txt dist/lfa_anchoring-0.2.0-*.whl
 /tmp/lfa-release/bin/lfa --help
 /tmp/lfa-release/bin/python -m lfa.examples.quickstart --help     # the wheel ships these
 ```
@@ -212,10 +214,11 @@ exercise. It answers "does the port still match the research code on today's tor
 real question. It is not what step 6 is for, it happens in the research checkout rather than here,
 and its failures are not release blockers.
 
-Build that venv on an interpreter with development headers, or install them: a CUDA run compiles
-triton's shim at the first kernel launch, and `lfa` refuses up front without `Python.h` and a
-compiler. A distribution `python3` without its `-dev` package is exactly the machine a new user
-brings, so it is worth rehearsing on one.
+Rehearse on an interpreter *without* development headers too: since 0.2.0 `lfa` warns once
+rather than refusing when `Python.h` or a compiler is missing, because the package's own training
+and generation paths ran without them (a torch path that JIT-compiles would still fail in gcc). A
+distribution `python3` without its `-dev` package is exactly the machine a new user brings, so the
+release should be seen to run there and to print the warning once.
 
 Then, from a checkout with that venv:
 
@@ -258,6 +261,46 @@ the checksum rather than by their tags.
 Newest first. A release that changes what a run computes says so in its first sentence; one that
 does not says that too, because "nothing moved" is the claim a reader most needs to be able to
 trust.
+
+### 0.2.0
+
+**What a default run computes moves.** `train` now mixes into the training side a
+question-and-answer supplement the stage's entry model writes from the domain, at the recipe's
+`supplement_fraction`; `--no-supplement` trains on the raw corpus alone, as every 0.1.x run did,
+and warns that it is off the frame. The held-out split is taken before anything is mixed, so
+the domain number stays a raw-text measurement.
+
+Self-generation: `init --artifact self-generated` / `build-artifact --self-generated` (the model
+writes the seed corpus p(h) is estimated on; no download), the supplement `train` now writes
+with the entry model and mixes in at the recipe's `supplement_fraction` (0.13, the frame the
+shipped λ was tuned at; every earlier companion run trained at 0), `prepare-supplement`,
+`regenerate-artifact` and the chain's `artifact: regenerate` route. Two recorded deviations
+from the research frame: the template says "about a text on <domain>" (was "a philosophy
+text"), and the contamination screen against an evaluation set is not ported. The toolchain
+check is a warning. Recipe fields `supplement_fraction`, `calibrated_self_generated`; artifact
+meta fields `provenance`, `corpus_sha256`; history keys `supplement`, `artifact_route`.
+Evidence scope: one model, one seed (C12, C14); rank 4, one seed (C15).
+
+* **The artifact meta also records `layer_group_size`.** One torch generator is shared across a
+  group's sites, so grouping changes the reservoir draws and the fitted mixtures (not the exact
+  moments). The self-generated build chooses the group from host RAM when none is given; a rebuild
+  reproduces a file by passing `--layer-group-size` with the recorded value.
+* **The supplement** lives under `<workspace>/supplements/<corpus sha256[:12]>/` and is reused
+  while the training side's hash, the writer checkpoint's hash and the template's hash match;
+  `prepare-supplement --force` rewrites it. Its manifest records `chat_template_applied` (a writer
+  without a chat template is warned about and is outside the recorded frame); duplicates are keyed
+  on the question alone, as in the research writer.
+* **`evaluate --compare-unanchored`**: the λ = μ = 0 control mixes the stage's own supplement at
+  the stage's fraction, so it is still the same run without the anchor.
+* **Not ported**: `--enforce-spec` (a comparison-only device) and the reasoning and instruction
+  supplement modes (C14: not the lever). Self-generated rehearsal, a replay method, is out of
+  scope.
+* Docs: README, quickstart, `docs/rebuilding-the-artifact.md` (the self-generated route),
+  `docs/adding-a-model.md`, `docs/recipes.md`, `docs/concepts.md` (what the supplement does:
+  reachability; what it does not: protect skills), `docs/multi-domain-chains.md` (the regenerate
+  route), `docs/faq.md` (8 GB cards, bf16 on Turing, the toolchain warning, what self-generation
+  costs). `docs/verification.md` is unchanged: nothing in 0.2.0 was checked bit-for-bit against
+  the research code.
 
 ### 0.1.1
 

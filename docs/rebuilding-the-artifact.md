@@ -1,13 +1,14 @@
 # Rebuilding the p(h) artifact
 
 The artifact is the only large thing this package ships, and the only part of LFA that is not
-data-free: it is built once from a general-purpose seed corpus, and every adaptation afterwards
-samples from it instead of from text. You need to rebuild it for a **new model**
+data-free: it is built once from a general-purpose seed corpus — or from text the model writes
+itself ([below](#the-self-generated-route)) — and every adaptation afterwards samples from it
+instead of from text. You need to rebuild it for a **new model**
 ([adding-a-model.md](adding-a-model.md)), or if you want an artifact estimated on a different
 corpus. You do not need to rebuild it for a new domain — that is what
 [`lfa extend`](multi-domain-chains.md) is for.
 
-Two commands:
+Two commands over a downloaded seed corpus (or one, with `--self-generated`, over none):
 
 ```bash
 lfa prepare-seed-corpus --out data/seed_corpus_10to1.jsonl
@@ -119,6 +120,17 @@ float64 covariance accumulators add `D² × 8` bytes per site (8.39 MB at width 
 2048, so 1.41 GB across all 84 sites of that model), which is small beside the reservoirs but not
 nothing.
 
+**The group size is part of the build, not only of its memory bill.** One torch generator is
+shared across a group's sites, so grouping changes the reservoir draws and therefore the fitted
+mixtures — not the exact moments (mean, covariance, basis), which come from sums over every vector.
+Two builds at the same seed and different group sizes are two different artifacts. The artifact's
+meta records the value used as `layer_group_size`, and a rebuild reproduces a file by passing
+`--layer-group-size` with that recorded value. With `--self-generated` and no value given, the
+build chooses the group from the model's config and the host RAM available when it starts, and
+logs the choice: on a 28-layer Qwen3-0.6B at the 200,000-vector reservoir that was 7 (about
+10.7 GiB of reservoirs per group against about 24 GiB available) on the machine this was written
+on, and a host with less free memory chooses a smaller group — and so a different artifact.
+
 The GPU side is undemanding — the model is loaded in **float32**, deliberately: the artifact is a
 second-moment estimate and bf16's 8-bit mantissa is a large error on a covariance.
 
@@ -133,6 +145,51 @@ argument) and check the site statistics in the logs.
 doubles the file). Quantization is a storage format: it is applied to a shallow copy on save and
 reconstructed on load, so nothing downstream knows whether the file was quantized. The shipped
 Qwen3-0.6B artifact is ~108 MB int8 against ~226 MB in fp16.
+
+## The self-generated route
+
+```bash
+lfa build-artifact --model Qwen/Qwen3-0.6B --self-generated --out artifacts/selfgen.pt
+lfa init runs/my_domain --model Qwen/Qwen3-0.6B --artifact self-generated    # the same, into a workspace
+```
+
+The model writes the seed corpus itself and nothing is downloaded. The recorded frame — the one
+behind the LFA record's C12 artifact, and the defaults of both commands — is:
+
+* **2,500 raw documents** of up to 2,048 new tokens each, started from the model's document
+  boundary (Qwen3's `<|endoftext|>`, its declared `generation_config.bos_token_id`), sampled at
+  temperature 1.0 and top-p 1.0, stopped at the next boundary, **unfiltered**, seed 42;
+* **250 chat-format documents** started from the bare user-turn header of the model's chat
+  template (`<|im_start|>user\n` for Qwen3, read from the template rather than hard-coded), with
+  the header kept, seed 43 — the chat-format share the real seed corpus carries;
+* the fit at **600k samples per site**, K = 32, PCA variance 0.95 (`--max-samples` defaults to
+  600,000 on this route and to 1,500,000 over a seed corpus).
+
+`top_k` is lifted explicitly (`top_k=0`, with `min_p=0.0` and `repetition_penalty=1.0`): Qwen3's
+`generation_config.json` ships `top_k: 20`, so passing only temperature and top-p would sample
+top-20 out of a 151,936-token vocabulary while looking untruncated.
+
+The corpus is written beside the artifact, the `--out` path with its suffix replaced
+(`artifacts/selfgen.corpus.jsonl` above; `artifacts/v1.corpus.jsonl` in a workspace), as
+`{"text", "source"}` rows, `source` being `selfgen_raw` or `selfgen_chatfmt`, with
+`<corpus>.manifest.json` beside it: the writer's model id and checkpoint sha256, the seed prefix
+and chat header used, the generation frame, the decoding settings, the counts (raw, chat, empty),
+the corpus sha256 and the `lfa` version. The artifact's meta records `provenance:
+"self-generated"`, that `corpus_sha256`, and the `layer_group_size` the fit used (see the memory
+section above: the group is chosen from host RAM when none is given, and a rebuild passes the
+recorded value). A corpus with fewer than 50 non-empty documents, or with more than 20 % of the
+documents asked for coming out empty, is refused before any fit: an artifact fitted on it would
+fail nowhere downstream. `--n-raw`, `--n-chat`, `--max-new-tokens` and `--max-samples` scale the
+frame down for a smoke run (`init` takes the first three), which is then not the recorded frame.
+
+**What it is worth.** On Qwen3-0.6B the self-generated artifact tied the `gmm1543k` artifact at
+every λ tried — one model, one seed, one domain (C12). That is why the bundled recipe carries
+`calibrated_self_generated: true` and warns about nothing when a Qwen3-0.6B workspace uses one. On
+any other model nothing has been measured: the route gives a first artifact, and λ is calibrated
+against it ([adding-a-model.md](adding-a-model.md)).
+
+A model without a chat template gets no chat-format share; the log says so. What each piece cost on
+an 8 GB card is in [faq.md](faq.md).
 
 ## What a locally-built artifact does not share with the shipped one
 

@@ -23,12 +23,22 @@ fit, it buys memory rather than speed, and here it costs about 8 % because every
 state then crosses a device boundary. Pass `--allow-sharding` deliberately, when the model — plus
 the separate teacher, if the run holds one — genuinely does not fit.
 
+**On an 8 GB card.** On an RTX 2070 (8 GB, 2026-09-26) a Qwen3-0.6B rank-32 step at 512 tokens
+peaks at 2.45 / 3.52 / 4.59 GiB for micro-batch 1 / 2 / 3 (1.08 / 1.98 / 2.94 s per step) and
+overflows at 6 on the fp32 logits (6 × 512 × 151,936 floats). Set `batch_size: 3` and
+`gradient_accumulation_steps: 2` to keep the recipe's 6 × 512 geometry; about 6 s per optimizer
+step. bfloat16 is sound on Turing: perplexity 9.67 against fp32's 9.70 (and fp16's 9.68) on one
+sentence, greedy outputs equal, at about half fp16 speed. The package does not probe memory and
+pick a batch for you, on purpose: the training frame must not depend on the card, so the geometry
+is a recipe edit you make and the history records.
+
 For sweeps, run one configuration per card as two independent lanes (`--device cuda:0` and
 `--device cuda:1`). That is a true 2× on the queue, which no form of parallelism inside one run
 gets you here.
 
-The two things that *do* cost real memory are the artifact build (host RAM, tens of GB) and the
-continual extension (below).
+The two things that *do* cost real memory are the artifact build (host RAM, tens of GB; on the
+self-generated route, and so under `regenerate-artifact`, the build sizes itself to the RAM it finds
+— below) and the continual extension (below).
 
 ## Why does a chain's `extend` need so much RAM?
 
@@ -52,10 +62,59 @@ and the concatenations were resident at once, and freeing the chunks did not ret
 Each site now fills one `--need × width` buffer in place, which is what makes the budget above the
 real bill. If you are on an older version, budget twice the number.
 
+**On the `regenerate` route** (`lfa regenerate-artifact`, or a chain with `artifact: regenerate`)
+there is no `--need`: each boundary runs a whole self-generated artifact build, whose bill is the
+build's reservoirs, collected `layer_group_size` layers at a time. With no group size given, the
+self-generated build chooses it from the model's config and the host RAM available when it starts,
+and logs the choice: on the machine this was written on, 7 for Qwen3-0.6B at the 200,000-vector
+reservoir (about 10.7 GiB of reservoirs per group, against about 24 GiB available). The choice is
+not neutral — one torch generator is shared across a group's sites, so grouping changes the
+reservoir draws and the fitted mixtures, though not the exact moments — so the artifact's meta
+records `layer_group_size`, and a rebuild reproduces a file by passing `--layer-group-size` with
+the recorded value ([rebuilding-the-artifact.md](rebuilding-the-artifact.md)).
+
 **How long it takes.** About **five minutes** at the defaults on one RTX 3090 (measured 5 min 08 s:
 roughly one minute collecting activations through the fused model, then four minutes fitting 84
 mixtures). The fitting half logs its progress every ten sites, so a quiet minute is normal and a
 quiet five is not.
+
+## The run warned that this machine cannot compile for the GPU
+
+That is the toolchain check, and since 0.2.0 it is a warning, printed once, rather than a refusal:
+
+```
+This machine cannot compile for the GPU: the Python development headers (…/Python.h does not
+exist) is missing for …/python3. This package's own training and generation paths ran without
+it, but a torch path that JIT-compiles (torch.compile, custom triton kernels) would fail in gcc
+mid-run. …
+```
+
+Some torch paths compile a small CUDA shim on the first kernel launch and need `Python.h` and a C
+compiler. This package's own paths do not: a Qwen3-0.6B LoRA stage and an unconditional generation
+ran on an RTX 2070 under a Python with no development headers (2026-09-26). So the run proceeds.
+If a torch path of your own does compile and fails in gcc, install your distribution's development
+package for the interpreter (`python3-dev` / `python3.13-dev`, plus `build-essential`); a uv- or
+conda-managed interpreter ships its own headers. `LFA_SKIP_TOOLCHAIN_CHECK=1` silences the warning.
+
+## How long does self-generation take?
+
+Timed on an RTX 2070 (8 GB, 2026-09-26), Qwen3-0.6B:
+
+| what | size | time |
+|---|---|---|
+| generation | 16 documents × 512 tokens | 54 s |
+| an artifact corpus | 16 raw + 4 chat-format documents | 77 s |
+| a small artifact build | 20k samples per site, K = 4, model loads included | about 3 min |
+| a supplement | about six passages at 6 pairs each, batch 4 | 47 s |
+
+None of those is the recorded frame, and the full frame has not been timed end to end. The
+estimate for it — 2,750 documents of up to 2,048 tokens, then the fit at 600k samples per site — is
+about 2 h of generation and about 40 min of fitting on the 2070, and about half that on an RTX
+3090. A supplement costs one generation per 4,000-character passage of the training side (the
+default batch is 16 passages), once per corpus and writer: it is cached under
+`<workspace>/supplements/<corpus sha256[:12]>/` and reused while the training side's hash, the
+writer checkpoint's hash and the template's hash all match. `lfa prepare-supplement --force`
+rewrites it.
 
 ## Why does the chunk count change from epoch to epoch?
 
@@ -113,8 +172,10 @@ anything was preserved.
 
 Three steps, and only the third is real work: an **adapter** so LFA can find the sub-modules
 (usually free — `LlamaLayoutAdapter` covers Llama, Qwen2/3, Mistral and their kin), an
-**artifact** built for that model, and a **λ calibration** at your rank and corpus. Never port λ
-across models. [adding-a-model.md](adding-a-model.md) has the interface, the fallback orders, and
+**artifact** built for that model — `lfa build-artifact --model <id> --self-generated` writes its
+seed corpus with the model itself, no download — and a **λ calibration** at your rank and corpus,
+against that artifact. Never port λ across models. [adding-a-model.md](adding-a-model.md) has
+the interface, the fallback orders, and
 the calibration procedure.
 
 The natural next models to verify are **Gemma 3 1B** and **Llama 3.2 1B**: both should be placed by
@@ -183,6 +244,9 @@ should have caught than refuses one that would have fitted. It reads `MemAvailab
 all** and the budget above is all you have; the numbers are documented here for that reason as well
 as for planning. Override it with `LFA_CORPUS_MEMORY_LIMIT_GB=<GiB>`, or `LFA_CORPUS_MEMORY_LIMIT_GB=off`.
 
+The supplement adds to the training side on top of that: at the recipe's `supplement_fraction` of
+0.13, the written pairs come to about 0.15 of the raw training tokens (0.13 / 0.87).
+
 If the corpus is too big, the answer this package prefers is not more RAM: **split it and train the
 parts as successive domains** ([multi-domain-chains.md](multi-domain-chains.md)). That is what LFA
 is for, and each stage then holds only its own share.
@@ -247,4 +311,6 @@ dtype=torch.float32)`), which doubles the reservoir memory —
 
 No. Every score this package computes is a perplexity, computed locally from model logits:
 held-out domain perplexity and WikiText-2 by sliding window. There is no judge, no API key, and
-nothing to configure. The paper's judged results are in the paper.
+nothing to configure. The text self-generation needs — the artifact corpus and the domain
+supplement — is written locally by the model being adapted, never by an external one. The
+paper's judged results are in the paper.

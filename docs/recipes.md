@@ -22,7 +22,8 @@ rather than several GPU-hours into a run.
 ## The shipped point: `lfa/recipes/qwen3-0.6b.yaml`
 
 Rank-32 LoRA over the int8 `gmm1543k` artifact, λ = 100,000 on both site families, μ = 0.05,
-16 anchor samples per step, fifteen epochs of cosine.
+16 anchor samples per step, fifteen epochs of cosine, with the model's own question-and-answer
+supplement mixed in at 0.13 of training tokens.
 
 ### Adapter
 
@@ -101,6 +102,7 @@ curve, not a truncation of this one.
 |---|---|---|
 | `keep_short_whole` | `true` | a document that fits in one chunk is trained **whole**, in every epoch, rather than being cut at the epoch's chunk offset into a chunk and a fragment that starts mid-sentence. It changes the training stream, so a run records which setting it used. Prefer `false` only when the documents are themselves arbitrary slices of something longer, so that keeping them whole preserves nothing and the extra positional variety is worth having |
 | `val_fraction` | 0.1 | share of *documents* (shuffled under `seed`) held out of training and scored after every epoch. Set it to `0.0` to train on everything — and then read the domain number as a fit |
+| `supplement_fraction` | 0.13 | share of training *tokens* made up of the question-and-answer pairs the stage's entry model writes from the training-side documents ([quickstart.md](quickstart.md)); `0.0` trains on the raw corpus alone. The shipped λ was tuned with a question-and-answer supplement at 0.13 of training tokens; every companion run before 0.2.0 trained at 0, off that frame. The held-out documents are split off before anything is mixed, so the domain number stays a raw-text measurement comparable across fractions. The pairs are taken as a prefix of the written file, the one whose achieved share is closest to the target; a pool too small to reach it trains at what it has and warns with the achieved share |
 
 ### Calibration record
 
@@ -109,9 +111,15 @@ curve, not a truncation of this one.
 | `calibrated_rank` | 32 |
 | `calibrated_artifact` | `qwen3-0.6b-gmm1543k-int8` |
 | `stage2_lambda_multiplier` | 3.0 |
+| `calibrated_self_generated` | `true` |
 
-The first two are what `Recipe.warnings(rank, artifact_id)` reads a run against; the third is what
-[a chain](multi-domain-chains.md) multiplies λ by from stage 2 on.
+The first two are what `Recipe.warnings(rank, artifact_id, artifact_meta)` reads a run against; the
+third is what [a chain](multi-domain-chains.md) multiplies λ by from stage 2 on. The fourth says
+that an artifact fitted on *this recipe's model's* own text (meta `provenance: "self-generated"`,
+[rebuilding-the-artifact.md](rebuilding-the-artifact.md#the-self-generated-route)) is a calibrated
+substitute for `calibrated_artifact`, so no warning fires for it. It is `true` here on the strength
+of the LFA record's C12 — on Qwen3-0.6B the self-generated artifact tied `gmm1543k` at every λ
+tried; one model, one seed, one domain — and `false` is the default for any other recipe.
 
 ## The couplings, and what the warnings mean
 
@@ -127,6 +135,26 @@ point:
 * **`full_weight: true`** — outside the paper's validated envelope; calibrate λ in 50,000–100,000
   and check held-out domain perplexity.
 
+A **self-generated** artifact is judged by who wrote its text rather than by its id, and replaces
+the artifact line above with one of two:
+
+* *"this artifact was fitted on the model's own text and this recipe does not record
+  self-generation as calibrated: calibrate lambda against held-out domain perplexity …"* — the
+  artifact's `model_id` is the recipe's, but `calibrated_self_generated` is `false`: the usual case
+  on a new model ([adding-a-model.md](adding-a-model.md), §3).
+* *"this self-generated artifact describes '…', not this recipe's '…': lambda is coupled to the
+  p(h) artifact, so calibrate it against held-out domain perplexity for this model."* — the text
+  came from a different model. In a chain on the `regenerate` route it fires from stage 2 on and
+  names the fused stage model's path, because the regenerated artifact was written by that model;
+  there it carries one more sentence, that the regenerated route is C15's (rank 4, one seed) and
+  the stage multiplier is a starting point there, not a calibrated constant
+  ([multi-domain-chains.md](multi-domain-chains.md#the-regenerate-route)).
+
+One more is logged by `train` itself rather than by the recipe: *"Training on the raw corpus alone:
+this recipe's lambda was calibrated at supplement_fraction 0.13 and this run mixes none."* It fires
+on `--no-supplement` (`supplement=False`) when the recipe's `supplement_fraction` is above 0; a
+recipe that sets `0.0` has opted out at the recipe level and is not warned.
+
 When you pass a local copy of a published artifact by path, tell `init` which one it is
 (`--artifact-id qwen3-0.6b-gmm1543k-int8`), or the recipe will warn that λ was calibrated against
 a different artifact when it was calibrated against exactly that one.
@@ -137,8 +165,9 @@ its best while domain quality collapses, so the general axis alone cannot tell y
 ## Writing your own
 
 Copy the bundled file, change what you mean to change, and — the part that is easy to skip — move
-`calibrated_rank` and `calibrated_artifact` to the point you actually tuned at, so that the
-warnings stay true for the next person:
+`calibrated_rank` and `calibrated_artifact` to the point you actually tuned at (and set
+`calibrated_self_generated` to what you actually measured), so that the warnings stay true for the
+next person:
 
 ```python
 import dataclasses
@@ -157,15 +186,18 @@ A recipe file must be a YAML mapping, may not carry a field `Recipe` does not ha
 
 ## Per-run overrides
 
-`Workspace.train` takes `epochs`, `full_weight`, `teacher_mode`, `keep_short_whole` and
-`output_name` per call (`--epochs`, `--full-weight`, `--teacher-mode` on the CLI); the recipe is
-otherwise used as written. `teacher_mode` is not a recipe field on purpose: it decides where the
-frozen teacher is read from, not what is optimized, and the two modes train the same model to the
-last bit — so it is not part of a tuned operating point. `auto`, the default, is
+`Workspace.train` takes `epochs`, `full_weight`, `teacher_mode`, `keep_short_whole`,
+`supplement`, `domain_description` and `output_name` per call (`--epochs`, `--full-weight`,
+`--teacher-mode`, `--no-supplement` / `--supplement <file>`, `--domain-description` on the CLI);
+the recipe is otherwise used as written. `teacher_mode` is not a recipe field on purpose: it
+decides where the frozen teacher is read from, not what is optimized, and the two modes train the
+same model to the last bit — so it is not part of a tuned operating point. `auto`, the default, is
 `adapter_disabled` for a LoRA run (no second model is loaded) and `separate` for full weight. Whatever
 actually ran — both λ values after the stage multiplier, the short-document setting, the held-out
-fraction, the device and the dtype — is recorded in that stage's `history.json` entry, so a run
-says what it did rather than what it was asked for.
+fraction, the device and the dtype, and under `supplement` the pairs file, how many pairs were
+available and used, the target and achieved fractions and the writer's checkpoint hash — is
+recorded in that stage's `history.json` entry, so a run says what it did rather than what it was
+asked for.
 
 The chunk offset itself is not a setting: it rotates the chunk boundaries, so every token of every
 document is trained on in every epoch. A switch that reproduced the older, truncating stream

@@ -18,6 +18,9 @@ lfa extend    →  models/stage2_fused, artifact v3
 lfa train C   →  stage 3
 ```
 
+`lfa regenerate-artifact` can stand wherever `lfa extend` does: it clears the same pending stage
+and writes the next artifact version by a different route ([below](#the-regenerate-route)).
+
 Training a **different** corpus while a stage is still pending is refused (`StageOrderError`):
 without the extension the new stage would adapt the previous stage's starting model and anchor
 against a p(h) that does not describe what it is anchoring. Training the **same** corpus again —
@@ -60,6 +63,51 @@ the new components have to describe the training stream the model actually saw. 
 reads it off the stage's history entry. Nothing else about the chunking is a setting: collection
 never re-chunks, so it reads the epoch-0 cut.
 
+## The regenerate route
+
+`lfa regenerate-artifact` (`Workspace.regenerate_artifact`) is the alternative to `extend` between
+two domains. It does the first half of `extend` the same way — merge the stage's adapter into
+`models/stage{N}_fused` — and then, instead of extending p(h), fits a **fresh** p(h) from the fused
+model's own text: 2,500 documents written from its document boundary, with no chat-format share,
+fitted at 600k samples per site, K = 32, with no base component and no merge. The result is
+`artifacts/v{N+1}.pt`, its corpus and manifest beside it as `v{N+1}.corpus.jsonl`, and the
+workspace records `artifact_route: "regenerate"` (an `extend` records `"extend"`; every stage's
+history entry carries the route its artifact came by). The next `train` then writes its supplement
+with the same fused model that wrote the artifact's corpus.
+
+```bash
+lfa regenerate-artifact --workspace runs/chain       # the full recorded frame; no flags to shrink it
+```
+
+In a chain it is one top-level field, applied at every stage boundary:
+
+```yaml
+artifact: regenerate            # or extend, the default
+domains:
+  - {name: philosophy, corpus: data/domain_a}
+  - {name: archaeology, corpus: data/domain_c}
+```
+
+A per-domain `artifact` key is refused at load: the route is chosen once for the chain.
+
+**What the record found (C15).** A three-domain chain anchored this way was, after its third stage,
+as good as the chain anchored on the real-seed-corpus artifact on every judge, perplexity and skill
+benchmark (at stage 2 it had one judged deficit, on the second domain, which stage 3 erased). The
+text it was anchored on drifted toward the last domain learned: in the corpora written by the base
+model, the first-domain model and the two-domain model, the first domain's terms made up
+0.5 / 68.2 / 2.5 % and the second domain's 2.7 / 9.6 / 86.1 % — yet the anchor fitted on that
+drifting text did not compound into a worse chain. Scope: rank 4, one seed, three domains, judged by
+`gpt-5.6-luna@medium`. These are the record's measurements, not this package's.
+
+**λ on this route.** C15 ported λ at 2× from stage 2; the recipe's `stage2_lambda_multiplier` is
+3×. Neither is calibrated for your chain: the multiplier is a starting point on either route, to
+be re-tuned on the two axes. A regenerated artifact is also not the calibrated one — it was written
+by the fused stage model, not by the recipe's model — so from stage 2 on `train` warns that the
+self-generated artifact describes the fused model's path rather than the recipe's model, and adds
+that the regenerated route is C15's (rank 4, one seed) and the stage multiplier is a starting point
+there, not a calibrated constant. The advice is the warning's: re-tune λ against held-out domain
+perplexity.
+
 ## λ from stage 2 on
 
 `Recipe.to_train_config(stage=N, …)` multiplies both λs by `stage2_lambda_multiplier` for every
@@ -77,6 +125,7 @@ lfa chain domains.yaml --workspace runs/chain
 ```
 
 ```yaml
+artifact: extend              # optional; `regenerate` is the other route (above)
 domains:
   - name: philosophy          # the run directory under runs/ (optional)
     corpus: data/domain_a     # relative paths resolve against THIS file
@@ -117,8 +166,9 @@ control at its own best number of epochs, which is not the same answer.
 
 `lfa evaluate` reads the **last** stage against the model it started from: what this stage learned,
 and what it kept relative to where it began. For the chain as a whole, read the history — every
-stage's entry carries its corpus, its applied λ, its artifact version, its document counts and its
-perplexities:
+stage's entry carries its corpus, its applied λ, its artifact version and the route that artifact
+came by (`artifact_route`), its document counts, its supplement (`supplement`: the pairs file, pairs
+used, the achieved fraction and the writer's hash) and its perplexities:
 
 ```python
 import json
@@ -137,10 +187,11 @@ Stated as the paper states it: in a three-domain chain, **perplexity** on the ea
 accumulating rather than degrading, while **judged answering** on those earlier domains falls after
 the third stage — and that fall is carried by the question-and-answer **pairs** in the stage's
 generated supplement rather than by the anchor. The paper calls that supplement double-edged: the
-pairs are the interference, but a stage trained *without* the supplement retains the earlier domain
-**worse** on the same judge, so "drop the Q&A" is not the reading.
+pairs are the interference, but a stage trained *without* the supplement answers on the earlier
+domain **worse** on the same judge, so "drop the Q&A" is not the reading.
 
-This package has no QA supplement: the loader mixes nothing into the corpus you hand it, and
-nothing here computes a judged score. Every number it reports is a perplexity computed locally.
-Read that finding as a caution about what perplexity does and does not tell you about a chain, not
-as a knob in this repository.
+Since 0.2.0 this package writes a supplement too (every stage's entry model writes its own
+domain's pairs; [concepts.md](concepts.md#what-the-supplement-does-and-does-not-do) says what it
+is for), but nothing here computes a judged score. Every number it reports is a perplexity computed
+locally. Read that finding as a caution about what perplexity does and does not tell you about a
+chain; `--no-supplement` exists, but the finding above is the reason not to read it as the fix.

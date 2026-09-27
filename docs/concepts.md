@@ -13,11 +13,13 @@ is captured once, in advance, as a distribution — adaptation itself needs none
 
 ## The distribution p(h)
 
-Run a general-purpose seed corpus through the frozen model once and record, at each anchoring
-site, what the vectors arriving there look like: a mean, a covariance (kept as a PCA basis with its
-eigenvalues), and a small mixture fitted in that basis. That is the **artifact**. It is a
-*per-site statistic* over hidden-state vectors — no text, no token ids, no ordering, nothing
-sequence-shaped — and the same file serves every adaptation of that model afterwards.
+Run a general-purpose seed corpus through the frozen model once — a downloaded one, or text the
+model writes itself ([rebuilding-the-artifact.md](rebuilding-the-artifact.md#the-self-generated-route))
+— and record, at each anchoring site, what the vectors arriving there look like: a mean, a
+covariance (kept as a PCA basis with its eigenvalues), and a small mixture fitted in that basis.
+That is the **artifact**. It is a *per-site statistic* over hidden-state vectors — no text, no
+token ids, no ordering, nothing sequence-shaped — and the same file serves every adaptation of that
+model afterwards.
 
 The sites, per layer, are the *inputs* of the sub-modules being preserved
 (`lfa/adapters/__init__.py::ANCHOR_SITES`):
@@ -33,10 +35,11 @@ Layer 0's `pre_qkv` is not fitted at all: it is `input_layernorm(embed_tokens(id
 reconstructible from the model's own weights, so the shipped artifact stores no table and
 `Sampler.build_embedding_lookup_from_model` rebuilds it at load time (~300 MB not shipped).
 
-**Data-free at adaptation time, not at artifact-build time.** The artifact is built from a corpus;
-what is data-free is every adaptation afterwards, and — in a chain — every *earlier domain*, none
-of which is ever stored or replayed. Say it that way; the unqualified claim is not the one this
-method supports.
+**Data-free at adaptation time, not at artifact-build time.** The artifact is built from a corpus
+(on the self-generated route, one the model wrote, so nothing is downloaded — but it is still
+text); what is data-free is every adaptation afterwards, and — in a chain — every *earlier
+domain*, none of which is ever stored or replayed. Say it that way; the unqualified claim is not
+the one this method supports.
 
 ## The objective
 
@@ -119,10 +122,33 @@ learned anything:
 | general (WikiText-2) | sliding-window test perplexity, window 2048 / stride 512 |
 | domain | held-out perplexity on the new domain's own documents |
 
-`--compare-unanchored` adds a third column: the same run with λ = μ = 0. That control is what says
-what the anchor bought, and it costs a second training run.
+`--compare-unanchored` adds a third column: the same run with λ = μ = 0, trained on the same mix
+(the stage's own supplement at the stage's fraction). That control is what says what the anchor
+bought, and it costs a second training run.
 
 A general perplexity *below* the base model's is not a win — see [faq.md](faq.md).
+
+## What the supplement does, and does not do
+
+`train` mixes a question-and-answer supplement into the domain: the stage's entry model reads each
+training-side passage and writes six question-and-answer pairs about it, and those pairs make up
+`supplement_fraction` (0.13) of the training tokens. The domain content comes from the passage;
+only the question-forming, the answer construction and the assistant's voice come from the model.
+
+**What it does: reachability.** In the LFA record (C12) the supplement's measured job is to make
+the new knowledge answerable in question-and-answer form: with it, the judged correctness of
+answers and domain accuracy move, while completeness barely does. The shipped λ was tuned with a
+supplement at 0.13 in the mix, which is why `train` writes one by default.
+
+**What it does not do: protect skills.** A supplement written in a skill's style does not protect
+that skill: in the record (C14), reasoning-style and instruction-style supplements protected neither
+GSM8K nor IFEval, under any method. LFA's own loss of about 10 points on GSM8K is not repaired by
+self-generated inputs. What holds skills at base in the record is self-generated rehearsal, a
+replay method, which this package does not implement. So read the supplement as what makes the new
+domain reachable in question-and-answer form, and nothing more.
+
+Scope: one model (Qwen3-0.6B), one seed, one domain, judged by `gpt-5.6-luna@medium`. These are the
+record's measurements, not this package's: the package computes no judged score.
 
 ## Chains: adding a domain without revisiting the last one
 
@@ -182,9 +208,10 @@ domains keeps accumulating — it does not degrade — while *judged answering* 
 domains falls after the third stage, and that the drop is carried by the question-and-answer
 *pairs* in the stage's generated supplement rather than by the anchor. The paper records that
 finding as double-edged, and half of it is easy to lose: removing the supplement altogether makes
-judged retention on the earlier domain **worse**, not better. This companion has no QA supplement: its
-loader mixes nothing into the corpus you give it, and it computes no judged score at all. Every
-number it reports is a perplexity computed locally.
+judged answering on the earlier domain **worse**, not better. Since 0.2.0 this companion writes a
+supplement too — [above](#what-the-supplement-does-and-does-not-do) — but it computes no judged
+score at all, so it cannot show either half of that finding: every number it reports is a
+perplexity computed locally.
 
 ## Where this sits
 

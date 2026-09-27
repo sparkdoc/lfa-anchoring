@@ -69,7 +69,21 @@ sweep fit on one 24 GB card.
 ## 2. The artifact
 
 p(h) is model-specific — it is that model's own hidden states — so a new model needs its own
-artifact, built once:
+artifact, built once.
+
+The shortest route is `lfa build-artifact --model <id> --self-generated --out artifacts/<name>.pt`
+(or `lfa init <workspace> --model <id> --artifact self-generated`, which builds the same thing into
+a workspace): the model writes its own seed corpus and no dataset is downloaded. It starts each
+document from the model's document-boundary token — its declared
+`generation_config.bos_token_id`, else the tokenizer's BOS, else its EOS — and, for the
+chat-format share, from the user-turn header of its chat template; without a chat template that
+share is skipped and the log says so. The recipe will warn that λ is uncalibrated against it,
+which is true: go to §3. The recorded frame, and what it was worth on Qwen3-0.6B (a tie with the
+published artifact at every λ tried; one model, one seed, one domain), are in
+[rebuilding-the-artifact.md](rebuilding-the-artifact.md#the-self-generated-route); on any other
+model nothing has been measured.
+
+The alternative is a downloaded seed corpus, the route the published artifact took:
 
 ```bash
 lfa prepare-seed-corpus --out data/seed_corpus_10to1.jsonl
@@ -93,7 +107,11 @@ those survives a change of model. The bundled 100,000 belongs to Qwen3-0.6B at r
 A workable procedure:
 
 1. Start from a copy of the bundled recipe with `model_id`, `artifact`, `calibrated_rank` and
-   `calibrated_artifact` set to your point ([recipes.md](recipes.md)).
+   `calibrated_artifact` set to your point ([recipes.md](recipes.md)). Set
+   `calibrated_self_generated: false` until the sweep below has been read on the self-generated
+   artifact (the copy carries Qwen3-0.6B's `true`, which would silence the warning for a model
+   nothing was measured on). Keep `supplement_fraction` at the value you will train at: `train`
+   mixes the supplement in during the sweep as it will afterwards, and λ is read in that mix.
 2. Train the **unanchored** control first (`lfa evaluate --compare-unanchored`, or a recipe with
    `lambda_qkv: 0`, `lambda_mlp: 0`, `mu: 0`). It sets both ends of the scale: how far the domain
    can move, and what that costs on the general axis when nothing is preserved.

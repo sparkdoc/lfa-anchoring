@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lfa-anchoring"
-version = "0.1.1"
+version = "0.2.0"
 description = "Layerwise Function Anchoring: preserve sub-module functions on sampled hidden states while fine-tuning an LLM"
 readme = "README.md"
 license = "Apache-2.0"

@@ -1,5 +1,5 @@
 """Layerwise Function Anchoring (LFA)."""
-__version__ = "0.1.1"
+__version__ = "0.2.0"
 
 from .recipe import Recipe
 from .workspace import Workspace

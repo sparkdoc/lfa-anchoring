@@ -13,9 +13,10 @@ pip install -e '.[dev]'                         # from a checkout, with the test
 Add `[html]` or `[pdf]` if your documents are HTML or PDF; `[dev]` is the maintainer's set
 (pytest, coverage, build) and an end user does not need it.
 
-**Prerequisites: Python ≥ 3.11 *with its development headers*, a C compiler, and a CUDA card.**
-Some torch paths compile a small CUDA shim on the first kernel launch; the package's own paths
-do not, so `lfa` warns once if the headers are missing and proceeds. A distribution `python3`
+**Prerequisites: Python ≥ 3.11 and a CUDA card.** Development headers and a C compiler are
+needed only by torch paths that compile a small CUDA shim on the first kernel launch; the
+package's own training and generation paths do not, so `lfa` warns once if they are missing and
+proceeds. A distribution `python3`
 installed without `python3-dev` / `python3.13-dev` (and `build-essential`) has no `Python.h`,
 while a uv- or conda-managed interpreter ships its own headers. `LFA_SKIP_TOOLCHAIN_CHECK=1`
 silences the warning.
@@ -74,6 +75,24 @@ its own λ, not a cheaper equivalent.
 > has trained — because the shipped file carries no sample count of its own and the registry entry
 > is where that number lives.
 
+### Or let the model write one
+
+```bash
+lfa init runs/my_domain --model Qwen/Qwen3-0.6B --artifact self-generated
+```
+
+No download: the model writes 2,750 documents of its own — 2,500 started from its document
+boundary, 250 from the bare user-turn header of its chat template — and p(h) is fitted on them at
+600k samples per site. The corpus stays beside the artifact as `artifacts/v1.corpus.jsonl`, with
+a manifest, and the workspace records the artifact as `self-generated:<corpus sha256[:12]>`.
+The cost is an estimate, not a timed full run: on an RTX 2070 about 2 h of generation and about
+40 min of fitting; on an RTX 3090 about half ([faq.md](faq.md) has the pieces that were timed).
+On Qwen3-0.6B this artifact tied the published one at every λ tried — the LFA record's C12, one
+model, one seed, one domain — so the bundled recipe treats it as calibrated and says nothing; on
+any other model it is the way to a first artifact, and λ is then calibrated against it
+([adding-a-model.md](adding-a-model.md)). [rebuilding-the-artifact.md](rebuilding-the-artifact.md)
+has the recorded frame.
+
 ## Prepare the domain
 
 Whatever the documents arrive as, this turns them into the flat directory of `.txt` files the
@@ -121,8 +140,21 @@ lfa fuse     --workspace runs/my_domain
    the fix is to re-run with `--epochs <the epoch it bottomed at>` — the learning-rate schedule is
    laid over whatever you say, so that is a complete shorter run rather than a truncated long one.
    `--resume` continues an interrupted run.
+
+   `train` first writes the supplement: the entry model reads each training-side passage and
+   writes six question-and-answer pairs from a fixed template, cached under `supplements/` and
+   reused while the corpus, the writer and the template are unchanged. `--no-supplement` opts
+   out; `lfa prepare-supplement` writes it ahead of time to inspect. The pairs are mixed into the
+   training side at the recipe's `supplement_fraction` (0.13 of training tokens, the frame the
+   shipped λ was tuned at); the held-out tenth is split off first and stays raw text.
+   `--supplement <file.jsonl>` mixes a prompt/response file of your own instead, and
+   `--domain-description "<text>"` says what the template calls the text (default: the corpus
+   directory's name). With `--no-supplement` the run trains on the raw corpus alone, off the
+   frame λ was tuned at, and warns so. What the supplement is for — reachability, not skill
+   protection — is in [concepts.md](concepts.md).
 3. **`evaluate`** scores the stage on both axes against the model it started from. Add
-   `--compare-unanchored` for the λ = μ = 0 control, and `--n-windows none` on a machine with no
+   `--compare-unanchored` for the λ = μ = 0 control (trained on the same mix: the stage's own
+   supplement at the stage's fraction), and `--n-windows none` on a machine with no
    network (the general axis reads WikiText-2 from the Hub).
 4. **`fuse`** writes a plain checkpoint with the adapter merged in — no PEFT wrapper, loads with
    `AutoModelForCausalLM.from_pretrained` like any other model.
@@ -138,7 +170,9 @@ runnable version of this page plus [multi-domain-chains.md](multi-domain-chains.
 API key, and it ran end to end in 19 minutes on one RTX 3090 (four training runs, two of them
 controls), plus whatever the model, the artifact and WikiText-2 cost you on a cold cache. Its corpora and epoch count are demo
 scale — a quarter of the text the recipe was tuned on, a quarter of its epochs — and the notebook
-says so beside every table, so do not read its settings as the recommended ones.
+says so beside every table, so do not read its settings as the recommended ones. Its recorded
+outputs predate 0.2.0 and so trained on the raw text alone; re-run today, each stage first writes
+and mixes in its supplement, so the recorded numbers are not a 0.2.0 run's.
 [`examples/what_the_anchor_does.ipynb`](../examples/what_the_anchor_does.ipynb) is optional and
 picks up the workspace it leaves behind: each control re-run at its own best number of epochs,
 and what the three models say when asked.
@@ -153,7 +187,8 @@ and what the three models say when asked.
 ```
 
 That table is from this package's own verification run on Qwen3-0.6B (2026-09-07,
-[verification.md](verification.md)): the domain moved a long way, the general axis moved a little.
+[verification.md](verification.md)), which predates 0.2.0 and so trained on the raw corpus alone,
+with no supplement: the domain moved a long way, the general axis moved a little.
 Read both. A general number *below* the base model's is not a win — [faq.md](faq.md) says why.
 
 ## What it costs
@@ -167,7 +202,9 @@ sharding buys memory, not speed, and costs about 8 % here because every anchored
 crosses a device boundary.
 
 The artifact build is the expensive part, and you do it once per model, not per domain:
-[rebuilding-the-artifact.md](rebuilding-the-artifact.md).
+[rebuilding-the-artifact.md](rebuilding-the-artifact.md). The supplement is written once per
+corpus and writer before the first epoch; [faq.md](faq.md) has what generation cost on an 8 GB
+card.
 
 ## When something is refused
 
@@ -175,13 +212,15 @@ The library raises rather than guesses, and the CLI prints those refusals as one
 a chain out of order, a workspace that is not there or already is or has not trained anything yet
 (what `fuse` and `evaluate` say), a workspace with no p(h) artifact, a device map that would shard,
 an artifact that is not published, a dataset that cannot be reached, and a recipe or chain spec
-that does not parse or does not validate, and a document that needs an optional extra
-(`[html]`, `[pdf]`) you have not installed. The message ends with what to do instead.
+that does not parse or does not validate, a document that needs an optional extra
+(`[html]`, `[pdf]`) you have not installed, a self-generated corpus too small or too empty to fit
+p(h) on, and a supplement writer that returned no usable pair. The message ends with what to do
+instead.
 
 A traceback whose last frames are in `lfa/` is a bug in this package — please report it. A
 traceback that ends inside somebody else's code is your environment rather than this package: a
 CUDA out-of-memory from torch, a compiler error from triton on a machine without Python headers
-(which `lfa` now checks for up front), a Hub timeout inside `datasets`. The last few frames say
+(which `lfa` warns about once, up front), a Hub timeout inside `datasets`. The last few frames say
 which of the two you have. Ctrl-C is neither: an interrupted command prints one line naming
 `--resume` and exits 130.
 

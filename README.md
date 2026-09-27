@@ -25,8 +25,10 @@ nothing sequence-shaped. Everything runs locally: no judge, no API key.
 Qwen3-0.6B adapted to Darwin, then to a Victorian cookbook, with every stage repeated with the
 anchor off so the control sits beside each number. Across stage 2 the anchored model's Darwin
 perplexity moves 17.45 → 18.92 while the unanchored one's goes to 31.45, having read no Darwin
-either way. Recorded 2026-09-08; 19 minutes of training and tables on one RTX 3090, and it
-downloads what it needs and needs no API key.
+either way. Recorded 2026-09-08, before 0.2.0, so on the raw books alone: a re-run today has the
+model write and mix in its question-and-answer supplement first, so these are not a 0.2.0 run's.
+19 minutes of training and tables on one RTX 3090, and it downloads what it needs and needs no API
+key.
 
 A second notebook is optional and continues from the workspace the first leaves behind:
 [`examples/what_the_anchor_does.ipynb`](https://github.com/sparkdoc/lfa-anchoring/blob/main/examples/what_the_anchor_does.ipynb)
@@ -46,9 +48,9 @@ Add `[html]` or `[pdf]` if your documents arrive in those formats. Needs Python 
 card. Tested at torch 2.10.0+cu128, transformers 4.57.6, accelerate 1.14.0, peft 0.18.1
 (`pip install -c constraints-tested.txt lfa-anchoring` holds to those exactly).
 
-> Your `python3` must have its development headers (`python3-dev` + `build-essential` on Debian;
-> uv- and conda-managed interpreters ship them): some torch paths compile a small CUDA shim on the
-> first kernel launch; the package's own paths do not, so `lfa` warns once if the headers are
+> Some torch paths compile a small CUDA shim on the first kernel launch and need your `python3`'s
+> development headers (`python3-dev` + `build-essential` on Debian; uv- and conda-managed
+> interpreters ship them). The package's own paths do not, so `lfa` warns once if the headers are
 > missing and proceeds.
 
 ## The building blocks
@@ -56,11 +58,12 @@ card. Tested at torch 2.10.0+cu128, transformers 4.57.6, accelerate 1.14.0, peft
 | Block | What it is | Where it lives |
 |---|---|---|
 | **Model** | Any causal LM the package has an adapter for (Qwen3 today). Referenced by Hub id or path; never copied. | `lfa.adapters` |
-| **Artifact** | The `p(h)` statistic for that model: per-site mean, covariance basis and K=32 mixture, int8, ~108 MB. Fetched by id with a checksum, or built from a seed corpus. | `lfa.artifact` |
+| **Artifact** | The `p(h)` statistic for that model: per-site mean, covariance basis and K=32 mixture, int8, ~108 MB. Fetched by id with a checksum, or built from a seed corpus or from the model's own text. | `lfa.artifact` |
 | **Recipe** | The tuned operating point (rank, λ, μ, epochs, schedule) *and what it was tuned against*, so a run that changes rank or artifact is told λ no longer means what it meant. | `lfa.Recipe` |
 | **Corpus** | A flat directory of `.txt` files. `lfa prepare-domain` makes one from text, Markdown, HTML or PDF. | `lfa.corpus` |
+| **Self-generation** | The model writes its own inputs: the seed corpus p(h) is estimated on (`init --artifact self-generated`, no download), the question-and-answer supplement `train` mixes into the domain at the recipe's token fraction, and, in a chain, a fresh p(h) from each stage's model (`artifact: regenerate`). Measured on one model and one seed (the LFA record's C12, C14, C15); the supplement's job is reachability, not protecting skills. | `lfa.selfgen` |
 | **Workspace** | The state machine that holds the other four together across domains: which model the next stage adapts, which artifact version it anchors against, and a history entry per stage. | `lfa.Workspace` |
-| **Train / Evaluate / Fuse / Extend** | The four operations on a workspace: adapt one domain; read the stage on both axes; export a plain checkpoint; fold the stage into the model *and* into `p(h)` for the next domain. | `lfa.train`, `lfa.evaluate` |
+| **Train / Evaluate / Fuse / Extend** | The four operations on a workspace: adapt one domain; read the stage on both axes; export a plain checkpoint; fold the stage into the model *and* into `p(h)` for the next domain (or `regenerate-artifact`: fold it into the model and refit `p(h)` on that model's own text). | `lfa.train`, `lfa.evaluate` |
 
 ## Assemble them: one domain
 
@@ -104,6 +107,16 @@ offline (the general axis reads WikiText-2 from the Hub). Full page:
 the Python flow as a script:
 [`examples/quickstart.py`](https://github.com/sparkdoc/lfa-anchoring/blob/main/examples/quickstart.py).
 
+**No artifact download?**
+`lfa init runs/my_domain --model Qwen/Qwen3-0.6B --artifact self-generated` has the model write
+2,750 documents from its own document boundary and fits p(h) on them (by estimate about two
+hours on an 8 GB card, half that on a 3090). On Qwen3-0.6B that artifact tied the published one
+at every λ tried, one seed; on any other model it is the way to a first artifact, and λ is then
+calibrated against it. `train` also writes the domain's
+question-and-answer supplement with the model before training and mixes it in at 0.13 of training
+tokens, the frame the shipped λ was tuned at; `--no-supplement` trains on the raw corpus alone and
+says so.
+
 ## Assemble them: a second domain, and a chain
 
 One extra step between domains. `extend` merges the finished stage into the model and folds the
@@ -131,6 +144,7 @@ starts, and every entry is checked before the first one trains:
 lfa chain domains.yaml --workspace runs/chain
 ```
 ```yaml
+artifact: extend                                              # or regenerate: refit p(h) per stage
 domains:
   - {name: philosophy,   corpus: data/domain_a, epochs: 15}   # paths resolve against this file
   - {name: archaeology,  corpus: data/domain_c}
@@ -151,6 +165,7 @@ build one for another model, or to rebuild this one:
 ```bash
 lfa prepare-seed-corpus --out data/seed.jsonl            # the 10:1 pretraining:instruction mix
 lfa build-artifact --model <id> --corpus data/seed.jsonl --out artifacts/mine.pt
+lfa build-artifact --model <id> --self-generated --out artifacts/mine.pt   # or: no download
 ```
 
 [docs/rebuilding-the-artifact.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/rebuilding-the-artifact.md)
@@ -169,10 +184,10 @@ recipe's λ is read against the right artifact; the quickstart explains why both
 | [`examples/what_the_anchor_does.ipynb`](https://github.com/sparkdoc/lfa-anchoring/blob/main/examples/what_the_anchor_does.ipynb) | optional, continues from it: the controls at their own best dose, and what the models say |
 | [docs/concepts.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/concepts.md) | what the anchor does, what λ and μ are, how a run is read |
 | [docs/recipes.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/recipes.md) | the shipped operating point field by field, and its couplings |
-| [docs/multi-domain-chains.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/multi-domain-chains.md) | second and third domains; what `extend` does |
+| [docs/multi-domain-chains.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/multi-domain-chains.md) | second and third domains; what `extend` does, and the `regenerate` route |
 | [docs/adding-a-model.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/adding-a-model.md) | a model that is not Qwen3: adapter, artifact, λ |
-| [docs/rebuilding-the-artifact.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/rebuilding-the-artifact.md) | the seed corpus and the build |
-| [docs/faq.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/faq.md) | GPU memory, full weights, reading the general axis, what is not shipped |
+| [docs/rebuilding-the-artifact.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/rebuilding-the-artifact.md) | the seed corpus, the self-generated route, and the build |
+| [docs/faq.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/faq.md) | GPU memory (8 GB cards included), self-generation cost, full weights, reading the general axis, what is not shipped |
 | [docs/verification.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/verification.md) | what was checked against the research code, how, and what came out |
 | [RELEASING.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/RELEASING.md) | how the artifacts and a tag are cut |
 
