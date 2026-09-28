@@ -19,6 +19,9 @@ GPU checks this pass does not run.
 
 **Spec:** `docs/superpowers/specs/2026-09-28-usable-pipeline-design.md`
 
+**Start here:** `docs/superpowers/handoffs/2026-09-28-start-here.md` — machine setup, git
+identity, branch, baseline, and how to execute this plan. Read it before Task 1.
+
 ## Global Constraints
 
 - **No GPU runs in this pass.** Run only the fast tier: `LFA_SKIP_TOOLCHAIN_CHECK=1 pytest -q`
@@ -472,8 +475,10 @@ def test_make_meta_records_the_self_generated_frame():
     assert "selfgen_frame" not in make_meta("m", 8, 2, ["pre_qkv"], 10)
 ```
 
-   In `tests/test_artifact_build.py`, extend the existing self-generated build test (the one that
-   checks `provenance`) with `assert meta["selfgen_frame"] == options.artifact_frame()`.
+   In `tests/test_artifact_build.py`, extend
+   `test_build_artifact_self_generated_writes_the_corpus_then_fits_with_provenance` (it patches
+   `build_artifact` and collects its kwargs in `seen`) with
+   `assert seen["selfgen_frame"] == SelfGenOptions(max_samples=123, gmm_k=4).artifact_frame()`.
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -1773,17 +1778,72 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
   evaluates_and_exports` passes `--artifact <tiny path>` already and must stay green.
 
 - [ ] **Step 3: Notebooks** — edit the JSON with a small Python script (load with `json`, edit
-  cell sources, dump with `indent=1` and a trailing newline, matching the file's current
-  formatting): the setup cell that fetches `qwen3-0.6b-gmm1543k-int8` becomes
-  `Workspace.init(..., artifact="self-generated")` with a comment that the first run builds it
-  (hours) and later runs reuse it from the store; any cell passing `artifact_id` drops it. Insert
-  a markdown cell after the title: "**Recorded outputs.** The outputs below were recorded on
+  cell `source` lists, dump with `json.dump(nb, f, indent=1, ensure_ascii=False)` plus a trailing
+  newline — check `git diff --stat` shows only the cells you meant to touch). Do not execute the
+  notebooks and do not touch output cells. The cells to change (indices at commit d24f3da):
+
+  `examples/two_domain_walkthrough.ipynb`
+  - cell 0 (markdown, the contents table): row 1 becomes "Build (or reuse) the self-generated
+    `p(h)` artifact and look inside it".
+  - cell 1 (setup code): delete `ARTIFACT_ID = ...`; add
+    `ARTIFACT = os.environ.get("LFA_ARTIFACT", "self-generated")` with the comment "# a path to an
+    artifact file skips the build; otherwise it is built once and reused from the store";
+    `ARTIFACTS` stays only if a later cell still uses it (after the edits below none does —
+    remove it from the tuple assignment then).
+  - cell 2 (markdown): rewrite the section. The file is built once per model from the model's
+    own text — it writes 2,500 documents from its bare document-start token and fits the
+    statistics on them — and kept in the local store (`~/.cache/lfa/artifacts`, or
+    `$LFA_ARTIFACT_STORE`), so the first run costs hours and every later run reuses it; set
+    `LFA_ARTIFACT` to an existing artifact file (for example a stored `artifact.pt`) to skip the
+    build. Keep the paragraph's first half (what the file records) as it is.
+  - cell 3 (code): replace the fetch with
+
+```python
+from lfa.artifact.store import list_store, obtain_self_generated
+from lfa.selfgen.artifact_corpus import SelfGenOptions
+
+t0 = time.time()
+if ARTIFACT == "self-generated":
+    artifact_path, _ = obtain_self_generated(MODEL_ID, SelfGenOptions())
+else:
+    artifact_path = Path(ARTIFACT)
+print(f"{artifact_path}  ({artifact_path.stat().st_size / 1e6:.1f} MB, {time.time()-t0:.0f}s)")
+for entry in list_store():
+    print(f"   store: {entry['model_id']}  {entry['state']}  {entry['path']}")
+```
+
+    and keep the rest of the cell (loading and describing `params`) unchanged. Ensure `Path` is
+    imported in the setup cell.
+  - cell 7 (markdown): the CLI line becomes
+    `lfa init lfa_demo/workspace --model Qwen/Qwen3-0.6B --artifact self-generated`.
+  - cell 8 (code): `workspace = Workspace.init(WS, MODEL_ID, artifact=str(artifact_path))`; the
+    warnings line becomes
+    `notes = recipe.warnings(rank=recipe.lora_rank, artifact_id=workspace.state["artifact_id"], artifact_meta=params.get("__meta__"))`.
+  - insert after cell 0 the "Recorded outputs" markdown cell below.
+
+  `examples/what_the_anchor_does.ipynb`
+  - cell 1 (setup code): delete `ARTIFACT_ID = ...` and the `ARTIFACTS` name; `artifact_path`
+    becomes `WS / "artifacts" / "v1.pt"` (the walkthrough's workspace copy, which carries the
+    self-generated meta) — keep the cell's existing "fails clearly without the walkthrough's
+    workspace" check working against that path.
+  - cell 4 (code): both `Workspace.init(...)` calls drop `artifact_id=ARTIFACT_ID`.
+  - cell 11 (markdown): "shipped inside the artifact the walkthrough fetched" → "inside the
+    artifact the walkthrough built from the model's own text".
+  - insert after cell 0 the same "Recorded outputs" cell.
+
+  The inserted cell (both notebooks): "**Recorded outputs.** The outputs below were recorded on
   2026-09-08 on one RTX 3090 with the since-retired published artifact, on the raw books with no
   supplement. Run today, the notebook builds its own artifact and mixes in the supplement, so
   the numbers will differ; the prose around each table says what to look for, not which number
-  to expect." Do not execute the notebooks and do not touch output cells.
-  `tests/test_notebook.py`: its docstring's "fetches the artifact" → "builds or reuses the
-  self-generated artifact"; its default-suite structural tests must pass (run them).
+  to expect."
+
+  `tests/test_notebook.py`: the module docstring's "fetch the artifact" (twice) becomes "build or
+  reuse the self-generated artifact"; the `LFA_ARTIFACT` sentence becomes "Set `LFA_ARTIFACT` to
+  an artifact file to skip the build."; the "about 19 minutes on one RTX 3090" cost stays and
+  gains "plus the artifact build on a cold store". Any default-suite test that asserts on the
+  retired cell text is updated to the new text, not deleted. Run
+  `pytest tests/test_notebook.py -q` (default suite: parse, compile, names) — expected: pass.
+  `grep -c "fetch\|gmm1543k\|artifact_id=ARTIFACT_ID" examples/*.ipynb` — expected: 0 for both.
 
 - [ ] **Step 4: `tests/test_pipeline_gpu.py`** — marked `gpu`, not run in this pass:
 
@@ -1864,8 +1924,11 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
      Ctrl-C, then the same command again: confirm it resumes at the next batch and the finished
      corpus has 2,500 rows; record the wall time for generation and fit separately and the host
      RAM layer-group choice from the log; `lfa list-artifacts`.
-  4. **Examples and notebooks** — on an 8 GB card use batch 3 × gradient accumulation 2 (a
-     recipe copy with `batch_size: 3`, `gradient_accumulation_steps: 2`); run
+  4. **Examples and notebooks** — on a 24 GB card (the owner's RTX 3090s) the bundled recipe
+     fits as shipped; pin one card per job with `CUDA_VISIBLE_DEVICES` (never shard). On an 8 GB
+     card use batch 3 × gradient accumulation 2 (a recipe copy with `batch_size: 3`,
+     `gradient_accumulation_steps: 2`). The full-frame build (item 3) must finish first: the
+     examples and notebooks then reuse it from the store. Run
      `examples/quickstart.py`, `examples/chain_three_domains.py`, and both notebooks
      (`pytest tests/test_notebook.py -m notebook`), save the executed notebooks.
   5. **Docs to update from the measurements** — replace "not timed" in README, quickstart,

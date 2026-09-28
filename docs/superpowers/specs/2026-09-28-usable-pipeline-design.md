@@ -185,6 +185,10 @@ store.
 
 ## 5. Handoff for GPU verification
 
+Execution itself starts from `docs/superpowers/handoffs/2026-09-28-start-here.md` (machine setup,
+identity, branch, baseline); this section is about the handoff the execution *writes*.
+
+
 `docs/superpowers/handoffs/2026-09-28-gpu-verification.md`, written at the end of this pass: the
 commit it was written against; the commands for the GPU tier and the new end-to-end test; the
 full-frame build on the target card, timed, with one Ctrl-C and resume; re-running both example
