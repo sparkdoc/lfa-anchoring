@@ -5,7 +5,8 @@ This is the single-domain flow of Layerwise Function Anchoring (LFA) written out
 that the four things a run does are visible in one file:
 
 1. :meth:`lfa.Workspace.init` makes a workspace: it records which model to adapt and which
-   recipe to use, and copies the p(h) artifact in as ``artifacts/v1.pt``.
+   recipe to use, and builds (or reuses) the p(h) artifact and copies it in as
+   ``artifacts/v1.pt``.
 2. :meth:`lfa.Workspace.train` adapts the model to a corpus with the anchor switched on.
 3. :meth:`lfa.Workspace.evaluate` reads the stage on both axes -- what it learned (held-out
    domain perplexity) and what it kept (WikiText-2) -- against the model it started from.
@@ -18,21 +19,23 @@ Every number this prints is a perplexity computed locally. Nothing calls out to 
 
 Example::
 
+    lfa prepare-domain ~/papers --out data/my_domain --supplement --model Qwen/Qwen3-0.6B
     python examples/quickstart.py \\
         --model Qwen/Qwen3-0.6B \\
-        --artifact qwen3-0.6b-gmm1543k-int8 \\
+        --artifact self-generated \\
         --corpus data/my_domain \\
         --out runs/my_domain
 
+The first line turns your documents into a corpus of ``.txt`` files and has the model write the
+question-and-answer supplement beside it, in ``data/my_domain.supplement/``, where training finds
+it (``docs/preparing-your-data.md``). ``--artifact self-generated`` has the model write its own
+text and fits p(h) on it; that costs hours once per model, and every later run over the same
+model reuses the finished artifact from the local store (``~/.cache/lfa/artifacts``, or
+``$LFA_ARTIFACT_STORE``). ``--artifact`` also takes the path to an artifact file -- another
+workspace's ``artifacts/v1.pt``, say -- which is copied in instead of building one.
+
 From an installed wheel, where there is no checkout to run a path from, the same script is
 ``python -m lfa.examples.quickstart``.
-
-``--artifact`` also takes a path, which is what to pass while the published assets do not exist
-yet: fetching by id refuses until the registry's checksums are filled in (see ``RELEASING.md``).
-Pass ``--artifact-id`` with it -- ``--artifact /path/to/distribution_stats.pt --artifact-id
-qwen3-0.6b-gmm1543k-int8`` -- so the workspace knows which published artifact the file is: that
-is what the recipe's lambda is read against, and what supplies the base sample count a later
-``extend`` needs, the shipped artifact carrying none of its own.
 
 Add ``--compare-unanchored`` to train the control that says what the anchor bought: the same run
 with lambda = mu = 0. It costs a second training run.
@@ -63,7 +66,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--model", required=True,
                         help="a Hub id or a local checkpoint path")
     parser.add_argument("--artifact", required=True,
-                        help="`self-generated` or the path to an artifact file")
+                        help="self-generated, or an artifact file")
     parser.add_argument("--corpus", required=True,
                         help="a file or directory of documents to adapt to")
     parser.add_argument("--out", required=True,

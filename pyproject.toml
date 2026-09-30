@@ -16,7 +16,7 @@ requires-python = ">=3.11"
 # kwarg and the model loads in the checkpoint's own dtype -- silently, which for a method
 # whose signal is a function-output MSE is worse than a failure. `accelerate` is likewise
 # not optional: every load passes `device_map=`, which transformers refuses without it.
-dependencies = ["torch>=2.2", "transformers>=4.56,<5", "accelerate>=0.26", "peft>=0.18,<1", "numpy>=1.24", "pyyaml>=6", "tqdm>=4.65", "datasets>=2.18", "requests>=2.31"]
+dependencies = ["torch>=2.2", "transformers>=4.56,<5", "accelerate>=0.26", "peft>=0.18,<1", "numpy>=1.24", "pyyaml>=6", "tqdm>=4.65", "datasets>=2.18"]
 
 [project.optional-dependencies]
 pdf = ["marker-pdf"]
@@ -44,7 +44,7 @@ Changelog = "https://github.com/sparkdoc/lfa-anchoring/releases"
 # docs they link to leaves a pip-installed user with nothing to run. Mapped rather than moved so
 # that the repository keeps `examples/` where every document already points.
 [tool.setuptools]
-packages = ["lfa", "lfa.adapters", "lfa.artifact", "lfa.examples"]
+packages = ["lfa", "lfa.adapters", "lfa.artifact", "lfa.selfgen", "lfa.examples"]
 
 [tool.setuptools.package-dir]
 "lfa.examples" = "examples"
@@ -54,8 +54,8 @@ lfa = ["recipes/*.yaml"]
 "lfa.examples" = ["*.yaml", "*.ipynb"]
 
 [tool.pytest.ini_options]
-markers = ["gpu: needs CUDA", "slow: downloads data from the Hugging Face Hub", "release: the end state of RELEASING.md (fails until the release steps are done)", "notebook: executes the example notebooks end to end (a GPU, the network, ~19 minutes on an RTX 3090 for the walkthrough and about as much again for its companion)"]
-addopts = "-m 'not gpu and not slow and not release and not notebook'"
+markers = ["gpu: needs CUDA", "slow: downloads data from the Hugging Face Hub", "notebook: executes the example notebooks end to end (a GPU, the network, ~19 minutes on an RTX 3090 for the walkthrough and about as much again for its companion)"]
+addopts = "-m 'not gpu and not slow and not notebook'"
 # `error` first, so a warning this package starts emitting fails the suite instead of joining a
 # pile of noise. Left at that, the rule is brittle in a way that has nothing to do with this
 # package: `error` applies to every warning raised anywhere in the process, so a deprecation that

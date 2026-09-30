@@ -24,7 +24,15 @@
 # The corpora named below are NOT shipped with this package. `examples/chain_three_domains.py`
 # writes a small synthetic stand-in for each one under its `--out` directory and runs a copy of
 # this spec that points at those, so the example runs offline and writes nothing next to this
-# file. Point `corpus` at your own documents to run it for real.
+# file. Point `corpus` at your own documents to run it for real:
+#
+#   lfa prepare-domain ~/philosophy_texts --out corpora/philosophy --supplement --model Qwen/Qwen3-0.6B
+#
+# writes the corpus and, beside it in `corpora/philosophy.supplement/`, the question-and-answer
+# supplement that makes the domain's knowledge answerable. Only the first stage can reuse one
+# written by the base model: every later stage adapts a model that already carries the domains
+# before it, and its `train` writes that domain's supplement with that model, so for those
+# domains `prepare-domain` without `--supplement` is enough.
 
 domains:
   - name: philosophy

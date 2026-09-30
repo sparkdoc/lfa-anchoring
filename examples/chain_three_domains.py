@@ -28,7 +28,7 @@ Example::
 
     python examples/chain_three_domains.py \\
         --model Qwen/Qwen3-0.6B \\
-        --artifact qwen3-0.6b-gmm1543k-int8 \\
+        --artifact self-generated \\
         --epochs 1 \\
         --out runs/three_domains
 
@@ -36,12 +36,11 @@ Example::
 epochs, which on real corpora is a day of GPU time rather than a few minutes. From an installed
 wheel the same script is ``python -m lfa.examples.chain_three_domains``.
 
-``--artifact`` also takes a path, which is what to pass while the published assets do not exist
-yet: fetching by id refuses until the registry's checksums are filled in (see ``RELEASING.md``).
-A chain needs ``--artifact-id`` beside it -- ``--artifact /path/to/distribution_stats.pt
---artifact-id qwen3-0.6b-gmm1543k-int8`` -- because the step between two domains reads the base
-sample count from the registry entry when the artifact carries none, as the shipped one does;
-without it the first ``extend`` refuses after the first stage has already trained.
+``--artifact self-generated`` has the model write its own text and fits p(h) on it: hours
+once per model, and every later run over the same model reuses the finished artifact from the
+local store (``~/.cache/lfa/artifacts``, or ``$LFA_ARTIFACT_STORE``). ``--artifact`` also takes
+the path to an artifact file, which is copied in instead of building one. Either way the step
+between two domains extends the workspace's own copy; the stored artifact is never modified.
 """
 
 from __future__ import annotations
@@ -132,7 +131,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--model", required=True, help="a Hub id or a local checkpoint path")
     parser.add_argument("--artifact", required=True,
-                        help="`self-generated` or the path to an artifact file")
+                        help="self-generated, or an artifact file")
     parser.add_argument("--out", required=True, help="directory for the corpora and the workspace")
     parser.add_argument("--spec", type=Path, default=DEFAULT_SPEC,
                         help="the chain spec to run (default: %(default)s)")

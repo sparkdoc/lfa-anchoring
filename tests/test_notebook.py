@@ -4,10 +4,10 @@ A notebook rots differently from library code: an `ImportError` in cell 12 does 
 prose reading correctly, and the reader who finds out is the one who set aside an afternoon for
 it. There are two notebooks and two layers of checking.
 
-`examples/two_domain_walkthrough.ipynb` is the **how-to**: fetch the artifact, two domains one
-after the other, an unanchored control beside each stage, a plain checkpoint at the end.
-`examples/what_the_anchor_does.ipynb` is **optional** and continues from the workspace the
-walkthrough leaves on disk: each control re-run at its own best number of epochs, and the fixed
+`examples/two_domain_walkthrough.ipynb` is the **how-to**: build or reuse the self-generated
+artifact, two domains one after the other, an unanchored control beside each stage, a plain
+checkpoint at the end. `examples/what_the_anchor_does.ipynb` is **optional** and continues from
+the workspace the walkthrough leaves on disk: each control re-run at its own best number of epochs, and the fixed
 generation probes. The split means a name can be used in one notebook and defined only in the
 other, which is what `test_no_cell_uses_a_name_no_cell_defines` is for.
 
@@ -17,19 +17,18 @@ binds, that the walkthrough still says its settings are demo scale, that it hand
 to the companion and the companion points back, and that the documents which point a reader at
 them still do. None of that needs a GPU, a network or a minute.
 
-The **`notebook` marker** actually executes them, with nothing stubbed: it fetches the artifact,
-downloads the two books, trains, and writes a checkpoint. That is the only thing that can say the
-walkthrough still works, and it costs what the walkthrough costs -- about 19 minutes on one RTX
-3090 for the walkthrough, plus roughly another 20 for the companion (two more training runs and
-54 generations), plus roughly 1.4 GB of downloads on a cold cache. The default `addopts`
-deselects it, like `gpu` and `slow`::
+The **`notebook` marker** actually executes them, with nothing stubbed: it builds or reuses the
+self-generated artifact, downloads the two books, trains, and writes a checkpoint. That is the only
+thing that can say the walkthrough still works, and it costs what the walkthrough costs -- about
+19 minutes on one RTX 3090 for the walkthrough, plus roughly another 20 for the companion (two
+more training runs and 54 generations), plus roughly 1.4 GB of downloads on a cold cache, plus
+the artifact build on a cold store. The default `addopts` deselects it, like `gpu` and `slow`::
 
     pytest tests/test_notebook.py -m notebook -q
 
 Both run in a `tmp_path`, because the notebooks write their workspace into the working directory,
-and the companion must run in the *same* directory as the walkthrough. Set `LFA_ARTIFACT` to a
-local copy of the p(h) artifact to have the notebook verify that file's checksum instead of
-downloading it again.
+and the companion must run in the *same* directory as the walkthrough. Set `LFA_ARTIFACT` to an
+artifact file to skip the build.
 """
 
 from __future__ import annotations
@@ -164,8 +163,7 @@ def test_the_companion_says_which_notebook_it_continues_and_fails_clearly_withou
     `NameError` twenty lines later.
     """
     assert WALKTHROUGH.name in markdown_of(COMPANION)
-    setup = read_notebook(COMPANION).cells[1]
-    assert setup.cell_type == "code", "the companion's second cell should be its setup cell"
+    setup = next(cell for cell in read_notebook(COMPANION).cells if cell.cell_type == "code")
     assert "raise SystemExit" in setup.source and WALKTHROUGH.name in setup.source, (
         "the companion's setup cell must stop with a message naming the walkthrough when the "
         "lfa_demo/ workspace is not there"

@@ -13,6 +13,7 @@ import yaml
 from lfa import Recipe
 from lfa.artifact.build import build_artifact_self_generated
 from lfa.artifact.schema import load_artifact
+from lfa.artifact.store import STORE_ENV
 from lfa.sampler import Sampler
 from lfa.selfgen.artifact_corpus import SelfGenOptions, write_artifact_corpus
 from lfa.selfgen.generate import (boundary_markers, chat_user_header, clean_raw, generate_texts,
@@ -28,6 +29,18 @@ DEVICE = "cuda:0"
 SMALL = SelfGenOptions(n_raw=16, n_chat=4, max_new_tokens=128, batch_size=8, min_docs=10,
                        max_samples=20_000, gmm_k=4, layer_group_size=7, reservoir_size=5_000,
                        device=DEVICE)
+
+
+@pytest.fixture(autouse=True)
+def isolated_store(tmp_path_factory, monkeypatch):
+    """Every test builds into a store of its own.
+
+    ``Workspace.init(..., artifact="self-generated")`` goes through the local store, which is
+    ``~/.cache/lfa/artifacts`` unless ``LFA_ARTIFACT_STORE`` says otherwise. Left there, a test
+    would reuse the entry an earlier test built -- and a real one the user built -- instead of
+    building, so the build it claims to check would never run.
+    """
+    monkeypatch.setenv(STORE_ENV, str(tmp_path_factory.mktemp("store")))
 
 
 @pytest.fixture(scope="module")
