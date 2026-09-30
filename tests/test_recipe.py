@@ -14,11 +14,11 @@ import pytest
 import yaml
 
 from lfa import Recipe
-from lfa.recipe import BUNDLED_DIR
+from lfa.recipe import BUNDLED_DIR, RECORDED_SELF_GENERATED_FRAME, SELF_GENERATED_REFERENCE
 
 
 SHIPPED = dict(
-    name="qwen3-0.6b", model_id="Qwen/Qwen3-0.6B", artifact="qwen3-0.6b-gmm1543k-int8",
+    name="qwen3-0.6b", model_id="Qwen/Qwen3-0.6B", artifact="self-generated",
     lora_rank=32, lora_alpha=64, freeze_embed=True, full_weight=False,
     lambda_qkv=100000.0, lambda_mlp=100000.0, mu=0.05,
     anchor_end_ratio=0.1, anchor_schedule="cosine", n_anchor_samples=16,
@@ -27,8 +27,10 @@ SHIPPED = dict(
     warmup_steps=50, weight_decay=0.01, sequence_length=512, seed=42, keep_short_whole=True,
     val_fraction=0.1,
     stage2_lambda_multiplier=3.0, calibrated_rank=32,
-    calibrated_artifact="qwen3-0.6b-gmm1543k-int8",
-    supplement_fraction=0.13, calibrated_self_generated=True,
+    calibrated_artifact="self-generated",
+    self_generated_frame={"n_raw": 2500, "n_chat": 0, "max_new_tokens": 2048,
+                          "max_samples": 600000, "gmm_k": 32, "pca_variance": 0.95},
+    supplement_fraction=0.13,
 )
 
 
@@ -140,19 +142,26 @@ def test_full_weight_recipe_turns_lora_off(tmp_path):
 # warnings
 # ==============================================================================================
 
+def _selfgen_meta(model_id, **frame):
+    return {"provenance": "self-generated", "model_id": model_id,
+            "selfgen_frame": {**RECORDED_SELF_GENERATED_FRAME, "seed": 42, **frame}}
+
+
 def test_no_warnings_at_the_calibrated_point():
-    assert Recipe.load("qwen3-0.6b").warnings(32, "qwen3-0.6b-gmm1543k-int8") == []
+    assert Recipe.load("qwen3-0.6b").warnings(32, "self-generated:abc",
+                                              _selfgen_meta("Qwen/Qwen3-0.6B")) == []
 
 
 def test_a_different_rank_warns_that_lambda_must_be_retuned():
-    [warning] = Recipe.load("qwen3-0.6b").warnings(16, "qwen3-0.6b-gmm1543k-int8")
+    [warning] = Recipe.load("qwen3-0.6b").warnings(16, "self-generated:abc",
+                                                   _selfgen_meta("Qwen/Qwen3-0.6B"))
     assert "rank" in warning and "16" in warning and "32" in warning
     assert "re-tune" in warning.lower()
 
 
 def test_the_rank_warning_quotes_both_lambdas_when_they_differ():
     recipe = dataclasses.replace(Recipe.load("qwen3-0.6b"), lambda_mlp=50000.0)
-    [warning] = recipe.warnings(16, "qwen3-0.6b-gmm1543k-int8")
+    [warning] = recipe.warnings(16, "self-generated:abc", _selfgen_meta("Qwen/Qwen3-0.6B"))
     assert "100000" in warning and "50000" in warning
 
 
@@ -168,7 +177,7 @@ def test_both_couplings_warn_together():
 
 def test_a_full_weight_recipe_adds_its_own_note():
     recipe = dataclasses.replace(Recipe.load("qwen3-0.6b"), full_weight=True)
-    warnings = recipe.warnings(32, "qwen3-0.6b-gmm1543k-int8")
+    warnings = recipe.warnings(32, "self-generated:abc", _selfgen_meta("Qwen/Qwen3-0.6B"))
     assert len(warnings) == 1
     assert "full-weight" in warnings[0].lower() and "unvalidated" in warnings[0]
 
@@ -262,41 +271,75 @@ def _recipe(**overrides):
     return dataclasses.replace(Recipe.load("qwen3-0.6b"), **overrides)
 
 
-SELFGEN_META = {"model_id": "Qwen/Qwen3-0.6B", "provenance": "self-generated"}
-
-
-def test_a_self_generated_artifact_on_the_calibrated_model_and_flag_is_silent():
-    recipe = _recipe(model_id="Qwen/Qwen3-0.6B", calibrated_self_generated=True)
-    assert recipe.warnings(recipe.calibrated_rank, "self-generated:abc", SELFGEN_META) == []
-
-
-def test_a_self_generated_artifact_without_the_flag_warns_to_calibrate():
-    recipe = _recipe(model_id="Qwen/Qwen3-0.6B", calibrated_self_generated=False)
-    notes = recipe.warnings(recipe.calibrated_rank, "self-generated:abc", SELFGEN_META)
-    assert len(notes) == 1 and "calibrate lambda" in notes[0] and "adding-a-model" in notes[0]
-
-
-def test_a_self_generated_artifact_for_another_model_warns_even_with_the_flag():
-    recipe = _recipe(model_id="Qwen/Qwen3-0.6B", calibrated_self_generated=True)
-    meta = {**SELFGEN_META, "model_id": "someone/other-model"}
-    notes = recipe.warnings(recipe.calibrated_rank, "self-generated:abc", meta)
-    assert len(notes) == 1 and "self-generated" in notes[0]
-
-
-def test_a_real_text_artifact_keeps_the_existing_swap_warning():
-    recipe = _recipe(model_id="Qwen/Qwen3-0.6B", calibrated_self_generated=True)
-    notes = recipe.warnings(recipe.calibrated_rank, "other-artifact",
-                            {"model_id": "Qwen/Qwen3-0.6B", "provenance": None})
-    assert len(notes) == 1 and "coupled to the p(h) artifact" in notes[0]
-
-
 def test_supplement_fraction_is_validated_and_defaults_to_the_measured_frame():
     assert _recipe().supplement_fraction == 0.13
     with pytest.raises(ValueError, match="supplement_fraction"):
         _recipe(supplement_fraction=1.0)
 
 
-def test_the_bundled_qwen3_recipe_is_calibrated_for_self_generation():
-    from lfa import Recipe
+# ==============================================================================================
+# the self-generated calibration
+# ==============================================================================================
+
+def test_the_bundled_recipe_is_calibrated_against_the_self_generated_artifact():
     recipe = Recipe.load("qwen3-0.6b")
-    assert recipe.calibrated_self_generated is True and recipe.supplement_fraction == 0.13
+    assert recipe.artifact == SELF_GENERATED_REFERENCE
+    assert recipe.calibrated_artifact == SELF_GENERATED_REFERENCE
+    assert recipe.self_generated_frame == RECORDED_SELF_GENERATED_FRAME
+
+
+def test_a_self_generated_artifact_at_the_recorded_frame_is_silent():
+    recipe = Recipe.load("qwen3-0.6b")
+    meta = _selfgen_meta(recipe.model_id)
+    assert recipe.warnings(recipe.calibrated_rank, "self-generated:abc", meta) == []
+
+
+def test_a_trial_frame_names_the_fields_that_differ():
+    recipe = Recipe.load("qwen3-0.6b")
+    meta = _selfgen_meta(recipe.model_id, n_raw=60, max_new_tokens=128)
+    notes = recipe.warnings(recipe.calibrated_rank, "self-generated:abc", meta)
+    assert len(notes) == 1
+    assert "n_raw 60 (calibrated at 2500)" in notes[0]
+    assert "max_new_tokens 128 (calibrated at 2048)" in notes[0]
+
+
+def test_a_self_generated_artifact_with_no_recorded_frame_says_so():
+    recipe = Recipe.load("qwen3-0.6b")
+    meta = {"provenance": "self-generated", "model_id": recipe.model_id}
+    assert "records no generation frame" in recipe.warnings(32, "x", meta)[0]
+
+
+def test_another_models_self_generated_artifact_is_a_mismatch():
+    recipe = Recipe.load("qwen3-0.6b")
+    notes = recipe.warnings(32, "x", _selfgen_meta("other/model"))
+    assert "'other/model'" in notes[0]
+
+
+def test_a_real_text_artifact_against_a_self_generated_calibration_is_noted():
+    recipe = Recipe.load("qwen3-0.6b")
+    notes = recipe.warnings(32, "/data/mine.pt", {"model_id": recipe.model_id})
+    assert len(notes) == 1 and "fitted on the model's own text" in notes[0]
+    assert "/data/mine.pt" in notes[0]
+
+
+def test_a_recipe_calibrated_against_a_named_artifact_still_compares_ids(tmp_path):
+    recipe = Recipe(name="mine", model_id="m", artifact="/a.pt", calibrated_artifact="/a.pt")
+    assert recipe.warnings(32, "/a.pt") == []
+    assert "'/a.pt'" in recipe.warnings(32, "/b.pt")[0]
+
+
+def test_bundled_for_finds_the_recipe_that_names_the_model():
+    assert Recipe.bundled_for("Qwen/Qwen3-0.6B") == "qwen3-0.6b"
+    assert Recipe.bundled_for("nobody/nothing") is None
+
+
+def test_the_recorded_frame_agrees_with_selfgen_options():
+    from lfa.selfgen.artifact_corpus import SelfGenOptions
+    frame = SelfGenOptions().artifact_frame()
+    assert {k: frame[k] for k in RECORDED_SELF_GENERATED_FRAME} == RECORDED_SELF_GENERATED_FRAME
+
+
+@pytest.mark.parametrize("bad", [["n_raw"], {"n_rows": 60}])
+def test_a_self_generated_frame_that_is_not_a_frame_is_refused(bad):
+    with pytest.raises(ValueError, match="self_generated_frame"):
+        Recipe(name="r", model_id="m", artifact="self-generated", self_generated_frame=bad)

@@ -55,3 +55,10 @@ def test_meta_records_the_layer_group_size_the_reservoir_draws_depend_on():
     plain = make_meta("m", 32, 2, ["pre_qkv"], 10)
     assert "layer_group_size" in plain and plain["layer_group_size"] is None
     assert make_meta("m", 32, 2, ["pre_qkv"], 10, layer_group_size=7)["layer_group_size"] == 7
+
+
+def test_make_meta_records_the_self_generated_frame():
+    meta = make_meta("m", 8, 2, ["pre_qkv"], 10, provenance="self-generated",
+                     selfgen_frame={"n_raw": 60})
+    assert meta["selfgen_frame"] == {"n_raw": 60}
+    assert "selfgen_frame" not in make_meta("m", 8, 2, ["pre_qkv"], 10)

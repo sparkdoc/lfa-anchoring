@@ -140,7 +140,7 @@ def _small_recipe():
                   n_anchor_samples=4, epochs=1, checkpoint_mode="none", learning_rate=1e-4,
                   warmup_steps=1, batch_size=1, gradient_accumulation_steps=2,
                   sequence_length=128, seed=42, val_fraction=0.25, supplement_fraction=0.13,
-                  calibrated_rank=4, calibrated_self_generated=True)
+                  calibrated_rank=4)
 
 
 @pytest.fixture(scope="module")

@@ -1240,18 +1240,21 @@ def test_every_other_init_records_no_provenance(tmp_path, base_dir, tiny_artifac
 
 def test_train_reads_a_self_generated_artifact_by_its_provenance_not_its_id(
         tmp_path, base_dir, corpus_a, tiny_artifact, monkeypatch, caplog):
-    """The recipe is calibrated against "tiny"; the self-generated id is not that. Without the
-    artifact's meta the run would warn about an artifact mismatch; with it, the note is the
-    calibrate-lambda one for this model's own text."""
+    """The recipe is calibrated against ``self-generated``; the artifact's id
+    (``self-generated:eeee...``) is not that string. Without the artifact's meta the run would
+    warn about an artifact mismatch; with it, an artifact recording the calibrated frame is
+    silent."""
     import lfa.workspace as ws_module
     from lfa.artifact.schema import META_KEY
+    from lfa.recipe import RECORDED_SELF_GENERATED_FRAME, SELF_GENERATED_REFERENCE
 
     params, _ = tiny_artifact
 
     def fake_build(model_id, out_path, options, **kwargs):
         built = copy.deepcopy(params)
         built[META_KEY] = dict(built[META_KEY], model_id=model_id, provenance=SELF_GENERATED,
-                               corpus_sha256="e" * 64)
+                               corpus_sha256="e" * 64,
+                               selfgen_frame=dict(RECORDED_SELF_GENERATED_FRAME, seed=42))
         torch.save(built, out_path)
         corpus = Path(out_path).with_suffix(".corpus.jsonl")
         corpus.write_text('{"text": "x"}\n')
@@ -1261,13 +1264,13 @@ def test_train_reads_a_self_generated_artifact_by_its_provenance_not_its_id(
 
     ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact=SELF_GENERATED)
     assert ws._artifact_meta()["provenance"] == SELF_GENERATED
+    recipe = tiny_recipe(base_dir, calibrated_artifact=SELF_GENERATED_REFERENCE)
     with caplog.at_level("WARNING", logger="lfa.workspace"):
-        ws.train(corpus_a, recipe=tiny_recipe(base_dir), device="cpu")
+        ws.train(corpus_a, recipe=recipe, device="cpu")
 
     warned = [r.message for r in caplog.records if r.name == "lfa.workspace"
               and r.levelname == "WARNING"]
-    assert any("fitted on the model's own text" in note for note in warned)
-    assert not any("calibrated against" in note for note in warned)
+    assert not any("artifact" in note for note in warned), warned
 
 
 def test_artifact_meta_is_empty_without_an_artifact(tmp_path, registry, base_dir):
@@ -1539,7 +1542,7 @@ def test_regenerate_warns_off_calibration_and_continues(tmp_path, registry, base
                                                         caplog):
     _fake_regenerate_builder(monkeypatch, tiny_artifact)
     ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact="tiny")
-    recipe = tiny_recipe(base_dir, supplement_fraction=0.0, calibrated_self_generated=False)
+    recipe = tiny_recipe(base_dir, supplement_fraction=0.0, calibrated_artifact="tiny")
     ws.train(corpus_a, recipe=recipe, device="cpu")
     ws.regenerate_artifact(device="cpu")
     with caplog.at_level("WARNING", logger="lfa.workspace"):

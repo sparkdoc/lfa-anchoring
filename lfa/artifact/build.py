@@ -70,6 +70,7 @@ def build_artifact(
     dtype: torch.dtype = torch.float16,
     provenance: str | None = None,
     corpus_sha256: str | None = None,
+    selfgen_frame: dict | None = None,
 ) -> Path:
     """Collect, fit and save the p(h) artifact for ``model_id`` over ``corpus_path``.
 
@@ -102,6 +103,10 @@ def build_artifact(
             ``None`` for real text.
         corpus_sha256: the hash of a generated corpus, recorded in the meta block beside
             ``provenance``.
+        selfgen_frame: the generation and fit frame of a self-generated corpus
+            (:meth:`lfa.selfgen.artifact_corpus.SelfGenOptions.artifact_frame`), recorded in the
+            meta block so :meth:`lfa.recipe.Recipe.warnings` can compare it with the frame the
+            recipe was calibrated at. ``None`` for real text.
 
     Returns:
         The path written.
@@ -180,6 +185,7 @@ def build_artifact(
         provenance=provenance,
         corpus_sha256=corpus_sha256,
         layer_group_size=layer_group_size,
+        selfgen_frame=selfgen_frame,
     )
     if token_counts is not None:
         frequencies = token_counts.float()
@@ -256,7 +262,7 @@ def build_artifact_self_generated(
     ``provenance = "self-generated"`` and the corpus hash; :meth:`lfa.recipe.Recipe.warnings`
     reads both.
 
-    ``options`` defaults to :class:`SelfGenOptions`, the frame of the artifact behind C12
+    ``options`` defaults to :class:`SelfGenOptions`, the recorded frame
     (2,500 raw documents, no chat-format share; 600k samples per site; K=32). Scale it down for a
     smoke run. When ``options.layer_group_size`` is ``None`` the group is chosen from the model's
     config and the host's available memory (:func:`choose_layer_group_size`), and the choice is
@@ -277,4 +283,4 @@ def build_artifact_self_generated(
             model_id, options.reservoir_size, torch.float16.itemsize)
     return build_artifact(model_id, corpus_path, out_path, quantize=quantize, seed=seed,
                           provenance=SELF_GENERATED, corpus_sha256=manifest["corpus_sha256"],
-                          **build_kwargs)
+                          selfgen_frame=options.artifact_frame(), **build_kwargs)

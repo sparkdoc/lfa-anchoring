@@ -280,21 +280,8 @@ def _table(before: dict, after: dict, unanchored: dict | None) -> str:
 
 
 def _bundled_recipe_for(model_id: str) -> str | None:
-    """The bundled recipe tuned for ``model_id``, when exactly one names it.
-
-    Matched on the recipe's own ``model_id`` rather than on its name: a recipe is a joint
-    operating point for one model, and guessing one from a filename is how a lambda gets ported
-    across models it was never calibrated for.
-    """
-    matches = []
-    for path in sorted(BUNDLED_DIR.glob("*.yaml")):
-        try:
-            data = yaml.safe_load(path.read_text()) or {}
-        except yaml.YAMLError:                       # a malformed bundled file is not this
-            continue                                 # function's problem to report
-        if isinstance(data, dict) and data.get("model_id") == model_id:
-            matches.append(path.stem)
-    return matches[0] if len(matches) == 1 else None
+    """The bundled recipe tuned for ``model_id`` (:meth:`lfa.recipe.Recipe.bundled_for`)."""
+    return Recipe.bundled_for(model_id)
 
 
 class Workspace:

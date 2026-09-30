@@ -1,8 +1,8 @@
 # The Layerwise Function Anchoring (LFA) operating point for Qwen3-0.6B.
 #
-# What this is: rank-32 LoRA (alpha 64, embedding and LM head frozen) over the int8 `gmm1543k`
-# p(h) artifact, anchored at lambda = 100,000 on both site families with mu = 0.05 as the uniform
-# weight backstop, n = 16 anchor samples per step, the anchor's layer schedule decaying to 0.1 of
+# What this is: rank-32 LoRA (alpha 64, embedding and LM head frozen) over a p(h) artifact fitted
+# on the model's own text (see `self_generated_frame` below), anchored at lambda = 100,000 on both
+# site families with mu = 0.05 as the uniform weight backstop, n = 16 anchor samples per step, the anchor's layer schedule decaying to 0.1 of
 # layer 0 on a cosine. Adam at 3e-4, batch 6 x 512 tokens, 50 warmup steps then cosine decay to
 # zero over the fifteen epochs trained. It adapts a 0.6B model to a book-sized corpus in about an
 # hour and a half on one 24 GB card.
@@ -15,9 +15,12 @@
 #     frontier on a corpus like this sits at roughly 2e4-5e4, not 1e5. Re-tune rather than port,
 #     and diagnose against held-out DOMAIN perplexity -- over-anchoring makes general-text
 #     perplexity look its best while domain quality collapses.
-#   * The p(h) ARTIFACT. `calibrated_artifact` below records what these lambdas were priced
-#     against; a sharper or flatter p(h) changes the anchor's scale, so an artifact swap is a
-#     re-tune.
+#   * The p(h) ARTIFACT. `calibrated_artifact` below records what these lambdas are priced
+#     against. They were tuned against an artifact fitted on real text (a 10:1
+#     pretraining-to-instruction seed corpus, 1.54 M hidden vectors per site); an artifact fitted
+#     on the model's own text at `self_generated_frame` matched it at every lambda tried and was at
+#     least as good at this lambda -- one model, one seed, one domain -- and it is the one this
+#     package builds. Any other artifact is a re-tune.
 #   * The CORPUS COMPOSITION. A corpus with a different share of chat-formatted Q&A, or of short
 #     documents, is a different regularization problem; re-tune there too.
 #
@@ -27,7 +30,7 @@
 
 name: qwen3-0.6b
 model_id: Qwen/Qwen3-0.6B
-artifact: qwen3-0.6b-gmm1543k-int8
+artifact: self-generated
 
 # -- adapter
 lora_rank: 32
@@ -77,11 +80,17 @@ stage2_lambda_multiplier: 3.0
 
 # -- what this point was calibrated at (the couplings above are checked against these)
 calibrated_rank: 32
-calibrated_artifact: qwen3-0.6b-gmm1543k-int8
+calibrated_artifact: self-generated
+# the frame the self-generated calibration was measured at; `lfa init --artifact
+# self-generated` builds at exactly this by default, and a build at any other frame is told so
+self_generated_frame:
+  n_raw: 2500
+  n_chat: 0
+  max_new_tokens: 2048
+  max_samples: 600000
+  gmm_k: 32
+  pca_variance: 0.95
 
-# -- self-generation (C12: one model, one seed, one domain). An artifact fitted on this model's own
-#    text matched the real-corpus artifact at every lambda tried and was at least as good as the
-#    published gmm1543k one at the recipe's lambda, so it is a calibrated substitute here; the
-#    supplement the entry model writes is mixed in at the fraction the lambda was tuned at.
-calibrated_self_generated: true
+# -- the question-and-answer supplement the stage's entry model writes from the domain is mixed in
+#    at this share of training tokens, the frame lambda was tuned at
 supplement_fraction: 0.13

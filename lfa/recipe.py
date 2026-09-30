@@ -7,7 +7,10 @@ so it does not survive a change of ``p(h)`` either. A recipe is therefore a join
 whole set of values that were tuned together and measured together -- rather than a bag of
 defaults, and it records *which* rank and *which* artifact it was calibrated at so that a run
 departing from either can be told that lambda no longer means what it meant
-(:meth:`Recipe.warnings`).
+(:meth:`Recipe.warnings`). The artifact can be named by id or path, or -- as the bundled recipe
+does -- as ``self-generated``: an artifact fitted on the model's own text at a recorded frame
+(:attr:`Recipe.self_generated_frame`), which each such artifact carries in its meta so that a
+build at another frame (a trial-sized one, say) is told which fields differ.
 
 Two settings in the shipped point are easy to lose in a re-implementation and are carried
 here deliberately:
@@ -38,10 +41,35 @@ import yaml
 
 from .train import LR_SCHEDULES, TrainConfig
 
-__all__ = ["Recipe", "BUNDLED_DIR"]
+__all__ = ["Recipe", "BUNDLED_DIR", "SELF_GENERATED_REFERENCE", "RECORDED_SELF_GENERATED_FRAME"]
 
 #: Where the bundled recipes live -- inside the package, so a wheel carries them.
 BUNDLED_DIR = Path(__file__).parent / "recipes"
+
+#: The value of ``calibrated_artifact`` (and of a bundled recipe's ``artifact``) that means "an
+#: artifact fitted on this model's own text at :attr:`Recipe.self_generated_frame`".
+SELF_GENERATED_REFERENCE = "self-generated"
+
+#: The frame the shipped lambda's self-generated calibration was measured at. It agrees with
+#: :class:`lfa.selfgen.artifact_corpus.SelfGenOptions`' defaults (a test pins that); it is
+#: spelled out here so this module does not import the generation stack.
+RECORDED_SELF_GENERATED_FRAME = {"n_raw": 2500, "n_chat": 0, "max_new_tokens": 2048,
+                                 "max_samples": 600_000, "gmm_k": 32, "pca_variance": 0.95}
+
+#: The keys a ``self_generated_frame`` may carry: the recorded frame's, plus the rest of
+#: :meth:`lfa.selfgen.artifact_corpus.SelfGenOptions.artifact_frame`.
+_FRAME_KEYS = frozenset(RECORDED_SELF_GENERATED_FRAME) | {
+    "seed", "chat_seed", "min_chars", "max_repeat_ratio", "burn_in_tokens", "reservoir_size"}
+
+
+def _describe(frame: dict) -> str:
+    """A self-generated frame in words, e.g. ``2500 documents x 2048 tokens, 600000 samples per
+    site, K=32``. Reads with ``frame.get`` so a partial user frame still renders."""
+    text = (f"{frame.get('n_raw')} documents x {frame.get('max_new_tokens')} tokens, "
+            f"{frame.get('max_samples')} samples per site, K={frame.get('gmm_k')}")
+    if frame.get("n_chat"):
+        text += f", {frame.get('n_chat')} of them chat-format"
+    return text
 
 
 @dataclass
@@ -51,18 +79,23 @@ class Recipe:
     Args:
         name: The recipe's own name; ``Recipe.load(name)`` finds ``<name>.yaml`` when bundled.
         model_id: The teacher/student model this point was tuned on.
-        artifact: The p(h) artifact id (or a path) the lambdas are calibrated against.
+        artifact: What the recipe anchors against by default: an artifact id, a path, or
+            ``self-generated``.
         stage2_lambda_multiplier: What :meth:`to_train_config` multiplies lambda by from stage 2
             on. A later stage anchors a model that already carries a domain, and what that wants
             is a *harder* anchor; it is a level, not a per-stage compounding factor. The shipped
             3.0 is a starting default rather than a calibrated constant -- lambda is coupled to
             the corpus, so a chain over a new pair of domains re-tunes it.
         calibrated_rank: The LoRA rank the lambdas were tuned at.
-        calibrated_artifact: The artifact id the lambdas were tuned against.
-        calibrated_self_generated: True when an artifact fitted on this model's own text (meta
-            ``provenance == "self-generated"``) is a calibrated substitute for
-            :attr:`calibrated_artifact`, so :meth:`warnings` stays silent about it. False makes a
-            self-generated artifact a re-tune like any other artifact swap.
+        calibrated_artifact: What the lambdas were calibrated against: ``self-generated`` (an
+            artifact fitted on this model's own text at :attr:`self_generated_frame`), or an id
+            or path.
+        self_generated_frame: The generation and fit frame a ``self-generated`` calibration was
+            measured at -- the fields of
+            :meth:`lfa.selfgen.artifact_corpus.SelfGenOptions.artifact_frame` that set how the
+            artifact prices a function. :meth:`warnings` compares a self-generated artifact's
+            recorded frame with it field by field. Read only when :attr:`calibrated_artifact` is
+            ``self-generated``.
         supplement_fraction: The share of training *tokens* made up of the question-and-answer
             pairs the entry model writes from the domain, in ``[0, 1)``. 0.13 is the frame the
             shipped lambda was tuned at; 0.0 trains on the raw corpus alone (off that frame). It
@@ -115,12 +148,11 @@ class Recipe:
     # -- what the point was calibrated at
     stage2_lambda_multiplier: float = 3.0
     calibrated_rank: int = 32
-    calibrated_artifact: str = "qwen3-0.6b-gmm1543k-int8"
-    # True when an artifact fitted on this model's OWN text is a calibrated substitute for
-    # `calibrated_artifact` (Qwen3-0.6B, C12: it matched the real-corpus artifact at every lambda
-    # tried and was at least as good as the published one at the recipe's lambda; one model, one
-    # seed, one domain).
-    calibrated_self_generated: bool = False
+    # `self-generated` means an artifact fitted on this model's own text at
+    # `self_generated_frame`; anything else is an artifact id or path, compared as a string.
+    calibrated_artifact: str = SELF_GENERATED_REFERENCE
+    self_generated_frame: dict = dataclasses.field(
+        default_factory=lambda: dict(RECORDED_SELF_GENERATED_FRAME))
 
     def __post_init__(self) -> None:
         if self.epochs < 1:
@@ -144,6 +176,16 @@ class Recipe:
             raise ValueError(
                 f"supplement_fraction must be in [0, 1), got {self.supplement_fraction}: it is "
                 "the share of training TOKENS the written pairs make up.")
+        if not isinstance(self.self_generated_frame, dict):
+            raise ValueError(
+                "self_generated_frame must be a mapping of frame field to value, got "
+                f"{type(self.self_generated_frame).__name__}: write it as a YAML mapping "
+                f"(fields: {', '.join(sorted(_FRAME_KEYS))}).")
+        unknown = sorted(set(self.self_generated_frame) - _FRAME_KEYS)
+        if unknown:
+            raise ValueError(
+                f"self_generated_frame has unknown field(s): {', '.join(map(str, unknown))}; "
+                f"use only {', '.join(sorted(_FRAME_KEYS))}.")
 
     # ------------------------------------------------------------------ loading and saving
 
@@ -202,6 +244,24 @@ class Recipe:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(yaml.safe_dump(dataclasses.asdict(self), sort_keys=False))
         return path
+
+    @classmethod
+    def bundled_for(cls, model_id: str) -> str | None:
+        """The bundled recipe tuned for ``model_id``, when exactly one names it.
+
+        Matched on the recipe's own ``model_id`` rather than on its name: a recipe is a joint
+        operating point for one model, and guessing one from a filename is how a lambda gets
+        ported across models it was never calibrated for.
+        """
+        matches = []
+        for path in sorted(BUNDLED_DIR.glob("*.yaml")):
+            try:
+                data = yaml.safe_load(path.read_text()) or {}
+            except yaml.YAMLError:                       # a malformed bundled file is not this
+                continue                                 # method's problem to report
+            if isinstance(data, dict) and data.get("model_id") == model_id:
+                matches.append(path.stem)
+        return matches[0] if len(matches) == 1 else None
 
     # ------------------------------------------------------------------ use
 
@@ -262,12 +322,15 @@ class Recipe:
 
         Args:
             rank: The LoRA rank the run trains at.
-            artifact_id: The id of the p(h) artifact the run anchors against.
-            artifact_meta: That artifact's meta (``None`` or ``{}`` when unknown). When its
-                ``provenance`` is ``"self-generated"`` the artifact is judged by who wrote the
-                text rather than by its id: silent for this recipe's own model when
-                :attr:`calibrated_self_generated` is set, a calibrate-lambda note when it is not,
-                and a mismatch note when the text came from another model.
+            artifact_id: The id (or path) of the p(h) artifact the run anchors against.
+            artifact_meta: That artifact's meta (``None`` or ``{}`` when unknown). A
+                self-generated artifact (``provenance == "self-generated"``) is judged by its meta
+                rather than by its id: a mismatch note when the text came from another model;
+                against a ``self-generated`` calibration, silent when its recorded
+                ``selfgen_frame`` matches :attr:`self_generated_frame`, a note naming each field
+                that differs when it does not, and a note when it records no frame at all. Any
+                other artifact against a ``self-generated`` calibration is a re-tune; against a
+                named calibration the ids are compared.
         """
         notes: list[str] = []
         # The two site families can carry different lambdas; quoting one of them as "the lambda"
@@ -286,22 +349,38 @@ class Recipe:
             )
         meta = artifact_meta or {}
         self_generated = meta.get("provenance") == "self-generated"
-        if self_generated:
-            if meta.get("model_id") == self.model_id and self.calibrated_self_generated:
-                pass                                       # the calibrated substitute
-            elif meta.get("model_id") == self.model_id:
+        if self_generated and meta.get("model_id") not in (None, self.model_id):
+            notes.append(
+                f"this self-generated artifact describes {meta.get('model_id')!r}, not this "
+                f"recipe's {self.model_id!r}: lambda is coupled to the p(h) artifact, so "
+                "calibrate it against held-out domain perplexity for this model.")
+        elif self.calibrated_artifact == SELF_GENERATED_REFERENCE and self_generated:
+            frame = meta.get("selfgen_frame")
+            if frame is None:
                 notes.append(
-                    "this artifact was fitted on the model's own text and this recipe does not "
-                    "record self-generation as calibrated: calibrate lambda against held-out "
-                    "domain perplexity (docs/adding-a-model.md, 'Calibrating λ'), reading the "
-                    "frontier rather than a single point."
-                )
+                    "this self-generated artifact records no generation frame, so it cannot be "
+                    "checked against the frame this recipe's lambda was calibrated at "
+                    f"({_describe(self.self_generated_frame)}); rebuild it with this version "
+                    "(`lfa init ... --artifact self-generated --rebuild`) to have it recorded.")
             else:
-                notes.append(
-                    f"this self-generated artifact describes {meta.get('model_id')!r}, not this "
-                    f"recipe's {self.model_id!r}: lambda is coupled to the p(h) artifact, so "
-                    "calibrate it against held-out domain perplexity for this model."
-                )
+                differ = [f"{key} {frame.get(key)!r} (calibrated at {value!r})"
+                          for key, value in self.self_generated_frame.items()
+                          if frame.get(key) != value]
+                if differ:
+                    notes.append(
+                        "this self-generated artifact was built at a different frame from the "
+                        "one this recipe's lambda was calibrated at: " + ", ".join(differ)
+                        + ". A trial-sized build is fine for trying the pipeline; for a real "
+                        "run, build at the recorded frame or calibrate lambda against held-out "
+                        "domain perplexity (docs/adding-a-model.md).")
+        elif self.calibrated_artifact == SELF_GENERATED_REFERENCE:
+            notes.append(
+                f"this recipe's lambda ({quoted}) is calibrated against an artifact fitted on the "
+                f"model's own text at {_describe(self.self_generated_frame)}, and you are "
+                f"anchoring against {artifact_id!r}, which is not one. A different artifact "
+                "prices the same function differently, so calibrate lambda against held-out "
+                "domain perplexity (docs/adding-a-model.md), reading the frontier rather than "
+                "a single point.")
         elif artifact_id != self.calibrated_artifact:
             notes.append(
                 f"lambda is coupled to the p(h) artifact: this recipe's lambda was calibrated "

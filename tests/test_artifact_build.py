@@ -389,6 +389,7 @@ def test_build_artifact_self_generated_writes_the_corpus_then_fits_with_provenan
     assert seen["max_samples"] == 123 and seen["gmm_k"] == 4
     assert seen["provenance"] == "self-generated" and seen["corpus_sha256"] == "d" * 64
     assert seen["layer_group_size"] == 5
+    assert seen["selfgen_frame"] == SelfGenOptions(max_samples=123, gmm_k=4).artifact_frame()
 
 
 def test_build_artifact_self_generated_keeps_a_given_layer_group_size(tmp_path, monkeypatch):

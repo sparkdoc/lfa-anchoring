@@ -78,20 +78,18 @@ def make_meta(
     provenance: str | None = None,
     corpus_sha256: str | None = None,
     layer_group_size: int | None = None,
+    selfgen_frame: dict | None = None,
 ) -> dict:
     """The ``__meta__`` block: what the statistics describe, and what built them.
 
     Args:
         n_samples_total: hidden vectors collected **per site**, not summed across them. Every site
             sees the same token stream, so the per-site counts are equal up to the batch the
-            collection stops on -- and this is the number a continual extension reads back as each
-            block's count when the blocks carry none of their own
-            (:func:`lfa.artifact.extend.extend_artifact`). The shipped qwen3-0.6b artifact is named
-            for it: ``gmm1543k`` is 1_543_040 vectors per site (the count the research chains
-            pass as ``--base-n``; the id rounds it).
+            collection stops on. It is what a continual extension reads back when the blocks carry
+            no count of their own (:func:`lfa.artifact.extend.extend_artifact`).
         built_with: what collected and fitted these statistics. It defaults to this package, which
-            is right for :func:`lfa.artifact.build.build_artifact`; a meta block *added* to an
-            artifact something else built should say so instead (``RELEASING.md`` step 1 does).
+            is right for :func:`lfa.artifact.build.build_artifact`; a meta block added to a file
+            something else built should say so.
             ``lfa_version`` records which version wrote the block either way, so the two fields do
             not have to answer the same question.
         provenance: :data:`SELF_GENERATED` for an artifact fitted on the model's own text;
@@ -101,8 +99,12 @@ def make_meta(
         layer_group_size: how many layers were collected per pass; the reservoir draws depend on
             it, so a rebuild passes the same value. ``None`` when unknown, or when every layer
             was collected in one pass.
+        selfgen_frame: the generation and fit frame of a self-generated artifact
+            (:meth:`lfa.selfgen.artifact_corpus.SelfGenOptions.artifact_frame`), which
+            :meth:`lfa.recipe.Recipe.warnings` compares with the recipe's calibrated frame.
+            ``None`` leaves the key out, as it is for an artifact fitted on real text.
     """
-    return {
+    meta = {
         "model_id": model_id,
         "hidden_size": int(hidden_size),
         "num_layers": int(num_layers),
@@ -116,6 +118,9 @@ def make_meta(
         "corpus_sha256": corpus_sha256,
         "layer_group_size": None if layer_group_size is None else int(layer_group_size),
     }
+    if selfgen_frame is not None:
+        meta["selfgen_frame"] = dict(selfgen_frame)
+    return meta
 
 
 def load_artifact(path) -> dict:
