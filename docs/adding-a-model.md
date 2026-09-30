@@ -71,21 +71,25 @@ sweep fit on one 24 GB card.
 p(h) is model-specific — it is that model's own hidden states — so a new model needs its own
 artifact, built once.
 
-The shortest route is `lfa build-artifact --model <id> --self-generated --out artifacts/<name>.pt`
-(or `lfa init <workspace> --model <id> --artifact self-generated`, which builds the same thing into
-a workspace): the model writes its own seed corpus and no dataset is downloaded. It starts each
-document from the model's document-boundary token — its declared
-`generation_config.bos_token_id`, else the tokenizer's BOS, else its EOS. The optional
-chat-format share (`--n-chat`, outside the recorded frame and off by default) starts from the
-user-turn header of its chat template; without a chat template that share is skipped and the log
-says so. The recipe will warn that λ is uncalibrated against it,
-which is true: go to §3. The recorded frame, and what it was worth on Qwen3-0.6B (it matched the
-real-corpus artifact at every λ tried and was at least as good as the published one at the
-recipe's λ; one model, one seed, one domain), are in
-[rebuilding-the-artifact.md](rebuilding-the-artifact.md#the-self-generated-route); on any other
-model nothing has been measured.
+```bash
+lfa init runs/new_model --model your/model --artifact self-generated --recipe my_point.yaml
+```
 
-The alternative is a downloaded seed corpus, the route the published artifact took:
+The model writes its own text and p(h) is fitted on it — at the recorded frame by default, with no
+dataset downloaded — and the result is kept in the local store, so every later workspace over that
+model reuses it ([the-artifact.md](the-artifact.md)). It starts each document from the model's
+document-boundary token — its declared `generation_config.bos_token_id`, else the tokenizer's BOS,
+else its EOS. The optional chat-format share (`--n-chat`, outside the recorded frame and off by
+default) starts from the user-turn header of its chat template; without a chat template that share
+is skipped and the log says so. No bundled recipe names a new model, so pass your copy of one with
+`--recipe` (§3), or name it at every `train`.
+
+What the route was worth on Qwen3-0.6B (an artifact fitted on the model's own text matched one
+fitted on real text at every λ tried, and was at least as good at the recipe's λ; one model, one
+seed, one domain) is in [the-artifact.md](the-artifact.md#the-frame). On any other model nothing
+has been measured: it gives you a first artifact, and §3 calibrates λ against it.
+
+The advanced alternative is an artifact fitted on real text, over a downloaded seed corpus:
 
 ```bash
 lfa prepare-seed-corpus --out data/seed_corpus_10to1.jsonl
@@ -95,7 +99,7 @@ lfa build-artifact --model your/model --corpus data/seed_corpus_10to1.jsonl \
 ```
 
 Everything about that step — the corpus composition, the memory arithmetic, what is stored and what
-is deliberately not — is in [rebuilding-the-artifact.md](rebuilding-the-artifact.md). The build
+is deliberately not — is in [the-artifact.md](the-artifact.md). The build
 writes a `__meta__` block naming the model, its hidden size and its depth, and every training run
 validates the artifact against the model it is about to anchor, so a mismatched pair fails at
 startup rather than anchoring toward the wrong function in silence.
@@ -103,17 +107,20 @@ startup rather than anchoring toward the wrong function in silence.
 ## 3. Calibrating λ
 
 **Do not port λ.** It is coupled to the LoRA rank, to the artifact, and to the corpus, and none of
-those survives a change of model. The bundled 100,000 belongs to Qwen3-0.6B at rank 32 on the
-`gmm1543k` artifact and means nothing elsewhere.
+those survives a change of model. The bundled 100,000 belongs to Qwen3-0.6B at rank 32 on its
+self-generated artifact at the recorded frame, and means nothing elsewhere.
 
 A workable procedure:
 
-1. Start from a copy of the bundled recipe with `model_id`, `artifact`, `calibrated_rank` and
-   `calibrated_artifact` set to your point ([recipes.md](recipes.md)). Set
-   `calibrated_self_generated: false` until the sweep below has been read on the self-generated
-   artifact (the copy carries Qwen3-0.6B's `true`, which would silence the warning for a model
-   nothing was measured on). Keep `supplement_fraction` at the value you will train at: `train`
-   mixes the supplement in during the sweep as it will afterwards, and λ is read in that mix.
+1. Start from a copy of the bundled recipe with `model_id` and `calibrated_rank` set to your
+   point ([recipes.md](recipes.md)). Set `calibrated_artifact` to a placeholder such as
+   `uncalibrated` until the sweep below has been read: the copy carries `self-generated`, which
+   would silence the warning for a self-generated artifact of your model although nothing was
+   measured on it, and the placeholder makes every stage say that λ was calibrated against
+   something else, which is true. Set it back to `self-generated` (with `self_generated_frame` at
+   the frame you built at) once the sweep is read. Keep `supplement_fraction` at the value you
+   will train at: `train` mixes the supplement in during the sweep as it will afterwards, and λ is
+   read in that mix.
 2. Train the **unanchored** control first (`lfa evaluate --compare-unanchored`, or a recipe with
    `lambda_qkv: 0`, `lambda_mlp: 0`, `mu: 0`). It sets both ends of the scale: how far the domain
    can move, and what that costs on the general axis when nothing is preserved.

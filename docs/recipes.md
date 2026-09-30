@@ -21,7 +21,8 @@ rather than several GPU-hours into a run.
 
 ## The shipped point: `lfa/recipes/qwen3-0.6b.yaml`
 
-Rank-32 LoRA over the int8 `gmm1543k` artifact, λ = 100,000 on both site families, μ = 0.05,
+Rank-32 LoRA over the model's own self-generated artifact at `self_generated_frame`, λ = 100,000
+on both site families, μ = 0.05,
 16 anchor samples per step, fifteen epochs of cosine, with the model's own question-and-answer
 supplement mixed in at 0.13 of training tokens.
 
@@ -44,7 +45,7 @@ supplement mixed in at 0.13 of training tokens.
 | `anchor_schedule` | `cosine` | how the per-layer weight interpolates (`cosine`, `linear`, `exponential`) |
 | `n_anchor_samples` | 16 | hidden states drawn per site per step. The anchor loss is mean-reduced, so this is unbiased at every value and moves variance only |
 
-The per-layer weights are **normalized to sum to 1**, which is the convention the published λ is
+The per-layer weights are **normalized to sum to 1**, which is the convention the recipe's λ is
 calibrated against: under the uniform default a scheduled anchor would be larger by a factor of the
 layer count, and λ absorbs it. The schedule is scale compensation rather than a hierarchy —
 [concepts.md](concepts.md) has the measurement.
@@ -109,18 +110,28 @@ curve, not a truncation of this one.
 | field | value |
 |---|---|
 | `calibrated_rank` | 32 |
-| `calibrated_artifact` | `qwen3-0.6b-gmm1543k-int8` |
+| `calibrated_artifact` | `self-generated` |
+| `self_generated_frame` | `{n_raw: 2500, n_chat: 0, max_new_tokens: 2048, max_samples: 600000, gmm_k: 32, pca_variance: 0.95}` |
 | `stage2_lambda_multiplier` | 3.0 |
-| `calibrated_self_generated` | `true` |
 
-The first two are what `Recipe.warnings(rank, artifact_id, artifact_meta)` reads a run against; the
-third is what [a chain](multi-domain-chains.md) multiplies λ by from stage 2 on. The fourth says
-that an artifact fitted on *this recipe's model's* own text (meta `provenance: "self-generated"`,
-[rebuilding-the-artifact.md](rebuilding-the-artifact.md#the-self-generated-route)) is a calibrated
-substitute for `calibrated_artifact`, so no warning fires for it. It is `true` here on the strength
-of the LFA record's C12 — on Qwen3-0.6B the self-generated artifact matched the real-corpus
-artifact at every λ tried and was at least as good as the published `gmm1543k` one at the recipe's
-λ; one model, one seed, one domain — and `false` is the default for any other recipe.
+`calibrated_rank` and `calibrated_artifact` are what `Recipe.warnings(rank, artifact_id,
+artifact_meta)` reads a run against; `stage2_lambda_multiplier` is what
+[a chain](multi-domain-chains.md) multiplies λ by from stage 2 on.
+
+`calibrated_artifact: self-generated` means the recipe is calibrated against an artifact fitted
+on *this recipe's model's* own text ([the-artifact.md](the-artifact.md#the-self-generated-artifact)),
+at the frame `self_generated_frame` records — the frame `lfa init --artifact self-generated`
+builds at by default. An artifact carries the frame it was built at in its meta (`selfgen_frame`),
+and the recipe compares the two field by field. Where the λ came from, with its scope: it was
+tuned against an artifact fitted on real text (the 10 : 1 pretraining-to-instruction seed corpus,
+1.54 M hidden vectors per site; [the-artifact.md](the-artifact.md#advanced-an-artifact-fitted-on-real-text)),
+and an artifact fitted on the model's own text at this frame matched it at every λ tried and was
+at least as good at the recipe's λ — one model, one seed, one domain. Any other value of
+`calibrated_artifact` is an artifact id or path, compared as a string with the one the workspace
+records.
+
+A recipe file written before 0.2.0 may carry `calibrated_self_generated`; it is refused at load as
+an unknown field, and deleting the line is the whole fix.
 
 ## The couplings, and what the warnings mean
 
@@ -136,29 +147,35 @@ point:
 * **`full_weight: true`** — outside the paper's validated envelope; calibrate λ in 50,000–100,000
   and check held-out domain perplexity.
 
-A **self-generated** artifact is judged by who wrote its text rather than by its id, and replaces
-the artifact line above with one of two:
+Against a `self-generated` calibration, the artifact line above is read off the artifact's meta
+rather than its id, and is one of these:
 
-* *"this artifact was fitted on the model's own text and this recipe does not record
-  self-generation as calibrated: calibrate lambda against held-out domain perplexity …"* — the
-  artifact's `model_id` is the recipe's, but `calibrated_self_generated` is `false`: the usual case
-  on a new model ([adding-a-model.md](adding-a-model.md), §3).
+* nothing, when the artifact was fitted on this recipe's model's own text at
+  `self_generated_frame` — the default `lfa init --artifact self-generated` on the recipe's model;
+* *"this self-generated artifact was built at a different frame from the one this recipe's lambda
+  was calibrated at: n_raw 60 (calibrated at 2500), …"* — every field that differs is named. A
+  trial build (`--n-raw 60 --max-new-tokens 128`) is the common case, and fine for trying the
+  pipeline; for a real run, build at the recorded frame or calibrate λ;
 * *"this self-generated artifact describes '…', not this recipe's '…': lambda is coupled to the
   p(h) artifact, so calibrate it against held-out domain perplexity for this model."* — the text
   came from a different model. In a chain on the `regenerate` route it fires from stage 2 on and
   names the fused stage model's path, because the regenerated artifact was written by that model;
-  there it carries one more sentence, that the regenerated route is C15's (rank 4, one seed) and
-  the stage multiplier is a starting point there, not a calibrated constant
-  ([multi-domain-chains.md](multi-domain-chains.md#the-regenerate-route)).
+  there it carries one more sentence, that regenerating the artifact from each stage's model was
+  measured on one configuration (rank 4, one seed) and the stage multiplier is a starting point
+  there, not a calibrated constant
+  ([multi-domain-chains.md](multi-domain-chains.md#the-regenerate-route));
+* *"this recipe's lambda (…) is calibrated against an artifact fitted on the model's own text at
+  …, and you are anchoring against '…', which is not one."* — an artifact fitted on real text, or
+  one whose provenance is unknown: calibrate λ against held-out domain perplexity
+  ([adding-a-model.md](adding-a-model.md), §3).
+
+A self-generated artifact built by an earlier version records no frame, and is told so, with the
+rebuild that records one (`lfa init … --artifact self-generated --rebuild`).
 
 One more is logged by `train` itself rather than by the recipe: *"Training on the raw corpus alone:
 this recipe's lambda was calibrated at supplement_fraction 0.13 and this run mixes none."* It fires
 on `--no-supplement` (`supplement=False`) when the recipe's `supplement_fraction` is above 0; a
 recipe that sets `0.0` has opted out at the recipe level and is not warned.
-
-When you pass a local copy of a published artifact by path, tell `init` which one it is
-(`--artifact-id qwen3-0.6b-gmm1543k-int8`), or the recipe will warn that λ was calibrated against
-a different artifact when it was calibrated against exactly that one.
 
 **Diagnose against held-out domain perplexity.** Over-anchoring makes general-text perplexity look
 its best while domain quality collapses, so the general axis alone cannot tell you λ is too high.
@@ -166,9 +183,10 @@ its best while domain quality collapses, so the general axis alone cannot tell y
 ## Writing your own
 
 Copy the bundled file, change what you mean to change, and — the part that is easy to skip — move
-`calibrated_rank` and `calibrated_artifact` to the point you actually tuned at (and set
-`calibrated_self_generated` to what you actually measured), so that the warnings stay true for the
-next person:
+`calibrated_rank` and `calibrated_artifact` to the point you actually tuned at (and
+`self_generated_frame` to the frame of the self-generated artifact you tuned against, or
+`calibrated_artifact` to the artifact's id or path when it was not self-generated), so that the
+warnings stay true for the next person:
 
 ```python
 import dataclasses

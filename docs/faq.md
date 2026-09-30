@@ -42,8 +42,8 @@ self-generated route, and so under `regenerate-artifact`, the build sizes itself
 
 ## Why does a chain's `extend` need so much RAM?
 
-It holds `--need` activations per site in float32 on the host before fitting. For the shipped
-Qwen3-0.6B artifact — 84 sites, of which 28 are 2048 wide and 56 are 1024 wide — at the default
+It holds `--need` activations per site in float32 on the host before fitting. For a Qwen3-0.6B
+artifact — 84 sites, of which 28 are 2048 wide and 56 are 1024 wide — at the default
 `--need 40000`:
 
 ```
@@ -71,7 +71,7 @@ reservoir (about 10.7 GiB of reservoirs per group, against about 24 GiB availabl
 not neutral — one torch generator is shared across a group's sites, so grouping changes the
 reservoir draws and the fitted mixtures, though not the exact moments — so the artifact's meta
 records `layer_group_size`, and a rebuild reproduces a file by passing `--layer-group-size` with
-the recorded value ([rebuilding-the-artifact.md](rebuilding-the-artifact.md)).
+the recorded value ([the-artifact.md](the-artifact.md#host-ram-the-layer-group)).
 
 **How long it takes.** About **five minutes** at the defaults on one RTX 3090 (measured 5 min 08 s:
 roughly one minute collecting activations through the fused model, then four minutes fitting 84
@@ -111,9 +111,10 @@ None of those is the recorded frame. The full frame — 2,500 documents of up to
 the fit at 600k samples per site — takes several hours on an 8 GB card; not timed. A supplement
 costs one generation per 4,000-character passage of the training side (the
 default batch is 16 passages), once per corpus and writer: it is cached under
-`<workspace>/supplements/<corpus sha256[:12]>/` and reused while the training side's hash, the
-writer checkpoint's hash, the template's hash and the domain description all match.
-`lfa prepare-supplement --force` rewrites it.
+`<workspace>/supplements/<corpus sha256[:12]>/` (or beside the corpus, in
+`<corpus>.supplement/<corpus sha256[:12]>/`, when it was prepared with the data) and reused while
+the training side's hash, the writer checkpoint's hash, the template's hash and the domain
+description all match. `lfa prepare-supplement --force` rewrites it.
 
 ## Why does the chunk count change from epoch to epoch?
 
@@ -171,8 +172,9 @@ anything was preserved.
 
 Three steps, and only the third is real work: an **adapter** so LFA can find the sub-modules
 (usually free — `LlamaLayoutAdapter` covers Llama, Qwen2/3, Mistral and their kin), an
-**artifact** built for that model — `lfa build-artifact --model <id> --self-generated` writes its
-seed corpus with the model itself, no download — and a **λ calibration** at your rank and corpus,
+**artifact** built for that model — `lfa init <workspace> --model <id> --artifact self-generated`
+has the model write the text it is fitted on, no download — and a **λ calibration** at your rank
+and corpus,
 against that artifact. Never port λ across models. [adding-a-model.md](adding-a-model.md) has
 the interface, the fallback orders, and
 the calibration procedure.
@@ -252,26 +254,10 @@ is for, and each stage then holds only its own share.
 
 ## The run warned about my corpus's "shape". What do those mean?
 
-Three shapes train badly without failing — the losses fall, the counts look ordinary, and the model
-that comes out is quietly worse than the corpus could have made it. The trainer reads them off the
-corpus **before the first step** and names the numbers it read them from. None is a refusal.
-
-* **Too few chunks for the batch.** Under eight optimizer steps an epoch, each step's gradient
-  comes from more than an eighth of the corpus, so consecutive steps see nearly the same examples
-  and the shuffle buys almost nothing; at the recipe's 50-step warmup such a run also spends its
-  first six epochs or more below the learning rate the operating point was tuned at. Add documents,
-  lower `batch_size`, or lower `sequence_length` so each document yields more chunks.
-* **One document dominating.** A single document past half the chunks contributes more gradient
-  than the whole of the rest of the corpus, so the run is at least as much a fine-tune on that one
-  document. The warning names the document and its share. Split it at its own section boundaries.
-* **More epochs than the text can carry.** Under 500,000 training tokens (~2 MB of English) at more
-  than five epochs. The shipped 15 were tuned on about 6.6 MB; the two-domain walkthrough, at 164 k
-  tokens a stage, reached its held-out minimum at epoch 4 and was worse by epoch 8. Start nearer
-  five, keep `val_fraction` above 0, and let the held-out curve pick the dose — the trainer names
-  the epoch it bottomed at when the run ends.
-
-A sound corpus produces none of them. To read them without starting a run,
-`ChunkedCorpus.shape_warnings(batch_size=…, epochs=…)` returns them as a list of strings.
+Three shapes train badly without failing: too few chunks for the batch, one document dominating,
+and more epochs than the text can carry. The trainer names each one with its numbers before the
+first step; [preparing-your-data.md](preparing-your-data.md#three-shapes-that-train-badly) has the
+thresholds and what to do about each.
 
 ## Is the learning-rate schedule exactly restored when I `--resume`?
 
@@ -304,7 +290,7 @@ for it.
 Qwen3-0.6B does not come near it, but a model with large activation outliers might. Check the
 per-site statistics the build logs, and if in doubt build in float32 (`build_artifact(...,
 dtype=torch.float32)`), which doubles the reservoir memory —
-[rebuilding-the-artifact.md](rebuilding-the-artifact.md) has the arithmetic.
+[the-artifact.md](the-artifact.md#host-ram-the-layer-group) has the arithmetic.
 
 ## Does anything here call an external model API?
 

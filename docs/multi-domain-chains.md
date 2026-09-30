@@ -90,22 +90,23 @@ domains:
 
 A per-domain `artifact` key is refused at load: the route is chosen once for the chain.
 
-**What the record found (C15).** A three-domain chain anchored this way was, after its third stage,
+**What the research runs found.** A three-domain chain anchored this way was, after its third stage,
 as good as the chain anchored on the real-seed-corpus artifact on every judge, perplexity and skill
 benchmark (at stage 2 it had one judged deficit, on the second domain, which stage 3 erased). The
 text it was anchored on drifted toward the last domain learned: in the corpora written by the base
 model, the first-domain model and the two-domain model, 0.5 / 68.2 / 2.5 % of the documents
 mentioned the first domain, and 2.7 / 9.6 / 86.1 % the second — yet the anchor fitted on that
-drifting text did not compound into a worse chain. Scope: rank 4, one seed, three domains, judged by
-`gpt-5.6-luna@medium`. These are the record's measurements, not this package's.
+drifting text did not compound into a worse chain. Scope: one model (Qwen3-0.6B), rank 4, one
+seed, three domains, judged by `gpt-5.6-luna@medium`. These are the research runs' measurements,
+not this package's.
 
-**λ on this route.** C15 ported λ at 2× from stage 2; the recipe's `stage2_lambda_multiplier` is
-3×. Neither is calibrated for your chain: the multiplier is a starting point on either route, to
+**λ on this route.** That chain ported λ at 2× from stage 2; the recipe's
+`stage2_lambda_multiplier` is 3×. Neither is calibrated for your chain: the multiplier is a starting point on either route, to
 be re-tuned on the two axes. A regenerated artifact is also not the calibrated one — it was written
 by the fused stage model, not by the recipe's model — so from stage 2 on `train` warns that the
 self-generated artifact describes the fused model's path rather than the recipe's model, and adds
-that the regenerated route is C15's (rank 4, one seed) and the stage multiplier is a starting point
-there, not a calibrated constant. The advice is the warning's: re-tune λ against held-out domain
+that regenerating the artifact from each stage's model was measured on one configuration (rank 4,
+one seed) and the stage multiplier is a starting point there, not a calibrated constant. The advice is the warning's: re-tune λ against held-out domain
 perplexity.
 
 ## λ from stage 2 on

@@ -17,25 +17,9 @@ LFA is **data-free at adaptation time**, and in a chain of domains no earlier do
 revisited. Under LoRA that frozen teacher is the student's own base — PEFT keeps it frozen, so a
 run loads no second copy of the model and reads the teacher out of the student with its adapters
 switched off, which is bit-identical to holding a separate one and 1.11 GB cheaper on Qwen3-0.6B
-(`--teacher-mode`; full-weight training moves the base, so there a real teacher is loaded). The statistic is a per-site mean, covariance and mixture — no text, no token ids,
-nothing sequence-shaped. Everything runs locally: no judge, no API key.
-
-**To watch it work rather than read about it**, open
-[`examples/two_domain_walkthrough.ipynb`](https://github.com/sparkdoc/lfa-anchoring/blob/main/examples/two_domain_walkthrough.ipynb):
-Qwen3-0.6B adapted to Darwin, then to a Victorian cookbook, with every stage repeated with the
-anchor off so the control sits beside each number. Across stage 2 the anchored model's Darwin
-perplexity moves 17.45 → 18.92 while the unanchored one's goes to 31.45, having read no Darwin
-either way. Recorded 2026-09-08, before 0.2.0, so on the raw books alone: a re-run today has the
-model write and mix in its question-and-answer supplement first, so these are not a 0.2.0 run's.
-19 minutes of training and tables on one RTX 3090, and it downloads what it needs and needs no API
-key.
-
-A second notebook is optional and continues from the workspace the first leaves behind:
-[`examples/what_the_anchor_does.ipynb`](https://github.com/sparkdoc/lfa-anchoring/blob/main/examples/what_the_anchor_does.ipynb)
-re-runs each control at its own best epoch count, so the gaps above can be split into what is
-dose and what is anchor, and then puts the three models to fixed probes — where the anchored
-model brings natural selection to a question about island species and stops, while the control
-drifts into biogeography on a question about Tokyo.
+(`--teacher-mode`; full-weight training moves the base, so there a real teacher is loaded). The
+statistic is a per-site mean, covariance and mixture — no text, no token ids, nothing
+sequence-shaped. Everything runs locally: no judge, no API key.
 
 ## Install
 
@@ -53,46 +37,34 @@ card. Tested at torch 2.10.0+cu128, transformers 4.57.6, accelerate 1.14.0, peft
 > interpreters ship them). The package's own paths do not, so `lfa` warns once if the headers are
 > missing and proceeds.
 
-## The building blocks
-
-| Block | What it is | Where it lives |
-|---|---|---|
-| **Model** | Any causal LM the package has an adapter for (Qwen3 today). Referenced by Hub id or path; never copied. | `lfa.adapters` |
-| **Artifact** | The `p(h)` statistic for that model: per-site mean, covariance basis and K=32 mixture, int8, ~108 MB. Fetched by id with a checksum, or built from a seed corpus or from the model's own text. | `lfa.artifact` |
-| **Recipe** | The tuned operating point (rank, λ, μ, epochs, schedule) *and what it was tuned against*, so a run that changes rank or artifact is told λ no longer means what it meant. | `lfa.Recipe` |
-| **Corpus** | A flat directory of `.txt` files. `lfa prepare-domain` makes one from text, Markdown, HTML or PDF. | `lfa.corpus` |
-| **Self-generation** | The model writes its own inputs: the seed corpus p(h) is estimated on (`init --artifact self-generated`, no download), the question-and-answer supplement `train` mixes into the domain at the recipe's token fraction, and, in a chain, a fresh p(h) from each stage's model (`artifact: regenerate`). Measured on one model and one seed (the LFA record's C12, C14, C15); the supplement's job is reachability, not protecting skills. | `lfa.selfgen` |
-| **Workspace** | The state machine that holds the other four together across domains: which model the next stage adapts, which artifact version it anchors against, and a history entry per stage. | `lfa.Workspace` |
-| **Train / Evaluate / Fuse / Extend** | The four operations on a workspace: adapt one domain; read the stage on both axes; export a plain checkpoint; fold the stage into the model *and* into `p(h)` for the next domain (or `regenerate-artifact`: fold it into the model and refit `p(h)` on that model's own text). | `lfa.train`, `lfa.evaluate` |
-
-## Assemble them: one domain
-
-Make the corpus, then four commands.
+## The pipeline
 
 ```bash
-lfa prepare-domain ~/papers ~/notes.md --out data/my_domain      # .txt/.md/.html/.pdf -> .txt files
-
-lfa init     runs/my_domain --model Qwen/Qwen3-0.6B --artifact qwen3-0.6b-gmm1543k-int8
+lfa init runs/my_domain --model Qwen/Qwen3-0.6B --artifact self-generated   # once per model
+lfa prepare-domain ~/papers ~/notes.md --out data/my_domain \
+    --supplement --model Qwen/Qwen3-0.6B                                     # your documents
 lfa train    --workspace runs/my_domain --corpus data/my_domain
 lfa evaluate --workspace runs/my_domain
 lfa fuse     --workspace runs/my_domain
 ```
 
-The same thing from Python, which the CLI calls into and decides nothing differently from:
+**`init`** creates the workspace and puts its p(h) artifact in place: the model writes 2,500
+documents of its own and p(h) is fitted on them — hours on an 8 GB card, not timed. The result
+is kept in a local store, so every later workspace over the same model reuses it
+(`lfa list-artifacts` shows what is there), and a build that was interrupted resumes when the
+same command is run again.
 
-```python
-from lfa import Workspace
+**`prepare-domain`** turns text, Markdown, HTML or PDF into the corpus, a flat directory of `.txt`
+files. With `--supplement`, the model then writes question-and-answer pairs over the corpus, which
+make the domain's knowledge answerable when the model is asked about it; they do not protect
+skills, which is the anchor's job. Without `--supplement`, `train` writes the same pairs itself
+before the first epoch.
 
-ws = Workspace.init("runs/my_domain", "Qwen/Qwen3-0.6B", artifact="qwen3-0.6b-gmm1543k-int8")
-ws.train("data/my_domain")            # holds a tenth of the documents out; watch that number
-print(ws.evaluate()["table"])         # both axes, against the model the stage started from
-ws.fuse()                             # a plain checkpoint: AutoModelForCausalLM.from_pretrained
-```
+**`train`** adapts the model with the anchor on. It holds a tenth of the documents out, scores them
+after every epoch, and warns at the end if that curve turned around — on a small corpus re-run with
+`--epochs <the epoch it bottomed at>`.
 
-`init` records the model and the recipe and copies the artifact in as `artifacts/v1.pt`; it picks
-the bundled recipe that names your model. `train` scores the held-out tenth after every epoch, and
-warns at the end if that curve turned around — on a small corpus re-run with `--epochs <the
-epoch it bottomed at>`. `evaluate` prints:
+**`evaluate`** reads the stage on both axes against the model it started from:
 
 ```
 | metric               | before | after |     Δ% |
@@ -101,23 +73,34 @@ epoch it bottomed at>`. `evaluate` prints:
 | domain               |  23.30 | 12.78 | -45.1% |
 ```
 
-Add `--compare-unanchored` for the λ = μ = 0 control as a third column, and `--n-windows none`
-offline (the general axis reads WikiText-2 from the Hub). Full page:
-[docs/quickstart.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/quickstart.md);
-the Python flow as a script:
+That table is this package's own verification run on Qwen3-0.6B (2026-09-07), which predates 0.2.0
+and so trained on the raw corpus alone. Add `--compare-unanchored` for the λ = μ = 0 control as a
+third column, and `--n-windows none` offline (the general axis reads WikiText-2 from the Hub).
+
+**`fuse`** writes a plain checkpoint with the adapter merged in; it loads with
+`AutoModelForCausalLM.from_pretrained` like any other model.
+
+The same thing from Python, which the CLI calls into and decides nothing differently from:
+
+```python
+from lfa import Workspace
+from lfa.prepare_domain import prepare_domain
+from lfa.supplements import prepare_supplement
+
+ws = Workspace.init("runs/my_domain", "Qwen/Qwen3-0.6B", artifact="self-generated")
+prepare_domain(["papers", "notes.md"], "data/my_domain")      # .txt/.md/.html/.pdf -> .txt files
+prepare_supplement("data/my_domain", "Qwen/Qwen3-0.6B")       # optional: train writes it otherwise
+ws.train("data/my_domain")            # holds a tenth of the documents out; watch that number
+print(ws.evaluate()["table"])         # both axes, against the model the stage started from
+ws.fuse()                             # a plain checkpoint: AutoModelForCausalLM.from_pretrained
+```
+
+Every step, with what it costs and what can go wrong:
+[docs/quickstart.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/quickstart.md); the
+Python flow as a script:
 [`examples/quickstart.py`](https://github.com/sparkdoc/lfa-anchoring/blob/main/examples/quickstart.py).
 
-**No artifact download?**
-`lfa init runs/my_domain --model Qwen/Qwen3-0.6B --artifact self-generated` has the model write
-2,500 documents from its own document boundary and fits p(h) on them (several hours on an 8 GB
-card; not timed). On Qwen3-0.6B that artifact matched the real-corpus artifact at every λ tried
-and was at least as good as the published one at the recipe's λ; one model, one seed, one domain.
-On any other model it is the way to a first artifact, and λ is then calibrated against it. `train`
-also writes the domain's question-and-answer supplement with the model before training and mixes
-it in at 0.13 of training tokens, the frame the shipped λ was tuned at; `--no-supplement` trains on
-the raw corpus alone and says so.
-
-## Assemble them: a second domain, and a chain
+## A second domain, and a chain
 
 One extra step between domains. `extend` merges the finished stage into the model and folds the
 domain's activations into `p(h)` as a sample-weighted mixture union — exact, no refit, and it reads
@@ -154,42 +137,39 @@ domains:
 per domain. Details:
 [docs/multi-domain-chains.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/multi-domain-chains.md).
 
-## The artifact
+## The walkthrough notebooks
 
-`lfa list-artifacts` shows what is published for Qwen3-0.6B: the recipe artifact
-(`qwen3-0.6b-gmm1543k-int8`) and a ~1 MB diagonal one kept as a budget floor — a known-inferior
-option that needs its own λ, not a cheaper equivalent. `init --artifact <id>` fetches and verifies
-it; `lfa fetch-artifact <id> --dest artifacts/` fetches it once to share between workspaces. To
-build one for another model, or to rebuild this one:
+**To watch it work rather than read about it**, open
+[`examples/two_domain_walkthrough.ipynb`](https://github.com/sparkdoc/lfa-anchoring/blob/main/examples/two_domain_walkthrough.ipynb):
+Qwen3-0.6B adapted to Darwin, then to a Victorian cookbook, with every stage repeated with the
+anchor off so the control sits beside each number. Across stage 2 the anchored model's Darwin
+perplexity moves 17.45 → 18.92 while the unanchored one's goes to 31.45, having read no Darwin
+either way. Recorded 2026-09-08 with the since-retired published artifact on the raw books alone; a
+run today builds its own artifact and mixes in the supplement, so the numbers will differ. 19
+minutes of training and tables on one RTX 3090, and it downloads what it needs and needs no API
+key.
 
-```bash
-lfa prepare-seed-corpus --out data/seed.jsonl            # the 10:1 pretraining:instruction mix
-lfa build-artifact --model <id> --corpus data/seed.jsonl --out artifacts/mine.pt
-lfa build-artifact --model <id> --self-generated --out artifacts/mine.pt   # or: no download
-```
-
-[docs/rebuilding-the-artifact.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/rebuilding-the-artifact.md)
-covers the build; [docs/adding-a-model.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/adding-a-model.md)
-covers a model that is not Qwen3 (one adapter class, one artifact, one λ calibration). If a fetch
-404s because the repository is still private, pass a local file **with its id** —
-`--artifact /path/to/distribution_stats.pt --artifact-id qwen3-0.6b-gmm1543k-int8` — so the
-recipe's λ is read against the right artifact; the quickstart explains why both are needed.
+A second notebook is optional and continues from the workspace the first leaves behind:
+[`examples/what_the_anchor_does.ipynb`](https://github.com/sparkdoc/lfa-anchoring/blob/main/examples/what_the_anchor_does.ipynb)
+re-runs each control at its own best epoch count, so the gaps above can be split into what is
+dose and what is anchor, and then puts the three models to fixed probes — where the anchored
+model brings natural selection to a question about island species and stops, while the control
+drifts into biogeography on a question about Tokyo.
 
 ## Documentation
 
 | | |
 |---|---|
-| [docs/quickstart.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/quickstart.md) | install, the corpus, the four commands, what a run costs, what a refusal means |
-| [`examples/two_domain_walkthrough.ipynb`](https://github.com/sparkdoc/lfa-anchoring/blob/main/examples/two_domain_walkthrough.ipynb) | the runnable how-to: two domains one after the other, each stage repeated with the anchor off |
-| [`examples/what_the_anchor_does.ipynb`](https://github.com/sparkdoc/lfa-anchoring/blob/main/examples/what_the_anchor_does.ipynb) | optional, continues from it: the controls at their own best dose, and what the models say |
-| [docs/concepts.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/concepts.md) | what the anchor does, what λ and μ are, how a run is read |
+| [docs/quickstart.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/quickstart.md) | the full pipeline, step by step |
+| [docs/preparing-your-data.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/preparing-your-data.md) | formats, cleaning, corpus shapes, the supplement |
+| [docs/the-artifact.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/the-artifact.md) | the self-generated build, the store, and a real-text artifact |
+| [docs/concepts.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/concepts.md) | the building blocks, what the anchor does, what λ and μ are, how a run is read |
 | [docs/recipes.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/recipes.md) | the shipped operating point field by field, and its couplings |
 | [docs/multi-domain-chains.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/multi-domain-chains.md) | second and third domains; what `extend` does, and the `regenerate` route |
 | [docs/adding-a-model.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/adding-a-model.md) | a model that is not Qwen3: adapter, artifact, λ |
-| [docs/rebuilding-the-artifact.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/rebuilding-the-artifact.md) | the seed corpus, the self-generated route, and the build |
 | [docs/faq.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/faq.md) | GPU memory (8 GB cards included), self-generation cost, full weights, reading the general axis, what is not shipped |
-| [docs/verification.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/verification.md) | what was checked against the research code, how, and what came out |
-| [RELEASING.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/RELEASING.md) | how the artifacts and a tag are cut |
+| [`examples/two_domain_walkthrough.ipynb`](https://github.com/sparkdoc/lfa-anchoring/blob/main/examples/two_domain_walkthrough.ipynb) | the runnable how-to: two domains one after the other, each stage repeated with the anchor off |
+| [`examples/what_the_anchor_does.ipynb`](https://github.com/sparkdoc/lfa-anchoring/blob/main/examples/what_the_anchor_does.ipynb) | optional, continues from it: the controls at their own best dose, and what the models say |
 
 ## Tests
 
@@ -211,8 +191,12 @@ and what it changes. Agreement with another implementation is not correctness, a
 reproduces a published number: the paper's headline (domain perplexity 8.76 on Qwen3-0.6B at a
 seed ΔPPL of −10.0 %) is the paper's measurement on the paper's corpus and instruments.
 
-The research code — every arm, ladder and retraction — is a private record and is not
-distributed. This is what survived, ported, tested and documented.
+The recipe's lambda was tuned against an artifact fitted on real text; this package builds an
+artifact from the model's own text instead, which matched it at every lambda tried — one model,
+one seed, one domain.
+
+The research code — every arm, ladder and retraction — is private and is not distributed. This is
+what survived, ported, tested and documented.
 
 ## Citing
 

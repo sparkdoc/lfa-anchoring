@@ -1,5 +1,9 @@
 # Verification: what was checked, and what came out
 
+*A dated record of the 0.1 port (2026-09-07). It predates the self-generated default and the
+retirement of the published artifact it names; the checks it reports are about the method's code,
+which those changes did not touch.*
+
 This package is a port. The method, the recipe and the published `p(h)` artifacts come out of a
 private research repository — the record behind the Layerwise Function Anchoring paper — and the
 question that matters is whether this code still computes what that code computes.

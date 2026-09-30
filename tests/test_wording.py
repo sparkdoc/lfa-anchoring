@@ -10,7 +10,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 #: Where shipped text lives. Tasks that sweep more of the tree extend this.
-SCANNED_ROOTS = ["lfa"]
+SCANNED_ROOTS = ["lfa", "README.md", "RELEASING.md", "docs"]
 
 EXEMPT = {"docs/verification.md"}
 EXEMPT_DIRS = {"docs/superpowers", "__pycache__", ".worktrees"}

@@ -11,11 +11,23 @@ on the hidden states that sub-module actually sees**. Preservation effort then l
 model works rather than uniformly over weight space, and — because "the states it actually sees"
 is captured once, in advance, as a distribution — adaptation itself needs none of the old text.
 
+## The building blocks
+
+| Block | What it is | Where it lives |
+|---|---|---|
+| **Model** | Any causal LM the package has an adapter for (Qwen3 today). Referenced by Hub id or path; never copied. | `lfa.adapters` |
+| **Artifact** | The `p(h)` statistic for that model: per-site mean, covariance basis and K = 32 mixture, int8. Built from the model's own text, kept in the local store and reused by every workspace over that model ([the-artifact.md](the-artifact.md)). | `lfa.artifact` |
+| **Recipe** | The tuned operating point (rank, λ, μ, epochs, schedule) *and what it was tuned against*, so a run that changes rank or artifact is told λ no longer means what it meant. | `lfa.Recipe` |
+| **Corpus** | A flat directory of `.txt` files. `lfa prepare-domain` makes one from text, Markdown, HTML or PDF ([preparing-your-data.md](preparing-your-data.md)). | `lfa.corpus` |
+| **Supplement** | Question-and-answer pairs the model writes over the corpus's training side, mixed in at the recipe's token fraction. They make the domain's knowledge answerable when the model is asked about it; they do not protect skills ([below](#what-the-supplement-does-and-does-not-do)). | `lfa.supplements`, `lfa.selfgen` |
+| **Workspace** | The state machine that holds the others together across domains: which model the next stage adapts, which artifact version it anchors against, and a history entry per stage. | `lfa.Workspace` |
+| **Train / Evaluate / Fuse / Extend** | The four operations on a workspace: adapt one domain; read the stage on both axes; export a plain checkpoint; fold the stage into the model *and* into `p(h)` for the next domain (or `regenerate-artifact`: fold it into the model and refit `p(h)` on that model's own text). | `lfa.train`, `lfa.evaluate` |
+
 ## The distribution p(h)
 
-Run a general-purpose seed corpus through the frozen model once — a downloaded one, or text the
-model writes itself ([rebuilding-the-artifact.md](rebuilding-the-artifact.md#the-self-generated-route))
-— and record, at each anchoring site, what the vectors arriving there look like: a mean, a
+Run text through the frozen model once — this package has the model write it
+([the-artifact.md](the-artifact.md#the-self-generated-artifact)) — and record, at each anchoring
+site, what the vectors arriving there look like: a mean, a
 covariance (kept as a PCA basis with its eigenvalues), and a small mixture fitted in that basis.
 That is the **artifact**. It is a *per-site statistic* over hidden-state vectors — no text, no
 token ids, no ordering, nothing sequence-shaped — and the same file serves every adaptation of that
@@ -32,12 +44,12 @@ The sites, per layer, are the *inputs* of the sub-modules being preserved
 | `pre_lm_head` | `lm_head` | 1024 (stored under layer index = layer count) |
 
 Layer 0's `pre_qkv` is not fitted at all: it is `input_layernorm(embed_tokens(id))`, exactly
-reconstructible from the model's own weights, so the shipped artifact stores no table and
-`Sampler.build_embedding_lookup_from_model` rebuilds it at load time (~300 MB not shipped).
+reconstructible from the model's own weights, so an artifact stores only the token frequencies
+and `Sampler.build_embedding_lookup_from_model` rebuilds the table at load time (~300 MB not
+stored).
 
 **Data-free at adaptation time, not at artifact-build time.** The artifact is built from a corpus
-(on the self-generated route, one the model wrote, so nothing is downloaded — but it is still
-text); what is data-free is every adaptation afterwards, and — in a chain — every *earlier
+(one the model wrote, so nothing is downloaded — but it is still text); what is data-free is every adaptation afterwards, and — in a chain — every *earlier
 domain*, none of which is ever stored or replayed. Say it that way; the unqualified claim is not
 the one this method supports.
 
@@ -74,7 +86,9 @@ one. Three couplings, all enforced as warnings by `Recipe.warnings`:
 * **LoRA rank.** Lower rank ⇒ lower λ. The shipped point is rank 32 at λ = 100,000; at rank 16 the
   measured frontier on a corpus of this kind sits nearer 2·10⁴–5·10⁴.
 * **The artifact.** A sharper or flatter p(h) changes the anchor's scale, so an artifact swap is a
-  re-tune. The recipe records `calibrated_artifact` for exactly this reason.
+  re-tune. The recipe records `calibrated_artifact` for exactly this reason, and for the
+  self-generated artifact it is calibrated against, the frame it was built at
+  (`self_generated_frame`).
 * **The corpus.** A different mix of document lengths or formats is a different regularization
   problem.
 
@@ -87,7 +101,7 @@ under; a knob ported across ranks or schedules measures the port, not the method
 ## The layer schedule is scale compensation
 
 `anchor_end_ratio: 0.1` decays the per-layer weight from 1.0 at layer 0 to 0.1 at the last layer,
-and the weights are normalized to sum to 1 — the convention the published λ is calibrated against,
+and the weights are normalized to sum to 1 — the convention the recipe's λ is calibrated against,
 so changing `normalize` changes what λ means by a factor of the layer count.
 
 It is tempting to read the decay as "anchor early layers hard so the new domain builds on shared
@@ -103,13 +117,12 @@ right.
 A diagonal artifact — per-dimension mean and standard deviation — is about 1 MB and is a *known
 inferior* option rather than a cheap equivalent: the linear sites' inputs are strongly correlated,
 and a diagonal model misprices them by a factor of several, which shows up directly in the anchor
-because the loss scales with the second moment of p(h). The shipped artifact keeps a correlated
-basis and a K = 32 mixture per site instead, quantized blockwise to int8 (~108 MB against ~226 MB
-in fp16, dequantized on load). Both paths add back the **off-basis residual variance** the ~95 %
-basis truncates, so the sampled marginals are right and λ means what it was calibrated to mean.
-
-The registry ships both (`lfa list-artifacts`); the diagonal one is a budget floor and needs its
-own λ.
+because the loss scales with the second moment of p(h). The artifact this package builds keeps a
+correlated basis and a K = 32 mixture per site instead, quantized blockwise to int8 and dequantized
+on load (the real-text Qwen3-0.6B artifact the recipe's λ was first tuned against is ~108 MB int8
+against ~226 MB in fp16). Both kinds add back the **off-basis residual variance** the ~95 % basis
+truncates, so the sampled marginals are right and λ means what it was calibrated to mean. A
+diagonal artifact is not what this package builds, and would need its own λ.
 
 ## Reading a run: two axes, never one
 
@@ -135,19 +148,21 @@ training-side passage and writes six question-and-answer pairs about it, and tho
 `supplement_fraction` (0.13) of the training tokens. The domain content comes from the passage;
 only the question-forming, the answer construction and the assistant's voice come from the model.
 
-**What it does: reachability.** In the LFA record (C12) the supplement's measured job is to make
-the new knowledge answerable in question-and-answer form. The shipped λ was tuned with a
-supplement at 0.13 in the mix, which is why `train` writes one by default.
+**What it does: reachability.** Its measured effect is on whether the domain's knowledge can be
+reached when the model is asked about it: the new knowledge becomes answerable in
+question-and-answer form. The recipe's λ was tuned with a supplement at 0.13 in the mix, which is
+why `train` writes one by default.
 
-**What it does not do: protect skills.** A supplement written in a skill's style does not protect
-that skill: in the record (C14), reasoning-style and instruction-style supplements protected neither
-GSM8K nor IFEval, under any method. LFA's own loss of about 10 points on GSM8K is not repaired by
-self-generated inputs. What holds skills at base in the record is self-generated rehearsal, a
-replay method, which this package does not implement. So read the supplement as what makes the new
-domain reachable in question-and-answer form, and nothing more.
+**What it does not do: protect skills.** A supplement written in a skill's mode left that skill no
+better, measured on instruction following (IFEval) and reasoning (GSM8K), under any method.
+Keeping skills is the anchor's job: with the anchor on, instruction following stayed at the base
+model's level with or without the supplement. LFA's own loss of about 10 points on GSM8K is not
+repaired by self-generated inputs either; rehearsal on model-written text, a replay method, is
+outside this package. So read the supplement as what makes the new domain reachable in
+question-and-answer form, and nothing more.
 
 Scope: one model (Qwen3-0.6B), one seed, one domain, judged by `gpt-5.6-luna@medium`. These are the
-record's measurements, not this package's: the package computes no judged score.
+research runs' measurements, not this package's: the package computes no judged score.
 
 ## Chains: adding a domain without revisiting the last one
 
@@ -215,9 +230,9 @@ perplexity computed locally.
 
 ## Where this sits
 
-The research code behind the paper is a private record of every arm, every retraction and every
-ladder. It is not distributed. This package is the method itself: the training loop, the artifact,
-the recipe and the chain, ported and checked against that record
+The research code behind the paper holds every arm, every retraction and every ladder. It is
+private and not distributed. This package is the method itself: the training loop, the artifact,
+the recipe and the chain, ported and checked against that code
 ([verification.md](verification.md)), with the research-only scaffolding left behind.
 
 Citation: *Layerwise Function Anchoring: Preserving Sub-Module Functions on Sampled Hidden States
