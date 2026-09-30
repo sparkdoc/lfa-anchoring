@@ -5,7 +5,8 @@ hidden-state statistics over a seed corpus; :mod:`~lfa.artifact.fit` turns one s
 into an entry (PCA basis, then a GMM head in it); :mod:`~lfa.artifact.build` runs the three
 end to end and saves the file the anchor samples from; :mod:`~lfa.artifact.extend` adds a later
 domain to a finished artifact without its original corpus; :mod:`~lfa.artifact.fetch` downloads a
-published one and verifies it against the checksum the registry records.
+published one and verifies it against the checksum the registry records; :mod:`~lfa.artifact.store`
+keeps self-generated artifacts keyed on checkpoint and frame, so one is built once and reused.
 """
 
 from .build import build_artifact
@@ -33,6 +34,14 @@ from .schema import (
     site_key,
     validate_against_model,
 )
+from .store import (
+    STORE_ENV,
+    StoreLocked,
+    entry_dir,
+    list_store,
+    obtain_self_generated,
+    store_root,
+)
 
 __all__ = [
     "build_artifact",
@@ -41,6 +50,12 @@ __all__ = [
     "fetch_artifact",
     "list_artifacts",
     "sha256_file",
+    "obtain_self_generated",
+    "list_store",
+    "store_root",
+    "entry_dir",
+    "StoreLocked",
+    "STORE_ENV",
     "ArtifactNotPublished",
     "ChecksumMismatch",
     "fit_domain_gmm",
