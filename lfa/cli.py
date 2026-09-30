@@ -280,9 +280,9 @@ def build_parser() -> argparse.ArgumentParser:
                       help="a Hub id or a local checkpoint path")
     init.add_argument("--artifact", required=True, metavar="self-generated|PATH",
                       help="`self-generated` to have the model write its own corpus and fit "
-                           "p(h) on it (hours on an 8 GB card, once per model: it is kept in "
-                           "the local store, ~/.cache/lfa/artifacts or $LFA_ARTIFACT_STORE, "
-                           "and reused), or the path to an artifact file")
+                           "p(h) on it (about 3 h 40 min on an RTX 3090, once per model: it is "
+                           "kept in the local store, ~/.cache/lfa/artifacts or "
+                           "$LFA_ARTIFACT_STORE, and reused), or the path to an artifact file")
     init.add_argument("--rebuild", action="store_true",
                       help="with --artifact self-generated: build afresh even when the store "
                            "has a matching artifact (the old entry is moved aside, not deleted)")

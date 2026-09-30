@@ -67,9 +67,11 @@ there is no `--need`: each boundary runs a whole self-generated artifact build, 
 build's reservoirs, collected `layer_group_size` layers at a time. With no group size given, the
 self-generated build chooses it from the model's config and the host RAM available when it starts,
 and logs the choice: on the machine this was written on, 7 for Qwen3-0.6B at the 200,000-vector
-reservoir (about 10.7 GiB of reservoirs per group, against about 24 GiB available). The choice is
-not neutral — one torch generator is shared across a group's sites, so grouping changes the
-reservoir draws and the fitted mixtures, though not the exact moments — so the artifact's meta
+reservoir (about 10.7 GiB of reservoirs per group, against about 24 GiB available); on the host
+with 125 GiB of RAM that built the recorded artifact (2026-09-30), 28, every layer in one pass
+(`layer_group_size=28 for Qwen/Qwen3-0.6B: ~42.7 GiB of reservoirs per group against 117.9 GiB available`).
+The choice is not neutral — one torch generator is shared across a group's sites, so grouping
+changes the reservoir draws and the fitted mixtures, though not the exact moments — so the artifact's meta
 records `layer_group_size`, and a rebuild reproduces a file by passing `--layer-group-size` with
 the recorded value ([the-artifact.md](the-artifact.md#host-ram-the-layer-group)).
 
@@ -98,18 +100,23 @@ conda-managed interpreter ships its own headers. `LFA_SKIP_TOOLCHAIN_CHECK=1` si
 
 ## How long does self-generation take?
 
-Timed on an RTX 2070 (8 GB, 2026-09-26), Qwen3-0.6B:
+Qwen3-0.6B, on the card each row names:
 
-| what | size | time |
-|---|---|---|
-| generation | 16 documents × 512 tokens | 54 s |
-| an artifact corpus | 16 raw + 4 chat-format documents | 77 s |
-| a small artifact build | 20k samples per site, K = 4, model loads included | about 3 min |
-| a supplement | about six passages at 6 pairs each, batch 4 | 47 s |
+| what | size | card | time |
+|---|---|---|---|
+| generation | 16 documents × 512 tokens | RTX 2070 (8 GB), 2026-09-26 | 54 s |
+| an artifact corpus | 16 raw + 4 chat-format documents | RTX 2070 (8 GB), 2026-09-26 | 77 s |
+| a small artifact build | 20k samples per site, K = 4, model loads included | RTX 2070 (8 GB), 2026-09-26 | about 3 min |
+| a supplement | about six passages at 6 pairs each, batch 4 | RTX 2070 (8 GB), 2026-09-26 | 47 s |
+| the full frame: generation | 2,500 documents of up to 2,048 tokens | RTX 3090 (24 GB), 2026-09-30 | about 80 min, in two runs with a model load each (26.9 min, interrupted; 53.4 min, resumed) |
+| the full frame: fit | 600k samples per site, K = 32 | RTX 3090 (24 GB), 2026-09-30 | 2 h 22 min: 22 min collecting hidden states, about 2 h 00 min fitting the mixtures on the GPU |
+| the full frame, cold | both of the above | RTX 3090 (24 GB), 2026-09-30 | about 3 h 40 min |
 
-None of those is the recorded frame. The full frame — 2,500 documents of up to 2,048 tokens, then
-the fit at 600k samples per site — takes several hours on an 8 GB card; not timed. A supplement
-costs one generation per 4,000-character passage of the training side (the
+The first four rows are not the recorded frame; the last three are. The full-frame build ran on a
+host with 125 GiB of RAM, which chose one layer group for all 28 layers
+([the-artifact.md](the-artifact.md#host-ram-the-layer-group)), and wrote an artifact of 110.3 MB
+(126 MB for the store entry, corpus included). An 8 GB card has not been measured at the full
+frame. A supplement costs one generation per 4,000-character passage of the training side (the
 default batch is 16 passages), once per corpus and writer: it is cached under
 `<workspace>/supplements/<corpus sha256[:12]>/` (or beside the corpus, in
 `<corpus>.supplement/<corpus sha256[:12]>/`, when it was prepared with the data) and reused while

@@ -357,8 +357,8 @@ class Workspace:
                 is checked against the model when a stage starts.
             artifact: ``"self-generated"`` or the path to an artifact file. ``"self-generated"``
                 has the model write its own corpus and fits p(h) on it
-                (:func:`lfa.artifact.build.build_artifact_self_generated`) -- a GPU job of hours
-                on an 8 GB card, not a cheap init. The build happens in the local store
+                (:func:`lfa.artifact.build.build_artifact_self_generated`) -- a GPU job of about
+                3 h 40 min on an RTX 3090, not a cheap init. The build happens in the local store
                 (:mod:`lfa.artifact.store`), keyed on the checkpoint and the frame, so it is done
                 once per model: a later init over the same model at the same frame copies the
                 finished artifact in, and a build that stopped part-way resumes where it

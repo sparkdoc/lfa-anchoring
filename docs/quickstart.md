@@ -79,8 +79,10 @@ as `artifacts/v1.corpus.jsonl` and its manifest. The workspace records the artif
 `self-generated:<corpus sha256[:12]>`. Move or delete the checkpoint (or a `--recipe` file you
 passed by path) and the workspace will not find it again.
 
-**What it costs.** Several hours on an 8 GB card; not timed ([faq.md](faq.md) has the pieces that
-were timed). It is paid once per model: a second `init` over the same model at the same frame
+**What it costs.** About 3 h 40 min from a cold store on one RTX 3090 (24 GB): about 80 minutes
+for the model to write its 2,500 documents, then 2 h 22 min to fit p(h) on them, on a host with
+125 GiB of RAM. An 8 GB card has not been measured at this frame; [faq.md](faq.md) has the
+smaller pieces that were timed on one. It is paid once per model: a second `init` over the same model at the same frame
 finds the finished artifact in the store and copies it in, logging `Reused the self-generated
 artifact built <date> from <store path>`. `lfa list-artifacts` shows what the store holds: the
 model, the frame (documents × tokens, K), the date it was built, its size and its path, or how far
@@ -214,13 +216,14 @@ For the whole thing worked through on real text — two domains one after the ot
 public-domain books the notebook downloads itself, with **each stage run a second time with the
 anchor off** so the control sits beside every number — open
 [`examples/two_domain_walkthrough.ipynb`](../examples/two_domain_walkthrough.ipynb). It ran end to
-end in 19 minutes on one RTX 3090 (four training runs, two of them controls), plus whatever the
+end in 35.4 minutes on one RTX 3090 (four training runs, two of them controls, and a supplement
+written for each stage), plus whatever the
 model and WikiText-2 cost you on a cold cache and the artifact build when the store has none for
 the model yet. Its corpora and epoch count are demo scale — a
 quarter of the text the recipe was tuned on, a quarter of its epochs — and the notebook says so
 beside every table, so do not read its settings as the recommended ones. Its recorded outputs were
-made on 2026-09-08 with the since-retired published artifact on the raw text alone; re-run today,
-it builds its own artifact and each stage mixes in its supplement, so the numbers will differ.
+made on 2026-09-30 on that card, with the self-generated artifact at the recorded frame (2,500
+documents × 2,048 tokens, K = 32) and the supplement on.
 [`examples/what_the_anchor_does.ipynb`](../examples/what_the_anchor_does.ipynb) is optional and
 picks up the workspace it leaves behind: each control re-run at its own best number of epochs,
 and what the three models say when asked.

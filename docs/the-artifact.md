@@ -72,9 +72,13 @@ refused before any fit: an artifact fitted on it would fail nowhere downstream.
 
 ### What it costs
 
-Several hours on an 8 GB card for the full frame; not timed. [faq.md](faq.md#how-long-does-self-generation-take)
-has the pieces that were timed. The generation survives an interruption
-([below](#durability-and-resume)), so hours already spent are not lost.
+About 3 h 40 min for the full frame from a cold store, on one RTX 3090 (24 GB, 2026-09-30): about
+80 minutes of generation, then 2 h 22 min of fitting — 22 min collecting hidden states and about
+2 h 00 min fitting the mixtures on the GPU — on a host with 125 GiB of RAM. The artifact file is
+110.3 MB, and the store entry, with its corpus, 126 MB. An 8 GB card has not been measured at this
+frame; [faq.md](faq.md#how-long-does-self-generation-take) has the smaller pieces timed on one.
+The generation survives an interruption ([below](#durability-and-resume)), so hours already spent
+are not lost.
 
 The GPU side is otherwise undemanding — the model is loaded in **float32** for the fit,
 deliberately: the artifact is a second-moment estimate and bf16's 8-bit mantissa is a large error
@@ -101,7 +105,10 @@ On the self-generated route no value is needed: the build chooses the group from
 config and the host RAM available when it starts, and logs the choice. On a 28-layer Qwen3-0.6B at
 the 200,000-vector reservoir that was 7 (about 10.7 GiB of reservoirs per group against about
 24 GiB available) on the machine this was written on, and a host with less free memory chooses a
-smaller group.
+smaller group. On the host that built the recorded artifact (125 GiB of RAM, 2026-09-30) it was
+28, every layer in one pass. It logged
+`layer_group_size=28 for Qwen/Qwen3-0.6B: ~42.7 GiB of reservoirs per group against 117.9 GiB available`,
+and the collection that followed logged `Collected 84 sites, 603973 samples at the thinnest site`.
 
 **The group size is part of the build, not only of its memory bill.** One torch generator is
 shared across a group's sites, so grouping changes the reservoir draws and therefore the fitted

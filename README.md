@@ -49,7 +49,8 @@ lfa fuse     --workspace runs/my_domain
 ```
 
 **`init`** creates the workspace and puts its p(h) artifact in place: the model writes 2,500
-documents of its own and p(h) is fitted on them — hours on an 8 GB card, not timed. The result
+documents of its own and p(h) is fitted on them — about 3 h 40 min on one RTX 3090 (24 GB); an
+8 GB card has not been measured. The result
 is kept in a local store, so every later workspace over the same model reuses it
 (`lfa list-artifacts` shows what is there), and a build that was interrupted resumes when the
 same command is run again.
@@ -143,18 +144,18 @@ per domain. Details:
 [`examples/two_domain_walkthrough.ipynb`](https://github.com/sparkdoc/lfa-anchoring/blob/main/examples/two_domain_walkthrough.ipynb):
 Qwen3-0.6B adapted to Darwin, then to a Victorian cookbook, with every stage repeated with the
 anchor off so the control sits beside each number. Across stage 2 the anchored model's Darwin
-perplexity moves 17.45 → 18.92 while the unanchored one's goes to 31.45, having read no Darwin
-either way. Recorded 2026-09-08 with the since-retired published artifact on the raw books alone; a
-run today builds its own artifact and mixes in the supplement, so the numbers will differ. 19
-minutes of training and tables on one RTX 3090, and it downloads what it needs and needs no API
-key.
+perplexity moves 17.07 → 18.60 while the unanchored one's goes to 33.56, having read no Darwin
+either way. Recorded 2026-09-30 on one RTX 3090 with the self-generated artifact at the recorded
+frame (2,500 documents × 2,048 tokens, K = 32) and the supplement on; one seed, one run per cell.
+35.4 minutes of training and tables on that card once the artifact is in the store, and it
+downloads what it needs and needs no API key.
 
 A second notebook is optional and continues from the workspace the first leaves behind:
 [`examples/what_the_anchor_does.ipynb`](https://github.com/sparkdoc/lfa-anchoring/blob/main/examples/what_the_anchor_does.ipynb)
 re-runs each control at its own best epoch count, so the gaps above can be split into what is
-dose and what is anchor, and then puts the three models to fixed probes — where the anchored
-model brings natural selection to a question about island species and stops, while the control
-drifts into biogeography on a question about Tokyo.
+dose and what is anchor — at its own dose each control fits its new domain more closely than the
+anchored run and keeps less of the rest — and then puts the three models to fixed probes, whose
+answers, at this scale, do not show that difference.
 
 ## Documentation
 

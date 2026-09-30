@@ -158,8 +158,9 @@ exercises the machinery and nothing else.
 For a chain on text that means something, with numbers you can read,
 [`examples/two_domain_walkthrough.ipynb`](../examples/two_domain_walkthrough.ipynb) runs two real
 domains — two public-domain books it downloads itself — with each stage repeated at λ = μ = 0, so
-what `extend` and the stage-2 λ actually bought is measured rather than asserted. 19 minutes on
-one RTX 3090, at demo scale rather than the recipe's. Its optional companion,
+what `extend` and the stage-2 λ actually bought is measured rather than asserted. 35.4 minutes on
+one RTX 3090, recorded with the self-generated artifact at the recorded frame already in the store
+and the supplement on, at demo scale rather than the recipe's. Its optional companion,
 [`examples/what_the_anchor_does.ipynb`](../examples/what_the_anchor_does.ipynb), re-runs each
 control at its own best number of epochs, which is not the same answer.
 

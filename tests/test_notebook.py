@@ -19,10 +19,13 @@ them still do. None of that needs a GPU, a network or a minute.
 
 The **`notebook` marker** actually executes them, with nothing stubbed: it builds or reuses the
 self-generated artifact, downloads the two books, trains, and writes a checkpoint. That is the only
-thing that can say the walkthrough still works, and it costs what the walkthrough costs -- about
-19 minutes on one RTX 3090 for the walkthrough, plus roughly another 20 for the companion (two
-more training runs and 54 generations), plus roughly 1.4 GB of downloads on a cold cache, plus
-the artifact build on a cold store. The default `addopts` deselects it, like `gpu` and `slow`::
+thing that can say the walkthrough still works, and it costs what the walkthrough costs. When
+they were recorded (2026-09-30, one RTX 3090, the self-generated artifact at the recorded frame
+already in the store, the supplement on) the walkthrough took 35.4 minutes and the companion 19.1
+(two more training runs and 54 generations); add roughly 1.4 GB of downloads on a cold cache,
+and the artifact build on a cold store (about 3 h 40 min on that card). The companion's test
+executes the walkthrough again before itself, so the tier took 1 h 31 min (5454.68 s) on that
+card. The default `addopts` deselects it, like `gpu` and `slow`::
 
     pytest tests/test_notebook.py -m notebook -q
 
