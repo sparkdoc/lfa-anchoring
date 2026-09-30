@@ -1,11 +1,12 @@
 """The domain supplement, written by the entry model from the domain's own passages.
 
-Self-distillation of SKILL, not of knowledge: the writer reads each passage in context, so the
-domain content comes from the corpus and only question-forming, answer construction and
-third-person voice come from the model. The research record (C12) measured the resulting
-supplement about 0.1 below a frontier-written one on the judge, and found its job to be
-*reachability* -- the new knowledge becomes answerable in question-and-answer form -- not the
-protection of any skill (C14). One model, one seed.
+The model contributes the form, not the knowledge: the writer reads each passage in context, so
+the domain content comes from the corpus and only question-forming, answer construction and
+third-person voice come from the model. In the research runs the resulting supplement scored
+about 0.1 below a frontier-written one on the judge, and its effect was on *reachability* -- the
+new knowledge becomes answerable when the model is asked about it. It does not protect skills: a
+supplement written in a skill's mode left that skill no better (instruction following and
+reasoning); keeping skills is the anchor's job. One model (Qwen3-0.6B), one seed, one domain.
 
 Two deliberate deviations from the research frame: the template says "about a text on
 {domain}" where the research one said "about a philosophy text", and there is no contamination
@@ -31,8 +32,7 @@ __all__ = ["GENERATE_TEMPLATE", "SupplementOptions", "NoPairsWritten", "render_t
            "template_sha256", "chunk_document", "chunk_passages", "parse_assistant_turn",
            "parse_qa_pairs", "write_supplement"]
 
-# The research template (mr-fusion `prepare_domain_qa.GENERATE_PROMPT`) with the one change
-# recorded in the module docstring.
+# The research code's template, with the one change recorded in the module docstring.
 GENERATE_TEMPLATE = """You are creating training data that teaches a small language model to \
 ANSWER QUESTIONS about a text on {domain} in a helpful assistant's voice.
 
@@ -68,7 +68,8 @@ class NoPairsWritten(ValueError):
 
 @dataclass
 class SupplementOptions:
-    """The recorded frame of the self-written supplement (C12)."""
+    """The recorded frame of the self-written supplement (one model, Qwen3-0.6B; one seed; one
+    domain)."""
     pairs_per_passage: int = 6
     passage_chars: int = 4000
     min_passage_chars: int = 200

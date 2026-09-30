@@ -1,14 +1,15 @@
 """Blockwise int8 (de)quantization for p(h) distribution artifacts — a STORAGE format.
 
-The shipped LFA artifact is dominated by the fp16 PCA basis (`pca_components`, ~208 MB for
-qwen3-0.6b-gmm1543k) plus the GMM parameters (~18 MB). Blockwise-int8 halves those to ~113 MB
-with ~1% covariance error (measured: int8 blockwise-64 = 1.03%, the best 8-bit option — FP8 is
-4× worse because orthonormal basis entries have no dynamic range for exponent bits to spend).
+An LFA artifact is dominated by the fp16 PCA basis (`pca_components`, ~208 MB for the real-text
+qwen3-0.6b artifact the recipe's lambda was tuned against) plus the GMM parameters (~18 MB).
+Blockwise-int8 halves those to ~113 MB with ~1% covariance error (measured: int8 blockwise-64 =
+1.03%, the best 8-bit option — FP8 is 4× worse because orthonormal basis entries have no dynamic
+range for exponent bits to spend).
 
 This is quantization for STORAGE ONLY: the artifact is dequantized once, on load
 (`dequantize_params`), back to its original dtype in memory. The hot sampling path is untouched,
 so a run using the int8 file is identical to the fp16 run up to the ~1% round-trip error — which
-is exactly the quantity the validation training arm tests downstream.
+is exactly the quantity the validation training run tests downstream.
 
 Format: a quantized field is a dict `{"__q8__": True, "q8": int8[n_blocks, block],
 "scales": fp16[n_blocks], "shape": ..., "numel": ..., "block": ..., "dtype": ...}`.

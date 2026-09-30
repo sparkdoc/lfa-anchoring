@@ -46,8 +46,9 @@ class SiteStats:
 
     Args:
         reservoir_size: how many raw vectors to keep for the GMM fit.
-        dtype: storage dtype of the reservoir. float16 halves its memory (the shipped
-            qwen3-0.6b artifact was collected that way); float32 keeps the samples exact.
+        dtype: storage dtype of the reservoir. float16 halves its memory (the artifacts the
+            recipe's lambda was measured against were collected that way); float32 keeps the
+            samples exact.
         generator: RNG for the reservoir's replacement draws. ``None`` uses the global RNG.
 
     Attributes:

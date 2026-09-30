@@ -376,7 +376,7 @@ def build_parser() -> argparse.ArgumentParser:
     regen = subcommands.add_parser(
         "regenerate-artifact",
         help="fold the trained stage into the model and fit a fresh p(h) on that model's own "
-             "text (the alternative to extend; the C15 route)")
+             "text (the alternative to extend; measured on one configuration: rank 4, one seed)")
     _add_workspace(regen)
     _add_device(regen)
     regen.set_defaults(handler=_regenerate_artifact)
@@ -434,7 +434,7 @@ def build_parser() -> argparse.ArgumentParser:
     source.add_argument("--self-generated", dest="self_generated", action="store_true",
                         help="write the corpus with the model itself first: 2,500 documents "
                              "from its bare document-start token, then fit at 600k samples "
-                             "per site (the frame of the C12 artifact). No download.")
+                             "per site (the frame of the recorded artifact). No download.")
     build.add_argument("--out", required=True, metavar="PATH",
                        help="where to write distribution_stats.pt")
     build.add_argument("--n-raw", dest="n_raw", type=int, default=2500, metavar="N",

@@ -236,9 +236,10 @@ def artifact_carries_base_count(base: dict, gmm_keys: list[str]) -> bool:
 def _resolve_base_count(base: dict, gmm_keys: list[str], base_n: int | None) -> int | None:
     """The base's per-block sample count, or ``None`` when the blocks already carry their own.
 
-    The n-weighted merge needs a count on every block. A built artifact has one per site; the
-    shipped qwen3-0.6b artifact predates the field entirely and carries its count only in
-    ``__meta__`` (or nowhere, in which case the caller must say).
+    The n-weighted merge needs a count on every block. A built artifact has one per site; an
+    artifact from before the field existed (the real-text qwen3-0.6b one the recipe's lambda was
+    tuned against, for one) carries its count only in ``__meta__`` (or nowhere, in which case the
+    caller must say).
     """
     if base_n is not None:
         return base_n
@@ -251,8 +252,8 @@ def _resolve_base_count(base: dict, gmm_keys: list[str], base_n: int | None) -> 
         return int(meta_total)
     raise ValueError(
         "The base artifact carries no per-site n_samples and no __meta__.n_samples_total, so the "
-        "domain cannot be weighted by its sample share. Pass base_n (the shipped qwen3-0.6b "
-        "artifact was collected over 1_543_040 vectors per site)."
+        "domain cannot be weighted by its sample share. Pass base_n: the number of vectors per "
+        "site the base artifact was collected over."
     )
 
 
@@ -282,10 +283,10 @@ def extend_artifact(
         corpus_path: the new domain's training corpus, read exactly as training reads it.
         out_path: where to write the extended artifact.
         base_n: sample count to attribute to each base block, when the base carries none. Read
-            from ``__meta__["n_samples_total"]`` when absent there (the shipped qwen3-0.6b
-            artifact: 1_543_040); passing it explicitly overrides both. It sets the domain's
-            weight share, ``need / (base_n + need)``, so a wrong value mis-weights the mixture
-            without failing.
+            from ``__meta__["n_samples_total"]`` when absent there (the real-text qwen3-0.6b
+            artifact the recipe's lambda was tuned against: 1_543_040); passing it explicitly
+            overrides both. It sets the domain's weight share, ``need / (base_n + need)``, so a
+            wrong value mis-weights the mixture without failing.
         k_domain: components to fit per site for the new domain, capped at one per 200 samples.
         need: activations to collect per site.
         seq_len: chunk length, which should be the one the stage trains at.

@@ -551,7 +551,7 @@ def _frozen_view(module: nn.Module, cache: dict[int, object] | None = None):
     resolve every anchored sub-module of every layer on every step -- so deciding again on each
     access costs a full walk of the model per accessor call per step. Measured at the shipped
     recipe on Qwen3-0.6B (RTX 3090, rank 32, batch 6 x 512, 16 anchor samples): 0.7228 s/step
-    deciding each time against 0.7087 s/step with this lookup, against a ``separate`` arm at
+    deciding each time against 0.7087 s/step with this lookup, against a ``separate`` run at
     0.7018 -- 2% of the whole run for a question whose answer cannot change.
 
     Keying by ``id`` is sound because everything the cache answers for is reachable from the

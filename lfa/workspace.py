@@ -99,8 +99,9 @@ CHAIN_ARTIFACT_ROUTES = ("extend", "regenerate")
 #: Appended to a recipe's self-generated note when the artifact was regenerated between stages:
 #: the evidence for that route is one configuration, so the multiplier has not been measured on it.
 REGENERATED_NOTE = (
-    " A regenerated artifact is the C15 route (rank 4, one seed): the stage multiplier is a "
-    "starting point there, not a calibrated constant."
+    " Regenerating the artifact from each stage's model was measured on one configuration "
+    "(rank 4, one seed): the stage multiplier is a starting point there, not a calibrated "
+    "constant."
 )
 
 #: Logged once per run whose corpus loader trains short documents whole (the default). Said out
@@ -1119,14 +1120,16 @@ class Workspace:
         """Fold the last stage into the model, then fit p(h) FROM SCRATCH on the fused model's
         own text: the alternative to :meth:`extend` between two domains.
 
-        The C15 frame: 2,500 documents from the document-boundary token, no chat-format share,
-        600k samples per site, K=32, no base component and no merge. The record (rank 4, one
-        seed, three domains) found a chain anchored this way as good as one on the real seed
-        corpus on every judge, perplexity and skill benchmark, with the generated text drifting
-        toward the last domain (two-thirds after the first, six-sevenths after the second).
+        The recorded frame: 2,500 documents from the document-boundary token, no chat-format
+        share, 600k samples per site, K=32, no base component and no merge. In the research runs
+        (one model, Qwen3-0.6B; rank 4, one seed, three domains) a chain anchored this way was as
+        good as one on the real seed corpus on every judge, perplexity and skill benchmark, with
+        the generated text drifting toward the last domain (two-thirds after the first,
+        six-sevenths after the second).
 
         Args:
-            selfgen: the generation and fit frame (default :class:`SelfGenOptions`, the record).
+            selfgen: the generation and fit frame (default :class:`SelfGenOptions`, the recorded
+                frame).
                 Its ``n_chat`` is forced to 0 and its ``device`` to ``device``'s primary device.
             device: where to generate and fit.
 
@@ -1419,8 +1422,9 @@ class Workspace:
 
         The top-level ``artifact`` field picks how each domain is folded into p(h), once for the
         whole chain: ``extend`` (:meth:`extend`, the paper's protocol) adds the domain to the
-        artifact; ``regenerate`` (:meth:`regenerate_artifact`, the C15 route) fits a fresh one
-        on the fused model's own text. It is refused on a domain entry.
+        artifact; ``regenerate`` (:meth:`regenerate_artifact`: regenerating the artifact from each
+        stage's model, measured on one configuration -- rank 4, one seed) fits a fresh one on
+        the fused model's own text. It is refused on a domain entry.
 
         Args:
             spec_path: the YAML file.

@@ -1,6 +1,6 @@
 """Data-free merge of diagonal-Gaussian p(h) moments, for continual anchoring.
 
-Adding a domain to a shipped p(h) artifact does NOT require the original corpus. The artifact
+Adding a domain to an existing p(h) artifact does NOT require the original corpus. The artifact
 already carries the base distribution as per-sub-module (mean, std) over ``n`` samples; to account
 for ``base+A`` we sample only the new domain the user owns (``m`` samples, collected through the
 *fused* model) and superpose its moments. Because moments are a sufficient statistic, this makes
@@ -57,7 +57,7 @@ def is_moment_block(value) -> bool:
 def annotate_count(stats: dict, n_samples: int) -> dict:
     """Attach ``n_samples`` to every sampled-sub-module block in-place (self-describing artifact).
 
-    For the legacy shipped artifact, whose count lived only in the sibling coverage report.
+    For a legacy artifact whose count lived only in the sibling coverage report.
     Non-moment entries (embedding_lookup, metadata) are left untouched. Returns ``stats``.
     """
     for value in stats.values():

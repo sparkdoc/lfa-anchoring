@@ -1550,4 +1550,5 @@ def test_regenerate_warns_off_calibration_and_continues(tmp_path, base_dir, corp
     with caplog.at_level("WARNING", logger="lfa.workspace"):
         entry = ws.train(corpus_b, recipe=recipe, device="cpu")
     assert entry["stage"] == 2
-    assert any("C15" in r.getMessage() and "rank 4" in r.getMessage() for r in caplog.records)
+    assert any("Regenerating the artifact" in r.getMessage() and "rank 4" in r.getMessage()
+               for r in caplog.records)

@@ -16,9 +16,9 @@ The instruction rows are rendered with the model's chat template when the corpus
 p(h) estimation -- the hidden states of a formatted exchange are not those of the same words run
 together -- which is why the pair is kept in two fields rather than joined here.
 
-**The shipped artifact's corpus.** The published ``gmm1543k`` artifact was estimated on 10,629
-documents in exactly this 10:1 shape (the "1543k" counts hidden-state samples per site, not
-documents). Two levels are involved, and they carry different numbers:
+**The recorded corpus.** The real-text artifact the recipe's lambda was tuned against was
+estimated on 10,629 documents in exactly this 10:1 shape (its 1.54 M samples per site count
+hidden states, not documents). Two levels are involved, and they carry different numbers:
 
 * the **download targets** -- 12,000 pretraining documents and 20,000 instruction pairs, the
   defaults of :func:`prepare_seed_corpus`. The pretraining target is a per-source *cap* of
@@ -44,7 +44,7 @@ split roughly three-quarters arXiv, so scarcity cannot be the explanation there.
 counts as a record of the corpus that was built, and expect a rebuild to drift as the upstream
 sample moves. The instruction side is cut from ~20,000 available pairs to the 966 the 10:1 ratio
 allows, so its per-source counts are a uniform draw from the pool rather than a cap. A rebuild
-will not reproduce the shipped corpus byte for byte -- the upstream datasets move, and the
+will not reproduce the recorded corpus byte for byte -- the upstream datasets move, and the
 sampling RNG is this module's own -- but it reproduces its *composition*, which is what p(h)
 depends on.
 """
@@ -74,7 +74,8 @@ class SourceUnavailable(RuntimeError):
     last line of a traceback.
     """
 
-# The composition of the corpus behind the shipped gmm1543k artifact (documents per source).
+# The composition of the corpus behind the real-text artifact the recipe's lambda was tuned
+# against (documents per source).
 SHIPPED_COMPOSITION: dict[str, dict[str, int]] = {
     "pretraining": {
         "redpajama_arxiv": 1524,
@@ -133,7 +134,7 @@ def is_stackexchange(example: dict) -> bool:
 
 def is_book(example: dict) -> bool:
     """Any row whose metadata mentions "book" anywhere -- book titles, but a ``facebook.com`` URL
-    too, which therefore matches :func:`is_web` as well. Kept exactly as the shipped corpus was
+    too, which therefore matches :func:`is_web` as well. Kept exactly as the recorded corpus was
     built: tightening it would change the mixture p(h) was estimated on."""
     return "book" in str(parse_meta(example)).lower()
 
@@ -423,7 +424,7 @@ def weighted_mix(pretraining_rows: Sequence[dict], instruction_rows: Sequence[di
 
     The scarcer side sets the scale: with 10:1 and 500 pretraining rows only 50 instruction rows
     fit, and with only 30 instruction rows only 300 pretraining rows are used. Each side is then
-    sampled uniformly (no score weighting: the shipped corpus used none) and the result shuffled,
+    sampled uniformly (no score weighting: the recorded corpus used none) and the result shuffled,
     so the two kinds are interleaved rather than concatenated. Deterministic in ``seed``.
     """
     rng = random.Random(seed)
@@ -471,10 +472,11 @@ def prepare_seed_corpus(
 ) -> Path:
     """Download, mix at 10:1 and write the seed corpus; return the JSONL path.
 
-    The defaults are the **download targets** that realize the shipped ``gmm1543k`` corpus:
-    12,000 pretraining documents (a per-source cap of 2,000) and 20,000 instruction pairs. What
-    lands is smaller -- two pretraining sources came up below the cap, and the 10:1 mix then
-    trims the instruction side -- giving the shipped 9,663 + 966 of
+    The defaults are the **download targets** that realized the corpus behind the real-text
+    artifact the recipe's lambda was tuned against: 12,000 pretraining documents (a per-source
+    cap of 2,000) and 20,000 instruction pairs. What lands is smaller -- two pretraining sources
+    came up below the cap, and the 10:1 mix then trims the instruction side -- giving the
+    recorded 9,663 + 966 of
     :data:`SHIPPED_COMPOSITION`, which is a record rather than a target. Read the
     realized per-source counts off the ``.stats.json`` sidecar written beside the corpus, not off
     the targets.

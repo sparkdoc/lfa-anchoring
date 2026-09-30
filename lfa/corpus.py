@@ -483,9 +483,9 @@ def _extract_text(obj: Any, tokenizer=None) -> str | None:
 def render_pair(tokenizer, prompt: str, response: str) -> str:
     """One question-and-answer pair as a full chat turn, ``enable_thinking=False``.
 
-    Qwen3 then inserts the empty ``<think>\\n\\n</think>`` block that the research training
-    format carries (mr-fusion ``prepare_domain_qa.qa_to_chat_text``), so a written pair is
-    trained in the format the model answers in. Without a template the two are joined plainly.
+    Qwen3 then inserts the empty ``<think>\\n\\n</think>`` block that the research code's training
+    format carries, so a written pair is trained in the format the model answers in. Without a
+    template the two are joined plainly.
     """
     messages = [{"role": "user", "content": prompt}, {"role": "assistant", "content": response}]
     try:

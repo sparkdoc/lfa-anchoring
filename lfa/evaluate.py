@@ -3,7 +3,7 @@
 An LFA run is read on two axes at once, and one number alone says nothing:
 
 * **general** -- WikiText-2 test perplexity, the *preservation* axis. It is measured with the
-  sliding window the research record was produced under (window 2048, stride 512, labels
+  sliding window the research runs used (window 2048, stride 512, labels
   ``-100`` outside the stride so every token is scored exactly once with the most context
   available to it). A different window gives a different number, so the loop here is a
   deliberate port rather than a re-derivation: the paper's seed-drift figures are only

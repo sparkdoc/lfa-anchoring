@@ -1,13 +1,13 @@
 """One batched sampling loop, and the text-level helpers around it.
 
-Ported from the research generator (mr-fusion ``scripts/prepare_selfgen_corpus.py``). The one
-rule that matters most is in :func:`generate_texts`: **every truncation knob is passed
-explicitly**. ``model.generate`` inherits any knob it is not given from the checkpoint's
-``generation_config.json``, and Qwen3's ships ``top_k: 20`` -- so passing only temperature and
-top-p yields top-20 sampling out of a 151,936-token vocabulary while looking untruncated
-(measured in the research record, 2026-09-09: lifting it took distinct sampled tokens from 817
-to 1,326 at a fixed seed). ``top_k=0`` and ``min_p=0.0`` disable truncation;
-``repetition_penalty=1.0`` keeps the chain a true sample of the model's distribution.
+Ported from the research code's generator. The one rule that matters most is in
+:func:`generate_texts`: **every truncation knob is passed explicitly**. ``model.generate``
+inherits any knob it is not given from the checkpoint's ``generation_config.json``, and Qwen3's
+ships ``top_k: 20`` -- so passing only temperature and top-p yields top-20 sampling out of a
+151,936-token vocabulary while looking untruncated (measured in the research runs, 2026-09-09:
+lifting it took distinct sampled tokens from 817 to 1,326 at a fixed seed). ``top_k=0`` and
+``min_p=0.0`` disable truncation; ``repetition_penalty=1.0`` keeps the chain a true sample of the
+model's distribution.
 
 Reproducibility: ``transformers.generate`` takes no private generator, so each batch seeds
 torch's global RNG from ``(seed, batch_index)``; a rebuild with the same seed and batch size
@@ -130,7 +130,7 @@ def clean_raw(text: str, markers: Iterable[str]) -> str:
 
 
 def drop_burn_in(text: str, tokenizer, n_tokens: int) -> str:
-    """Discard the first ``n_tokens`` of a sample so the record does not depend on the prefix.
+    """Discard the first ``n_tokens`` of a sample so the kept text does not depend on the prefix.
 
     An empirical decorrelation, not a mixing guarantee; the recorded frame uses 0.
     """

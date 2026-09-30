@@ -95,9 +95,9 @@ def build_artifact(
         quantize: store the large fields blockwise-int8 (halves the file; dequantized on load).
         device: device to run collection on.
         seed: base seed -- the reservoir's draws and each site's GMM initialization derive from it.
-        dtype: storage dtype of the retained reservoir samples. fp16 (the default, and what the
-            shipped qwen3-0.6b artifact used) halves the figures below; fp32 keeps the samples
-            exact and doubles them.
+        dtype: storage dtype of the retained reservoir samples. fp16 (the default, and what a
+            self-generated build at the recipe's frame uses) halves the figures below; fp32 keeps
+            the samples exact and doubles them.
         provenance: recorded in the meta block. :data:`~lfa.artifact.schema.SELF_GENERATED` when
             ``corpus_path`` is text the model wrote (see :func:`build_artifact_self_generated`);
             ``None`` for real text.
