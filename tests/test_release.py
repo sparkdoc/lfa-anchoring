@@ -27,7 +27,7 @@ ALLOWED = {"RELEASING.md", "tests/test_release.py"}
 SCANNED = {".py", ".md", ".toml", ".cfg", ".yaml", ".yml", ".txt", ".in"}
 
 SKIPPED_DIRS = {".git", ".venv", "venv", "build", "dist", "__pycache__", ".pytest_cache",
-                "_runs", "fixtures"}
+                "_runs", "fixtures", ".worktrees"}
 
 
 def scan_for(needle: str, root: Path = REPO_ROOT) -> dict[str, int]:
@@ -50,32 +50,18 @@ def scan_for(needle: str, root: Path = REPO_ROOT) -> dict[str, int]:
 
 @pytest.mark.release
 def test_no_release_placeholder_survives_anywhere_that_ships():
-    """`<org>` in a published link is a dead link, in the README, the metadata and the registry.
+    """`<org>` in a published link is a dead link, in the README and the metadata.
 
-    The registry's URLs are what `fetch-artifact` downloads from; `[project.urls]` and the
-    README's absolute links are what a PyPI visitor follows. All three carry the same
-    placeholder, and `RELEASING.md` step 4 replaces them in one edit -- this is what says it
+    `[project.urls]` and the README's absolute links are what a PyPI visitor follows. Both carry
+    the same placeholder, and `RELEASING.md` replaces them in one edit -- this is what says it
     happened.
     """
     remaining = scan_for(PLACEHOLDER)
     assert not remaining, (
         "the release placeholder is still in "
         + ", ".join(f"{path} ({count}x)" for path, count in remaining.items())
-        + ". RELEASING.md step 4 replaces it in lfa/artifact/fetch.py, pyproject.toml and "
-          "README.md; until it is replaced, every published link and every artifact URL is dead."
-    )
-
-
-@pytest.mark.release
-def test_the_artifact_registry_carries_real_checksums():
-    """The other half of the same step: a placeholder digest means nothing can be fetched."""
-    from lfa.artifact.fetch import ARTIFACTS, PLACEHOLDER_SHA256
-
-    unpublished = sorted(name for name, entry in ARTIFACTS.items()
-                         if entry["sha256"] == PLACEHOLDER_SHA256)
-    assert not unpublished, (
-        f"{', '.join(unpublished)} still carry the placeholder checksum, so `lfa fetch-artifact` "
-        "refuses them. RELEASING.md steps 3 and 4: upload the assets, then paste the digests."
+        + ". RELEASING.md replaces it in pyproject.toml and README.md; until it is replaced, "
+          "every published link is dead."
     )
 
 
@@ -96,22 +82,3 @@ def test_the_scan_has_teeth(tmp_path):
 
     assert scan_for(PLACEHOLDER, tmp_path) == {"README.md": 2}
     assert scan_for("nothing like this", tmp_path) == {}
-
-
-def test_todays_repository_is_where_the_gate_expects_it():
-    """And the same scanner, pointed at the real tree, sees the placeholder that is really there.
-
-    Not an assertion about *which* files -- that would need editing at release. Just that the
-    thing the gate exists to catch is currently catchable, so the gate is not passing by
-    accident on an empty scan.
-    """
-    from lfa.artifact.fetch import ARTIFACTS, PLACEHOLDER_SHA256
-
-    unfilled = scan_for(PLACEHOLDER)
-    checksums = [entry["sha256"] for entry in ARTIFACTS.values()]
-    # Exactly one of two states, and both are consistent: pre-release (placeholders everywhere)
-    # or released (none anywhere, and real digests).
-    if PLACEHOLDER_SHA256 in checksums:
-        assert unfilled, "the registry is unpublished, so the links should still carry <org>"
-    else:
-        assert not unfilled, "the registry is published, so nothing should still carry <org>"

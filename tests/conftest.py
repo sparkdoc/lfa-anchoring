@@ -83,8 +83,8 @@ def tiny_artifact(tmp_path_factory):
 
 
 # ============================================================================================
-# A workspace-sized setup: the tiny model as a checkpoint, a corpus, a recipe, and a registry
-# that serves the fixture artifact. Shared by `test_workspace.py` and `test_cli.py`, which
+# A workspace-sized setup: the tiny model as a checkpoint, a corpus and a recipe; the fixture
+# artifact is passed to `init` as a file. Shared by `test_workspace.py` and `test_cli.py`, which
 # exercise the same state machine through two different front doors.
 # ============================================================================================
 
@@ -138,24 +138,3 @@ def tiny_recipe(base_dir, **overrides):
     )
     kwargs.update(overrides)
     return Recipe(**kwargs)
-
-
-@pytest.fixture(scope="module")
-def registry(tiny_artifact):
-    """The "tiny" artifact, published in the registry and served by a local copy."""
-    import lfa.artifact.fetch as fetch_module
-    from lfa.artifact.fetch import ARTIFACTS, sha256_file
-
-    _, path = tiny_artifact
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setitem(ARTIFACTS, "tiny", {
-            "model_id": "tiny",
-            "url": "https://example.invalid/artifacts-v1/tiny.pt",
-            "sha256": sha256_file(path),
-            "n_samples_total": 1000,
-            "kind": "test fixture",
-            "size_mb": 1,
-        })
-        patch.setattr(fetch_module, "_download_with_requests",
-                      lambda url, dest: dest.write_bytes(path.read_bytes()))
-        yield ARTIFACTS["tiny"]

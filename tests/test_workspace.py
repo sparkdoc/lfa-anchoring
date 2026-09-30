@@ -5,13 +5,14 @@ seconds of training over eight short documents. What is being tested is the stat
 bookkeeping -- which model each stage starts from, which artifact version it anchors against, what
 lands in `history.json`, and the guards that keep a chain in order -- not convergence.
 
-The registry is monkeypatched with a "tiny" entry whose checksum is the fixture artifact's real
-digest, and the shipped downloader is replaced by a copy, so `Workspace.init` exercises the real
-fetch path offline.
+Almost every workspace here starts from the fixture artifact passed as a file
+(`TINY_ARTIFACT_PATH`), which is recorded by that path. The self-generated route is exercised with
+the store's builder (or the store itself) monkeypatched, so no test generates text.
 """
 
 import copy
 import dataclasses
+import hashlib
 import json
 from pathlib import Path
 
@@ -22,7 +23,6 @@ from transformers import AutoModelForCausalLM
 
 import lfa.workspace as workspace_module
 from lfa import Recipe, Workspace
-from lfa.artifact.fetch import ARTIFACTS, sha256_file
 from lfa.artifact.schema import load_artifact
 from lfa.corpus import load_corpus
 from lfa.evaluate import domain_perplexity
@@ -38,16 +38,32 @@ NEED, K_DOMAIN = 400, 2
 
 # ------------------------------------------------------------------------------------ fixtures
 #
-# `base_dir`, `corpus_a`, `corpus_b`, `registry` and the `tiny_recipe` helper live in
-# `tests/conftest.py`: `test_cli.py` drives the same state machine through the command line and
-# needs exactly the same setup.
+# `base_dir`, `corpus_a`, `corpus_b` and the `tiny_recipe` helper live in `tests/conftest.py`:
+# `test_cli.py` drives the same state machine through the command line and needs exactly the same
+# setup.
+
+#: The fixture artifact's path, set once per module by `_tiny_artifact_path` below. A workspace
+#: records a file artifact by the path it was passed as, so a test that wants the recipe silent
+#: declares `calibrated_artifact=TINY_ARTIFACT_PATH`.
+TINY_ARTIFACT_PATH: str = ""
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _tiny_artifact_path(tiny_artifact):
+    global TINY_ARTIFACT_PATH
+    TINY_ARTIFACT_PATH = str(tiny_artifact[1])
+
+
+def sha256_file(path) -> str:
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
 
 def new_workspace(path, base_dir, **overrides) -> Workspace:
-    return Workspace.init(path, str(base_dir), artifact="tiny", **overrides)
+    return Workspace.init(path, str(base_dir), artifact=TINY_ARTIFACT_PATH, **overrides)
 
 
 @pytest.fixture(scope="module")
-def flow(tmp_path_factory, registry, base_dir, corpus_a, corpus_b):
+def flow(tmp_path_factory, base_dir, corpus_a, corpus_b):
     """A whole two-domain chain, run once: init -> train A -> extend -> train B."""
     root = tmp_path_factory.mktemp("workspace")
     ws = new_workspace(root, base_dir)
@@ -59,166 +75,160 @@ def flow(tmp_path_factory, registry, base_dir, corpus_a, corpus_b):
 
 # ---------------------------------------------------------------------------------------- init
 
-def test_init_writes_the_state_the_history_and_the_first_artifact(tmp_path, registry, base_dir):
+def test_init_writes_the_state_the_history_and_the_first_artifact(tmp_path, base_dir):
     ws = new_workspace(tmp_path, base_dir)
 
     assert (tmp_path / "workspace.json").is_file()
     assert json.loads((tmp_path / "history.json").read_text()) == []
     assert (tmp_path / "artifacts" / "v1.pt").is_file()
-    assert sha256_file(tmp_path / "artifacts" / "v1.pt") == registry["sha256"]
+    assert sha256_file(tmp_path / "artifacts" / "v1.pt") == sha256_file(TINY_ARTIFACT_PATH)
 
     assert ws.state["model_id"] == str(base_dir)
     assert ws.state["base_model"] == str(base_dir)
     assert ws.state["current_model"] == str(base_dir)
     assert ws.state["current_artifact"] == str(tmp_path / "artifacts" / "v1.pt")
     assert ws.state["artifact_version"] == 1
+    assert ws.state["artifact_id"] == TINY_ARTIFACT_PATH
+    assert ws.state["artifact_provenance"] is None
     assert ws.state["stage"] == 0
     assert ws.state["last_stage_adapter"] is None
 
 
-def test_init_accepts_a_local_artifact_file_and_copies_it_in(tmp_path, tiny_artifact, base_dir):
-    _, path = tiny_artifact
-    ws = Workspace.init(tmp_path, str(base_dir), artifact=str(path))
+def test_init_self_generated_goes_through_the_store_and_copies_the_corpus_in(
+        tmp_path, base_dir, monkeypatch):
+    import lfa.artifact.store as store_module
+    monkeypatch.setenv("LFA_ARTIFACT_STORE", str(tmp_path / "store"))
+    monkeypatch.setattr(store_module, "checkpoint_sha256", lambda m: "a" * 64)
+    calls = []
 
-    assert ws.state["current_artifact"] == str(tmp_path / "artifacts" / "v1.pt")
-    assert sha256_file(tmp_path / "artifacts" / "v1.pt") == sha256_file(path)
-    assert ws.state["artifact_id"] is None          # not from the registry: no n_samples to read
+    def fake_build(model_id, out_path, options, *, corpus_path, generate=None, writer=None):
+        calls.append(out_path)
+        corpus_path.write_text('{"text": "x", "source": "selfgen_raw"}\n')
+        Path(str(corpus_path) + ".manifest.json").write_text(json.dumps(
+            {"corpus_sha256": "e" * 64, "frame": options.frame()}))
+        out_path.write_bytes(Path(TINY_ARTIFACT_PATH).read_bytes())
+        return out_path
+    monkeypatch.setattr(store_module, "build_artifact_self_generated", fake_build)
 
+    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact="self-generated")
+    assert (ws.path / "artifacts" / "v1.pt").is_file()
+    assert (ws.path / "artifacts" / "v1.corpus.jsonl").is_file()
+    assert (ws.path / "artifacts" / "v1.corpus.jsonl.manifest.json").is_file()
+    assert ws.state["artifact_id"] == "self-generated:" + "e" * 12
+    assert ws.state["artifact_provenance"] == "self-generated"
 
-def test_a_local_file_does_not_shadow_a_published_artifact_id(tmp_path, registry, base_dir,
-                                                              monkeypatch):
-    """`--artifact tiny` means the published artifact, whatever happens to be named `tiny` here."""
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "tiny").write_bytes(b"not the published artifact")
-
-    ws = new_workspace(tmp_path / "ws", base_dir)
-
-    assert ws.state["artifact_id"] == "tiny"
-    assert sha256_file(ws.state["current_artifact"]) == registry["sha256"]
-
-
-def test_a_local_copy_can_be_recorded_as_the_published_artifact_it_is(tmp_path, registry,
-                                                                     base_dir, tiny_artifact):
-    """`artifact_id` is how a file fetched out of band keeps its provenance.
-
-    Without it the workspace records a path, and `Recipe.warnings` then reports that lambda was
-    calibrated against a different artifact than the one being used -- when it is the same one.
-    """
-    _, artifact_path = tiny_artifact
-
-    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact=str(artifact_path),
-                        fetch=False, artifact_id="tiny")
-
-    assert ws.state["artifact_id"] == "tiny"
-    # ...which is what the recipe's calibration is read against, so it warns about nothing.
-    assert ws._artifact_id() == "tiny"
-    assert tiny_recipe(base_dir).warnings(2, ws._artifact_id()) == []
+    again = Workspace.init(tmp_path / "ws2", str(base_dir), artifact="self-generated")
+    assert len(calls) == 1 and again.state["artifact_id"] == ws.state["artifact_id"]
 
 
-def test_an_artifact_id_that_is_not_published_is_refused(tmp_path, base_dir, tiny_artifact):
-    """It is a provenance claim, so a claim about an artifact nobody publishes is a mistake."""
-    _, artifact_path = tiny_artifact
-    with pytest.raises(ValueError, match="not a published artifact id"):
-        Workspace.init(tmp_path / "ws", str(base_dir), artifact=str(artifact_path),
-                       fetch=False, artifact_id="no-such-artifact")
+def test_a_failed_self_generated_build_leaves_no_workspace_but_keeps_the_store(
+        tmp_path, base_dir, monkeypatch):
+    import lfa.artifact.store as store_module
+    monkeypatch.setenv("LFA_ARTIFACT_STORE", str(tmp_path / "store"))
+    monkeypatch.setattr(store_module, "checkpoint_sha256", lambda m: "a" * 64)
+
+    def dies_in_the_fit(model_id, out_path, options, *, corpus_path, **_):
+        corpus_path.write_text('{"text": "x"}\n')
+        raise MemoryError("fit")
+    monkeypatch.setattr(store_module, "build_artifact_self_generated", dies_in_the_fit)
+    with pytest.raises(MemoryError):
+        Workspace.init(tmp_path / "ws", str(base_dir), artifact="self-generated")
+    assert not (tmp_path / "ws").exists()
+    assert list((tmp_path / "store").glob("*/corpus.jsonl"))
 
 
-def test_an_artifact_id_that_contradicts_the_artifact_is_refused(tmp_path, registry, base_dir):
-    """Both name a published artifact, and they disagree: that is a mistake, not a preference."""
-    with pytest.raises(ValueError, match="names a different one"):
-        Workspace.init(tmp_path / "ws", str(base_dir), artifact="tiny",
-                       artifact_id="qwen3-0.6b-gmm1543k-int8")
-
-    # The same id twice is not a contradiction, so it is accepted.
-    ws = Workspace.init(tmp_path / "ws2", str(base_dir), artifact="tiny", artifact_id="tiny")
-    assert ws.state["artifact_id"] == "tiny"
-
-
-def test_an_artifact_that_is_neither_an_id_nor_a_path_says_both(tmp_path, base_dir):
-    with pytest.raises(ValueError, match="qwen3-0.6b-diagonal"):
-        Workspace.init(tmp_path, str(base_dir), artifact="no-such-artifact")
+def test_a_self_generated_file_passed_by_path_keeps_its_provenance(tmp_path, base_dir):
+    params = torch.load(TINY_ARTIFACT_PATH, map_location="cpu", weights_only=False)
+    params["__meta__"]["provenance"] = "self-generated"
+    params["__meta__"]["corpus_sha256"] = "f" * 64
+    reused = tmp_path / "from_another_workspace_v1.pt"
+    torch.save(params, reused)
+    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact=str(reused))
+    assert ws.state["artifact_id"] == "self-generated:" + "f" * 12
+    assert ws.state["artifact_provenance"] == "self-generated"
 
 
-def test_init_refuses_to_overwrite_an_existing_workspace(tmp_path, registry, base_dir):
+def test_a_plain_file_is_recorded_by_the_path_it_was_passed_as(tmp_path, base_dir):
+    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact=TINY_ARTIFACT_PATH)
+    assert ws.state["artifact_id"] == TINY_ARTIFACT_PATH
+    assert ws.state["artifact_provenance"] is None
+
+
+def test_an_artifact_that_is_neither_self_generated_nor_a_file_says_what_to_pass(
+        tmp_path, base_dir):
+    with pytest.raises(ValueError, match="self-generated"):
+        Workspace.init(tmp_path / "ws", str(base_dir), artifact="qwen3-0.6b-some-id")
+    assert not (tmp_path / "ws").exists()
+
+
+def test_rebuild_is_passed_to_the_store(tmp_path, base_dir, monkeypatch):
+    seen = {}
+
+    def fake_obtain(model_id, options, *, rebuild=False, **_):
+        seen["rebuild"] = rebuild
+        raise RuntimeError("stop here")
+    monkeypatch.setattr(workspace_module, "obtain_self_generated", fake_obtain)
+    with pytest.raises(RuntimeError):
+        Workspace.init(tmp_path / "ws", str(base_dir), artifact="self-generated", rebuild=True)
+    assert seen == {"rebuild": True}
+
+
+def test_nothing_imports_a_fetch_module():
+    import importlib.util
+    assert importlib.util.find_spec("lfa.artifact.fetch") is None
+
+
+def test_init_refuses_to_overwrite_an_existing_workspace(tmp_path, base_dir):
     new_workspace(tmp_path, base_dir)
     with pytest.raises(FileExistsError, match="open"):
         new_workspace(tmp_path, base_dir)
 
 
-def test_an_artifact_that_cannot_be_fetched_leaves_no_workspace_behind(tmp_path, base_dir,
-                                                                       monkeypatch):
-    """Today's most likely refusal of all: the README's flagship command, before the assets exist.
-
-    The argument checks were hoisted above the `mkdir`s in the last round, but the *fetch* still
-    happened after them, so this one refusal left `<path>/artifacts/` behind -- a directory that
-    reads as a half-made workspace.
-    """
-    import lfa.workspace as workspace_module
-    from lfa.artifact.fetch import ArtifactNotPublished
-
-    def unpublished(artifact_id, dest_dir):
-        raise ArtifactNotPublished(f"Artifact {artifact_id!r} has no published release asset yet")
-
-    monkeypatch.setattr(workspace_module, "fetch_artifact", unpublished)
-    workspace = tmp_path / "flagship"
-
-    with pytest.raises(ArtifactNotPublished):
-        Workspace.init(workspace, str(base_dir), artifact="qwen3-0.6b-gmm1543k-int8")
-
-    assert not workspace.exists()
-
-
 def test_a_workspace_that_was_already_there_survives_a_failed_init(tmp_path, base_dir,
                                                                    monkeypatch):
     """The cleanup removes only what this call made, and only while it is still empty."""
-    import lfa.workspace as workspace_module
-    from lfa.artifact.fetch import ArtifactNotPublished
+    def build_fails(model_id, options, **_):
+        raise RuntimeError("no card")
 
-    def unpublished(artifact_id, dest_dir):
-        raise ArtifactNotPublished("not published")
-
-    monkeypatch.setattr(workspace_module, "fetch_artifact", unpublished)
+    monkeypatch.setattr(workspace_module, "obtain_self_generated", build_fails)
     existing = tmp_path / "already_here"
     (existing / "artifacts").mkdir(parents=True)
     (existing / "notes.txt").write_text("mine")
 
-    with pytest.raises(ArtifactNotPublished):
-        Workspace.init(existing, str(base_dir), artifact="qwen3-0.6b-gmm1543k-int8")
+    with pytest.raises(RuntimeError, match="no card"):
+        Workspace.init(existing, str(base_dir), artifact="self-generated")
 
     assert (existing / "notes.txt").read_text() == "mine"
     assert (existing / "artifacts").is_dir()
 
 
-def test_a_refused_init_leaves_nothing_behind(tmp_path, base_dir, tiny_artifact):
+def test_a_refused_init_leaves_nothing_behind(tmp_path, base_dir):
     """A refusal must not leave a directory that looks like a half-made workspace.
 
     `init` used to create `<path>/` and `<path>/artifacts/` before it had checked its arguments,
-    so both refusals below left debris -- against the standard `fetch_artifact` is held to, which
-    downloads to `<name>.part` precisely so an interruption leaves nothing artifact-shaped.
+    so a refusal left debris.
     """
-    unknown_id = tmp_path / "by_id"
-    with pytest.raises(ValueError, match="published artifact id"):
-        Workspace.init(unknown_id, str(base_dir), artifact="not-an-artifact")
-    assert not unknown_id.exists()
-
     missing_file = tmp_path / "by_path"
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="self-generated"):
         Workspace.init(missing_file, str(base_dir), artifact=str(tmp_path / "nope.pt"))
     assert not missing_file.exists()
 
-    _, path = tiny_artifact
-    conflicting = tmp_path / "conflict"
-    with pytest.raises(ValueError, match="artifact_id"):
-        Workspace.init(conflicting, str(base_dir), artifact=str(path), artifact_id="not-published")
-    assert not conflicting.exists()
-
     # ...and a good one still creates exactly what it should.
-    good = Workspace.init(tmp_path / "good", str(base_dir), artifact=str(path))
+    good = Workspace.init(tmp_path / "good", str(base_dir), artifact=TINY_ARTIFACT_PATH)
     assert (good.path / "artifacts" / "v1.pt").is_file()
 
 
-def test_re_initialising_a_workspace_names_a_command_a_cli_user_can_run(tmp_path, registry,
-                                                                       base_dir):
+def test_a_file_that_is_not_an_artifact_leaves_no_workspace_behind(tmp_path, base_dir):
+    """The file route reads the copy's meta after copying it in; a copy that cannot be read must
+    go with the directories this call made, as a failed build's files do."""
+    not_an_artifact = tmp_path / "notes.pt"
+    not_an_artifact.write_text("not a torch file")
+    with pytest.raises(Exception):
+        Workspace.init(tmp_path / "ws", str(base_dir), artifact=str(not_an_artifact))
+    assert not (tmp_path / "ws").exists()
+
+
+def test_re_initialising_a_workspace_names_a_command_a_cli_user_can_run(tmp_path, base_dir):
     """The refusal used to offer `Workspace.open(path)` -- a Python call -- to a CLI user."""
     new_workspace(tmp_path, base_dir)
     with pytest.raises(FileExistsError) as refusal:
@@ -228,14 +238,14 @@ def test_re_initialising_a_workspace_names_a_command_a_cli_user_can_run(tmp_path
     assert "Workspace.open(path)" in str(refusal.value)   # still there, for a Python caller
 
 
-def test_a_corpus_path_that_does_not_exist_says_what_to_do(tmp_path, registry, base_dir):
+def test_a_corpus_path_that_does_not_exist_says_what_to_do(tmp_path, base_dir):
     ws = new_workspace(tmp_path, base_dir)
     with pytest.raises(FileNotFoundError, match="prepare-domain") as refusal:
         ws.train(tmp_path / "typo_domain", recipe=tiny_recipe(base_dir), device="cpu")
     assert "Corpus path not found" in str(refusal.value)
 
 
-def test_open_reads_back_what_init_wrote(tmp_path, registry, base_dir):
+def test_open_reads_back_what_init_wrote(tmp_path, base_dir):
     created = new_workspace(tmp_path, base_dir)
     reopened = Workspace.open(tmp_path)
 
@@ -248,88 +258,21 @@ def test_open_says_so_when_there_is_no_workspace(tmp_path):
         Workspace.open(tmp_path)
 
 
-def test_init_without_fetching_leaves_no_artifact_and_says_what_to_run(tmp_path, registry,
-                                                                        base_dir, corpus_a,
-                                                                        caplog):
-    with caplog.at_level("WARNING", logger="lfa.workspace"):
-        ws = new_workspace(tmp_path, base_dir, fetch=False)
+def test_training_a_workspace_with_no_artifact_says_how_to_make_one(tmp_path, base_dir,
+                                                                    corpus_a):
+    """`init` always puts an artifact in place now; a workspace written by an older version
+    without one is told how to start a new one rather than which download to run."""
+    ws = new_workspace(tmp_path, base_dir)
+    ws.state["current_artifact"] = None
 
-    assert ws.state["current_artifact"] is None
-    assert not (tmp_path / "artifacts" / "v1.pt").exists()
-    assert any("lfa fetch-artifact" in record.message for record in caplog.records)
-
-    with pytest.raises(RuntimeError, match="fetch-artifact"):
+    with pytest.raises(RuntimeError, match="--artifact self-generated"):
         ws.train(corpus_a, recipe=tiny_recipe(base_dir), device="cpu")
 
 
-def test_init_adopts_a_bundled_recipe_that_names_the_same_model(tmp_path, tiny_artifact):
+def test_init_adopts_a_bundled_recipe_that_names_the_same_model(tmp_path):
     """A workspace over Qwen3-0.6B finds the shipped recipe by its model_id, not by name."""
-    _, path = tiny_artifact
-    ws = Workspace.init(tmp_path, "Qwen/Qwen3-0.6B", artifact=str(path))
+    ws = Workspace.init(tmp_path, "Qwen/Qwen3-0.6B", artifact=TINY_ARTIFACT_PATH)
     assert ws.state["recipe"] == "qwen3-0.6b"
-
-
-def _as_shipped(params: dict) -> dict:
-    """The fixture artifact reshaped like the published `qwen3-0.6b-gmm1543k-int8` file.
-
-    Verified against that file on 2026-09-07: 84 keys, all of them sites, **no `n_samples` on any
-    block and no `__meta__` block at all**. Every other artifact in this suite carries both, so
-    without this the shipped shape is exercised only in pieces and never end to end -- which is
-    how the documented route came to be one that trains for an hour and then cannot `extend`.
-    """
-    stripped = copy.deepcopy(params)
-    stripped.pop("__meta__", None)
-    for key in list(stripped):
-        stripped[key].pop("n_samples", None)
-    return stripped
-
-
-def test_the_documented_local_artifact_route_trains_extends_and_warns_about_nothing(
-        tmp_path, registry, base_dir, corpus_a, tiny_artifact, caplog):
-    """`--artifact <file> --artifact-id <published id>`: what README, quickstart and both
-    examples tell a reader to do while the release assets do not exist yet.
-
-    Both halves are load-bearing, and only the second is visible before an hour of GPU time has
-    been spent: the id is what `Recipe.warnings` reads the calibration against (without it every
-    stage warns that lambda was calibrated elsewhere, against the very file it was calibrated
-    on), and it is what supplies the base sample count that `extend` needs, since the shipped
-    artifact carries none.
-    """
-    base, _ = tiny_artifact
-    shipped = tmp_path / "distribution_stats.pt"
-    torch.save(_as_shipped(base), shipped)
-
-    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact=str(shipped),
-                        artifact_id="tiny", fetch=False)
-    with caplog.at_level("WARNING", logger="lfa.workspace"):
-        ws.train(corpus_a, recipe=tiny_recipe(base_dir), device="cpu")
-
-    assert [r.message for r in caplog.records if r.name == "lfa.workspace"
-            and r.levelname == "WARNING"] == []
-    extended = ws.extend(need=NEED, k_domain=K_DOMAIN, device="cpu")
-    assert load_artifact(extended)["1_pre_mlp"]["n_samples"] == registry["n_samples_total"] + NEED
-
-
-def test_the_same_route_without_the_artifact_id_warns_falsely_and_then_cannot_extend(
-        tmp_path, registry, base_dir, corpus_a, tiny_artifact, caplog):
-    """Why the id is in the documentation and not only in `docs/recipes.md`.
-
-    This is the workspace a reader got from the four documented lines before 2026-09-07: a false
-    calibration warning on every stage, and a refusal at the first `extend` -- after the stage has
-    already trained.
-    """
-    base, _ = tiny_artifact
-    shipped = tmp_path / "distribution_stats.pt"
-    torch.save(_as_shipped(base), shipped)
-
-    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact=str(shipped), fetch=False)
-    with caplog.at_level("WARNING", logger="lfa.workspace"):
-        ws.train(corpus_a, recipe=tiny_recipe(base_dir), device="cpu")
-
-    assert any("calibrated against" in r.message for r in caplog.records
-               if r.name == "lfa.workspace")
-    with pytest.raises(ValueError, match="base_n"):
-        ws.extend(need=NEED, k_domain=K_DOMAIN, device="cpu")
 
 
 # --------------------------------------------------------------------------------------- train
@@ -375,7 +318,7 @@ def test_the_history_file_carries_both_stages_in_order(flow):
     assert Workspace.open(ws.path).history == history
 
 
-def test_training_builds_the_embedding_lookup_before_the_run(tmp_path, registry, base_dir,
+def test_training_builds_the_embedding_lookup_before_the_run(tmp_path, base_dir,
                                                              corpus_a, monkeypatch, caplog):
     """The shipped artifact carries no lookup table, so the workspace must rebuild it from the
     teacher: without that, L_embed is silently dropped (train only warns)."""
@@ -396,21 +339,21 @@ def test_training_builds_the_embedding_lookup_before_the_run(tmp_path, registry,
     assert EMBED_ANCHOR_DISABLED_NOTICE not in caplog.text
 
 
-def test_training_surfaces_the_recipes_off_calibration_warnings(tmp_path, registry, base_dir,
+def test_training_surfaces_the_recipes_off_calibration_warnings(tmp_path, base_dir,
                                                                 corpus_a, caplog):
     ws = new_workspace(tmp_path, base_dir)
-    recipe = tiny_recipe(base_dir, calibrated_rank=32)
+    recipe = tiny_recipe(base_dir, calibrated_rank=32, calibrated_artifact=TINY_ARTIFACT_PATH)
 
     with caplog.at_level("WARNING", logger="lfa.workspace"):
         ws.train(corpus_a, recipe=recipe, device="cpu")
 
     warned = [r.message for r in caplog.records if r.name == "lfa.workspace"
               and r.levelname == "WARNING"]
-    assert warned == recipe.warnings(2, "tiny")
+    assert warned == recipe.warnings(2, TINY_ARTIFACT_PATH)
     assert "calibrated at rank 32" in warned[0]
 
 
-def test_training_states_the_loader_frame_when_short_documents_are_kept(tmp_path, registry,
+def test_training_states_the_loader_frame_when_short_documents_are_kept(tmp_path,
                                                                        base_dir, corpus_a,
                                                                        caplog):
     ws = new_workspace(tmp_path, base_dir)
@@ -425,7 +368,7 @@ def test_training_states_the_loader_frame_when_short_documents_are_kept(tmp_path
     assert "keep_short_whole=False" in LOADER_FRAME_NOTICE
 
 
-def test_the_notice_is_silent_when_short_documents_are_cut_instead(tmp_path, registry, base_dir,
+def test_the_notice_is_silent_when_short_documents_are_cut_instead(tmp_path, base_dir,
                                                                    corpus_a, caplog):
     ws = new_workspace(tmp_path, base_dir)
 
@@ -435,7 +378,7 @@ def test_the_notice_is_silent_when_short_documents_are_cut_instead(tmp_path, reg
     assert not any(r.message == LOADER_FRAME_NOTICE for r in caplog.records)
 
 
-def test_epochs_overrides_the_recipes_epoch_count(tmp_path, registry, base_dir, corpus_a):
+def test_epochs_overrides_the_recipes_epoch_count(tmp_path, base_dir, corpus_a):
     ws = new_workspace(tmp_path, base_dir)
     entry = ws.train(corpus_a, recipe=tiny_recipe(base_dir),
                      epochs=2, device="cpu")
@@ -445,7 +388,7 @@ def test_epochs_overrides_the_recipes_epoch_count(tmp_path, registry, base_dir, 
     assert [record["epoch"] for record in history] == [1, 2]
 
 
-def test_keep_short_whole_can_be_overridden_per_run(tmp_path, registry, base_dir, corpus_a,
+def test_keep_short_whole_can_be_overridden_per_run(tmp_path, base_dir, corpus_a,
                                                     caplog):
     """The loader frame is a per-run override: two runs under different settings see different
     text, so it has to be reachable without editing the recipe."""
@@ -461,7 +404,7 @@ def test_keep_short_whole_can_be_overridden_per_run(tmp_path, registry, base_dir
     assert not any(record.message == LOADER_FRAME_NOTICE for record in caplog.records)
 
 
-def test_a_run_records_no_chunk_offset_setting_because_there_is_none(tmp_path, registry,
+def test_a_run_records_no_chunk_offset_setting_because_there_is_none(tmp_path,
                                                                       base_dir, corpus_a):
     """The chunk offset rotates the boundaries, full stop: there is no setting for it, so a run
     has nothing to record about it and `Workspace.train` has no argument for it."""
@@ -474,7 +417,7 @@ def test_a_run_records_no_chunk_offset_setting_because_there_is_none(tmp_path, r
         ws.train(corpus_a, recipe=tiny_recipe(base_dir), rotate_offset=False, device="cpu")
 
 
-def test_full_weight_can_be_overridden_per_run(tmp_path, registry, base_dir, corpus_a):
+def test_full_weight_can_be_overridden_per_run(tmp_path, base_dir, corpus_a):
     ws = new_workspace(tmp_path, base_dir)
     entry = ws.train(corpus_a, recipe=tiny_recipe(base_dir), full_weight=True, device="cpu")
 
@@ -487,14 +430,14 @@ def test_full_weight_can_be_overridden_per_run(tmp_path, registry, base_dir, cor
     assert not (Path(entry["adapter"]) / "adapter_config.json").exists()
 
 
-def test_train_refuses_a_device_that_would_shard_the_model(tmp_path, registry, base_dir,
+def test_train_refuses_a_device_that_would_shard_the_model(tmp_path, base_dir,
                                                            corpus_a):
     ws = new_workspace(tmp_path, base_dir)
     with pytest.raises(ShardingRefused):
         ws.train(corpus_a, recipe=tiny_recipe(base_dir), device="auto")
 
 
-def test_train_without_a_recipe_anywhere_says_what_to_pass(tmp_path, registry, base_dir,
+def test_train_without_a_recipe_anywhere_says_what_to_pass(tmp_path, base_dir,
                                                            corpus_a):
     ws = new_workspace(tmp_path, base_dir)
     with pytest.raises(ValueError, match="recipe"):
@@ -503,7 +446,7 @@ def test_train_without_a_recipe_anywhere_says_what_to_pass(tmp_path, registry, b
 
 # --------------------------------------------------------------------------- the stage order
 
-def test_a_new_corpus_before_extending_names_the_command_to_run(tmp_path, registry, base_dir,
+def test_a_new_corpus_before_extending_names_the_command_to_run(tmp_path, base_dir,
                                                                 corpus_a, corpus_b):
     ws = new_workspace(tmp_path, base_dir)
     ws.train(corpus_a, recipe=tiny_recipe(base_dir), device="cpu")
@@ -515,7 +458,7 @@ def test_a_new_corpus_before_extending_names_the_command_to_run(tmp_path, regist
     assert ws.state["stage"] == 1
 
 
-def test_the_same_corpus_again_is_the_same_stage_not_the_next_one(tmp_path, registry, base_dir,
+def test_the_same_corpus_again_is_the_same_stage_not_the_next_one(tmp_path, base_dir,
                                                                   corpus_a):
     """More epochs on the domain already being learned need no extension -- and no lambda bump."""
     ws = new_workspace(tmp_path, base_dir)
@@ -535,7 +478,7 @@ def test_the_same_corpus_again_is_the_same_stage_not_the_next_one(tmp_path, regi
         assert (Path(entry["adapter"]) / "adapter_model.safetensors").is_file()
 
 
-def test_a_resumed_run_keeps_training_the_adapter_it_saved(tmp_path, registry, base_dir,
+def test_a_resumed_run_keeps_training_the_adapter_it_saved(tmp_path, base_dir,
                                                            corpus_a):
     """A resume must re-attach the saved adapter, not wrap a fresh one over the same base.
 
@@ -558,7 +501,7 @@ def test_a_resumed_run_keeps_training_the_adapter_it_saved(tmp_path, registry, b
         assert torch.equal(after[name], tensor), name
 
 
-def test_a_resumed_run_continues_the_epoch_count(tmp_path, registry, base_dir, corpus_a):
+def test_a_resumed_run_continues_the_epoch_count(tmp_path, base_dir, corpus_a):
     ws = new_workspace(tmp_path, base_dir)
     ws.train(corpus_a, recipe=tiny_recipe(base_dir), device="cpu")
     resumed = ws.train(corpus_a, recipe=tiny_recipe(base_dir),
@@ -575,7 +518,7 @@ def _adapter_weights(adapter_dir):
     return safetensors.torch.load_file(Path(adapter_dir) / "adapter_model.safetensors")
 
 
-def test_an_explicit_run_name_will_not_write_over_the_run_already_there(tmp_path, registry,
+def test_an_explicit_run_name_will_not_write_over_the_run_already_there(tmp_path,
                                                                         base_dir, corpus_a):
     """The only silent data-loss path the workspace had.
 
@@ -608,7 +551,7 @@ def test_an_explicit_run_name_will_not_write_over_the_run_already_there(tmp_path
     assert resumed["output_dir"] == first["output_dir"] and len(ws.history) == 2
 
 
-def test_a_start_interrupted_before_its_first_epoch_can_simply_be_run_again(tmp_path, registry,
+def test_a_start_interrupted_before_its_first_epoch_can_simply_be_run_again(tmp_path,
                                                                              base_dir, corpus_a):
     """`lfa.train.train` writes `config.json` before epoch 1, so a run killed in its first epoch
     leaves a config and nothing else. That is not a run to protect: there is no curve, no
@@ -629,7 +572,7 @@ def test_a_start_interrupted_before_its_first_epoch_can_simply_be_run_again(tmp_
     assert len(ws.history) == 1
 
 
-def test_a_half_written_run_with_no_state_is_refused_without_offering_resume(tmp_path, registry,
+def test_a_half_written_run_with_no_state_is_refused_without_offering_resume(tmp_path,
                                                                             base_dir, corpus_a):
     """A directory that got as far as a checkpoint but has no `training_state.pt` is protected --
     and the message must not send the user to a resume that cannot work."""
@@ -645,7 +588,7 @@ def test_a_half_written_run_with_no_state_is_refused_without_offering_resume(tmp
 
 
 def test_a_chain_spec_that_names_two_domains_alike_is_refused_before_anything_trains(
-        tmp_path, registry, base_dir, corpus_a, corpus_b):
+        tmp_path, base_dir, corpus_a, corpus_b):
     """The same collision, caught where it costs nothing rather than one stage in."""
     recipe_path = tiny_recipe(base_dir).save(tmp_path / "tiny_recipe.yaml")
     ws = new_workspace(tmp_path / "ws", base_dir, recipe=str(recipe_path))
@@ -699,7 +642,7 @@ def test_the_code_digest_moves_when_the_package_source_moves(tmp_path):
     assert source_digest(tmp_path / "lfa2") != source_digest(package)
 
 
-def test_extending_with_nothing_to_extend_says_so(tmp_path, registry, base_dir):
+def test_extending_with_nothing_to_extend_says_so(tmp_path, base_dir):
     ws = new_workspace(tmp_path, base_dir)
     with pytest.raises(StageOrderError, match="train"):
         ws.extend(need=NEED, k_domain=K_DOMAIN, device="cpu")
@@ -727,7 +670,7 @@ def test_the_extended_artifact_unions_the_domain_into_the_base(flow, tiny_artifa
     assert torch.isclose(entry["gmm_weights"].sum(), torch.tensor(1.0), atol=1e-4)
 
 
-def test_extend_collects_under_the_frame_the_stage_trained_under(tmp_path, registry, base_dir,
+def test_extend_collects_under_the_frame_the_stage_trained_under(tmp_path, base_dir,
                                                                 corpus_a, monkeypatch):
     """The new components describe the training stream the model saw, so the collection uses the
     stage's own loader frame rather than the loader's default."""
@@ -749,19 +692,6 @@ def test_extend_collects_under_the_frame_the_stage_trained_under(tmp_path, regis
     assert seen["seq_len"] == 64
 
 
-def test_extend_reads_the_base_count_from_the_registry_when_the_artifact_carries_none(
-        tmp_path, registry, base_dir, corpus_a, tiny_artifact):
-    """The shipped artifact predates the per-block count; its n_samples_total lives in the
-    registry entry, and the mixture's weighting is wrong without it."""
-    base, _ = tiny_artifact
-    ws = new_workspace(tmp_path, base_dir)
-    _strip_counts(ws.state["current_artifact"], base)
-    ws.train(corpus_a, recipe=tiny_recipe(base_dir), device="cpu")
-
-    out = ws.extend(need=NEED, k_domain=K_DOMAIN, device="cpu")
-    assert load_artifact(out)["1_pre_mlp"]["n_samples"] == registry["n_samples_total"] + NEED
-
-
 def test_extend_names_base_n_when_nothing_supplies_the_count(tmp_path, base_dir, corpus_a,
                                                              tiny_artifact):
     base, path = tiny_artifact
@@ -773,11 +703,11 @@ def test_extend_names_base_n_when_nothing_supplies_the_count(tmp_path, base_dir,
         ws.extend(need=NEED, k_domain=K_DOMAIN, device="cpu")
 
 
-def test_the_base_count_predicate_reads_the_mixture_sites_only(tmp_path, registry, base_dir,
+def test_the_base_count_predicate_reads_the_mixture_sites_only(tmp_path, base_dir,
                                                                tiny_artifact):
     """A site with no mixture is not part of the merge, so its missing count is not a missing
-    count: reading every site instead would send the extension to the registry for a number the
-    artifact already has, and weight the new domain against the wrong pool."""
+    count: reading every site instead would refuse the extension for a number the artifact
+    already has."""
     base, _ = tiny_artifact
     ws = new_workspace(tmp_path, base_dir)
     params = copy.deepcopy(base)
@@ -790,7 +720,8 @@ def test_the_base_count_predicate_reads_the_mixture_sites_only(tmp_path, registr
 
 
 def _strip_counts(artifact_path, base):
-    """Rewrite an artifact as the shipped one is shaped: no per-block counts, no meta total."""
+    """Rewrite an artifact as one from elsewhere may be shaped: no per-block counts, no meta
+    total."""
     params = copy.deepcopy(base)
     for key in list(params):
         if key[0].isdigit():
@@ -883,7 +814,7 @@ def test_the_table_survives_the_general_axis_failing_for_one_model_only(flow, mo
     assert "domain" in result["table"]
 
 
-def test_evaluate_can_rerun_the_stage_with_the_anchor_switched_off(tmp_path, registry, base_dir,
+def test_evaluate_can_rerun_the_stage_with_the_anchor_switched_off(tmp_path, base_dir,
                                                                    corpus_a):
     ws = new_workspace(tmp_path, base_dir)
     ws.train(corpus_a, recipe=tiny_recipe(base_dir), device="cpu")
@@ -897,7 +828,7 @@ def test_evaluate_can_rerun_the_stage_with_the_anchor_switched_off(tmp_path, reg
     assert "unanchored" in result["table"]
 
 
-def test_evaluate_before_any_stage_says_what_is_missing(tmp_path, registry, base_dir):
+def test_evaluate_before_any_stage_says_what_is_missing(tmp_path, base_dir):
     ws = new_workspace(tmp_path, base_dir)
     with pytest.raises(RuntimeError, match="train"):
         ws.evaluate(n_windows=None, device="cpu")
@@ -905,7 +836,7 @@ def test_evaluate_before_any_stage_says_what_is_missing(tmp_path, registry, base
 
 # ------------------------------------------------------------------- the held-out split
 
-def test_a_stage_records_the_documents_it_held_out(tmp_path, registry, base_dir, corpus_a):
+def test_a_stage_records_the_documents_it_held_out(tmp_path, base_dir, corpus_a):
     """The shipped recipe holds a tenth of the documents out; the split is a property of the run,
     so the history has to say how it fell or `evaluate` cannot rebuild it."""
     ws = new_workspace(tmp_path, base_dir)
@@ -916,7 +847,7 @@ def test_a_stage_records_the_documents_it_held_out(tmp_path, registry, base_dir,
     assert json.loads((ws.path / "runs" / "stage1" / "config.json").read_text())["val_fraction"] == 0.5
 
 
-def test_the_held_out_split_is_scored_after_every_epoch_of_the_stage(tmp_path, registry, base_dir,
+def test_the_held_out_split_is_scored_after_every_epoch_of_the_stage(tmp_path, base_dir,
                                                                     corpus_a):
     """The split the workspace builds goes to the trainer, not only to `evaluate`: the run's own
     history carries the held-out loss per epoch, which is what says a run has begun to over-fit."""
@@ -929,7 +860,7 @@ def test_the_held_out_split_is_scored_after_every_epoch_of_the_stage(tmp_path, r
     assert all(record["val_loss"] > 0 and record["val_perplexity"] > 1 for record in history)
 
 
-def test_a_stage_that_holds_nothing_out_has_no_validation_curve(tmp_path, registry, base_dir,
+def test_a_stage_that_holds_nothing_out_has_no_validation_curve(tmp_path, base_dir,
                                                                 corpus_a):
     ws = new_workspace(tmp_path, base_dir)
     entry = ws.train(corpus_a, recipe=tiny_recipe(base_dir, val_fraction=0.0), device="cpu")
@@ -938,7 +869,7 @@ def test_a_stage_that_holds_nothing_out_has_no_validation_curve(tmp_path, regist
     assert all("val_loss" not in record for record in history)
 
 
-def test_evaluate_scores_the_half_the_stage_never_trained_on(tmp_path, registry, base_dir,
+def test_evaluate_scores_the_half_the_stage_never_trained_on(tmp_path, base_dir,
                                                              corpus_a, monkeypatch):
     """Domain perplexity of a model on text it was just trained on is a fit. With a hold-out
     recorded, `evaluate` rebuilds that split and scores the other half instead."""
@@ -966,7 +897,7 @@ def test_evaluate_scores_the_half_the_stage_never_trained_on(tmp_path, registry,
 
 
 def test_evaluate_falls_back_to_the_training_corpus_when_nothing_was_held_out(
-        tmp_path, registry, base_dir, corpus_a, caplog):
+        tmp_path, base_dir, corpus_a, caplog):
     """A stage trained on everything has no held-out split, and the number is then a fit -- which
     the log says, rather than the caller having to remember the recipe."""
     ws = new_workspace(tmp_path, base_dir)
@@ -979,7 +910,7 @@ def test_evaluate_falls_back_to_the_training_corpus_when_nothing_was_held_out(
     assert any("not a held-out measurement" in r.getMessage() for r in caplog.records)
 
 
-def test_a_named_corpus_is_scored_whole(tmp_path, registry, base_dir, corpus_a, corpus_b,
+def test_a_named_corpus_is_scored_whole(tmp_path, base_dir, corpus_a, corpus_b,
                                         monkeypatch):
     """Text the caller names IS the held-out text; splitting it again would score a fraction of
     what was asked for."""
@@ -1013,7 +944,7 @@ def test_fuse_exports_a_plain_model_that_loads_on_its_own(flow):
     assert (out / "tokenizer.json").is_file()
 
 
-def test_fuse_writes_where_it_is_told(tmp_path, registry, base_dir, corpus_a):
+def test_fuse_writes_where_it_is_told(tmp_path, base_dir, corpus_a):
     ws = new_workspace(tmp_path, base_dir)
     ws.train(corpus_a, recipe=tiny_recipe(base_dir), device="cpu")
 
@@ -1023,7 +954,7 @@ def test_fuse_writes_where_it_is_told(tmp_path, registry, base_dir, corpus_a):
 
 # --------------------------------------------------------------------- the full-weight stage
 
-def test_a_full_weight_stage_carries_no_adapter_through_fuse_and_evaluate(tmp_path, registry,
+def test_a_full_weight_stage_carries_no_adapter_through_fuse_and_evaluate(tmp_path,
                                                                           base_dir, corpus_a):
     """Full weight has nothing to merge: the checkpoint IS the model, everywhere it is read."""
     ws = new_workspace(tmp_path, base_dir)
@@ -1048,7 +979,7 @@ def test_a_full_weight_stage_carries_no_adapter_through_fuse_and_evaluate(tmp_pa
 
 # --------------------------------------------------------------------------------------- chain
 
-def test_chain_runs_every_domain_and_extends_between_them(tmp_path, registry, base_dir, corpus_a,
+def test_chain_runs_every_domain_and_extends_between_them(tmp_path, base_dir, corpus_a,
                                                           corpus_b):
     ws = _chain_workspace(tmp_path, base_dir)
     spec = tmp_path / "domains.yaml"
@@ -1067,7 +998,7 @@ def test_chain_runs_every_domain_and_extends_between_them(tmp_path, registry, ba
     assert len(ws.history) == 2
 
 
-def test_chain_resolves_a_relative_corpus_against_the_spec_file(tmp_path, registry, base_dir,
+def test_chain_resolves_a_relative_corpus_against_the_spec_file(tmp_path, base_dir,
                                                                 corpus_a):
     ws = _chain_workspace(tmp_path, base_dir)
     spec_dir = tmp_path / "spec_dir"
@@ -1081,7 +1012,7 @@ def test_chain_resolves_a_relative_corpus_against_the_spec_file(tmp_path, regist
     assert ws.state["artifact_version"] == 1               # one domain: nothing to extend between
 
 
-def test_a_spec_that_asks_not_to_extend_between_domains_is_rejected(tmp_path, registry,
+def test_a_spec_that_asks_not_to_extend_between_domains_is_rejected(tmp_path,
                                                                     base_dir, corpus_a):
     """Folding each domain in IS the chain; the second domain has nowhere to start otherwise."""
     ws = _chain_workspace(tmp_path, base_dir)
@@ -1100,7 +1031,7 @@ def test_a_spec_that_asks_not_to_extend_between_domains_is_rejected(tmp_path, re
     ({"corpus": None}, ValueError, "has no 'corpus'"),
     ({"corpus": "not_a_corpus_that_exists"}, FileNotFoundError, "not there"),
 ])
-def test_every_domain_is_validated_before_the_first_one_trains(tmp_path, registry, base_dir,
+def test_every_domain_is_validated_before_the_first_one_trains(tmp_path, base_dir,
                                                                corpus_a, corpus_b, position,
                                                                broken, error, expected):
     """The half of this that the first fix missed: the checks ran inside the training loop.
@@ -1133,7 +1064,7 @@ def test_every_domain_is_validated_before_the_first_one_trains(tmp_path, registr
     ({"extend_between": False}, "always folds each domain"),
     ({"banana": 7}, "does not have"),
 ])
-def test_a_domain_carrying_a_field_a_domain_does_not_have_is_refused(tmp_path, registry, base_dir,
+def test_a_domain_carrying_a_field_a_domain_does_not_have_is_refused(tmp_path, base_dir,
                                                                     corpus_a, extra, expected):
     """The rule a recipe file already lives under, applied to a chain spec's domain entries.
 
@@ -1155,7 +1086,7 @@ def test_a_domain_carrying_a_field_a_domain_does_not_have_is_refused(tmp_path, r
     assert ws.history == [] and not (ws.path / "runs").exists()
 
 
-def test_a_spec_with_no_domains_is_rejected(tmp_path, registry, base_dir):
+def test_a_spec_with_no_domains_is_rejected(tmp_path, base_dir):
     ws = _chain_workspace(tmp_path, base_dir)
     spec = tmp_path / "empty.yaml"
     spec.write_text(yaml.safe_dump({"domains": []}))
@@ -1174,61 +1105,66 @@ def _chain_workspace(tmp_path, base_dir) -> Workspace:
 SELF_GENERATED = "self-generated"
 
 
-def test_init_self_generated_builds_into_v1_and_records_provenance(tmp_path, base_dir,
-                                                                    tiny_artifact, monkeypatch):
-    import lfa.workspace as ws_module
-    _, fixture = tiny_artifact
+def _fake_store(monkeypatch, tmp_path, params=None, *, corpus_sha256="e" * 64, calls=None):
+    """Stand in for `obtain_self_generated`: a finished store entry holding `params` (the fixture
+    artifact by default), its corpus and the corpus manifest."""
+    entry = tmp_path / "store_entry"
+    entry.mkdir(exist_ok=True)
+    artifact = entry / "artifact.pt"
+    if params is None:
+        artifact.write_bytes(Path(TINY_ARTIFACT_PATH).read_bytes())
+    else:
+        torch.save(params, artifact)
+    (entry / "corpus.jsonl").write_text('{"text": "x"}\n')
+    manifest = {"corpus_sha256": corpus_sha256}
+    (entry / "corpus.jsonl.manifest.json").write_text(json.dumps(manifest))
 
-    def fake_build(model_id, out_path, options, **kwargs):
-        Path(out_path).write_bytes(fixture.read_bytes())
-        Path(out_path).with_suffix(".corpus.jsonl").write_text('{"text": "x"}\n')
-        Path(str(Path(out_path).with_suffix(".corpus.jsonl")) + ".manifest.json").write_text(
-            '{"corpus_sha256": "%s"}' % ("e" * 64))
-        return Path(out_path)
-    monkeypatch.setattr(ws_module, "build_artifact_self_generated", fake_build)
+    def fake_obtain(model_id, options, *, rebuild=False, **_):
+        if calls is not None:
+            calls.append(dict(model_id=model_id, options=options, rebuild=rebuild))
+        return artifact, manifest
+    monkeypatch.setattr(workspace_module, "obtain_self_generated", fake_obtain)
+    return entry
+
+
+def test_init_self_generated_copies_the_store_entry_into_v1_and_records_provenance(
+        tmp_path, base_dir, monkeypatch):
+    calls = []
+    entry = _fake_store(monkeypatch, tmp_path, calls=calls)
 
     ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact=SELF_GENERATED)
 
-    assert (tmp_path / "ws" / "artifacts" / "v1.pt").is_file()
-    assert (tmp_path / "ws" / "artifacts" / "v1.corpus.jsonl").is_file()
+    artifacts = tmp_path / "ws" / "artifacts"
+    assert sha256_file(artifacts / "v1.pt") == sha256_file(entry / "artifact.pt")
+    assert (artifacts / "v1.corpus.jsonl").read_text() == '{"text": "x"}\n'
+    assert (artifacts / "v1.corpus.jsonl.manifest.json").is_file()
     assert ws.state["artifact_id"] == "self-generated:" + "e" * 12
     assert ws.state["artifact_provenance"] == SELF_GENERATED
+    assert calls[0]["model_id"] == str(base_dir) and calls[0]["rebuild"] is False
+    assert (entry / "artifact.pt").is_file()             # a copy: the store keeps its own
 
 
 def test_init_self_generated_rolls_back_when_the_build_raises(tmp_path, base_dir, monkeypatch):
-    import lfa.workspace as ws_module
-
-    def failing(model_id, out_path, options, **kwargs):
+    def failing(model_id, options, **kwargs):
         raise RuntimeError("no card")
-    monkeypatch.setattr(ws_module, "build_artifact_self_generated", failing)
+    monkeypatch.setattr(workspace_module, "obtain_self_generated", failing)
 
     with pytest.raises(RuntimeError, match="no card"):
         Workspace.init(tmp_path / "ws", str(base_dir), artifact=SELF_GENERATED)
     assert not (tmp_path / "ws").exists()
 
 
-def test_init_self_generated_rollback_removes_the_partial_files_the_build_left(
-        tmp_path, base_dir, monkeypatch):
-    """A build that dies mid-fit has already written its corpus; `rmdir` alone would keep it."""
-    import lfa.workspace as ws_module
+def test_init_self_generated_rollback_removes_the_files_it_had_copied_in(tmp_path, base_dir,
+                                                                         monkeypatch):
+    """A copy that fails part-way (here: the entry has lost its manifest) has already put
+    `v1.pt` and `v1.corpus.jsonl` in place; `rmdir` alone would keep them."""
+    entry = _fake_store(monkeypatch, tmp_path)
+    (entry / "corpus.jsonl.manifest.json").unlink()
 
-    def dies_after_the_corpus(model_id, out_path, options, **kwargs):
-        corpus = Path(out_path).with_suffix(".corpus.jsonl")
-        corpus.write_text('{"text": "x"}\n')
-        Path(str(corpus) + ".manifest.json").write_text('{"corpus_sha256": "%s"}' % ("e" * 64))
-        raise MemoryError("host RAM")
-    monkeypatch.setattr(ws_module, "build_artifact_self_generated", dies_after_the_corpus)
-
-    with pytest.raises(MemoryError, match="host RAM"):
+    with pytest.raises(FileNotFoundError):
         Workspace.init(tmp_path / "ws", str(base_dir), artifact=SELF_GENERATED)
     assert not (tmp_path / "ws").exists()
-
-
-def test_init_self_generated_refuses_an_artifact_id_before_creating_anything(tmp_path, base_dir):
-    with pytest.raises(ValueError, match="corpus hash"):
-        Workspace.init(tmp_path / "ws", str(base_dir), artifact=SELF_GENERATED,
-                       artifact_id="tiny")
-    assert not (tmp_path / "ws").exists()
+    assert (entry / "artifact.pt").is_file() and (entry / "corpus.jsonl").is_file()
 
 
 def test_every_other_init_records_no_provenance(tmp_path, base_dir, tiny_artifact):
@@ -1244,23 +1180,15 @@ def test_train_reads_a_self_generated_artifact_by_its_provenance_not_its_id(
     (``self-generated:eeee...``) is not that string. Without the artifact's meta the run would
     warn about an artifact mismatch; with it, an artifact recording the calibrated frame is
     silent."""
-    import lfa.workspace as ws_module
     from lfa.artifact.schema import META_KEY
     from lfa.recipe import RECORDED_SELF_GENERATED_FRAME, SELF_GENERATED_REFERENCE
 
     params, _ = tiny_artifact
-
-    def fake_build(model_id, out_path, options, **kwargs):
-        built = copy.deepcopy(params)
-        built[META_KEY] = dict(built[META_KEY], model_id=model_id, provenance=SELF_GENERATED,
-                               corpus_sha256="e" * 64,
-                               selfgen_frame=dict(RECORDED_SELF_GENERATED_FRAME, seed=42))
-        torch.save(built, out_path)
-        corpus = Path(out_path).with_suffix(".corpus.jsonl")
-        corpus.write_text('{"text": "x"}\n')
-        Path(str(corpus) + ".manifest.json").write_text('{"corpus_sha256": "%s"}' % ("e" * 64))
-        return Path(out_path)
-    monkeypatch.setattr(ws_module, "build_artifact_self_generated", fake_build)
+    built = copy.deepcopy(params)
+    built[META_KEY] = dict(built[META_KEY], model_id=str(base_dir), provenance=SELF_GENERATED,
+                           corpus_sha256="e" * 64,
+                           selfgen_frame=dict(RECORDED_SELF_GENERATED_FRAME, seed=42))
+    _fake_store(monkeypatch, tmp_path, built)
 
     ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact=SELF_GENERATED)
     assert ws._artifact_meta()["provenance"] == SELF_GENERATED
@@ -1273,20 +1201,51 @@ def test_train_reads_a_self_generated_artifact_by_its_provenance_not_its_id(
     assert not any("artifact" in note for note in warned), warned
 
 
-def test_artifact_meta_is_empty_without_an_artifact(tmp_path, registry, base_dir):
-    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact="tiny", fetch=False)
+def test_another_workspaces_self_generated_v1_keeps_the_recipe_silent_and_extends(
+        tmp_path, base_dir, corpus_a, tiny_artifact, caplog):
+    """Review focus: a user who passes another workspace's `artifacts/v1.pt` gets the same
+    workspace as the one built through the store -- the id and the provenance come from the
+    file's meta, so the recipe calibrated against ``self-generated`` stays silent, and the
+    per-site counts the build recorded let `extend` weight the next domain."""
+    from lfa.artifact.schema import META_KEY
+    from lfa.recipe import RECORDED_SELF_GENERATED_FRAME, SELF_GENERATED_REFERENCE
+
+    params, _ = tiny_artifact
+    built = copy.deepcopy(params)
+    built[META_KEY] = dict(built[META_KEY], model_id=str(base_dir), provenance=SELF_GENERATED,
+                           corpus_sha256="d" * 64,
+                           selfgen_frame=dict(RECORDED_SELF_GENERATED_FRAME, seed=42))
+    first = tmp_path / "first_ws" / "artifacts"
+    first.mkdir(parents=True)
+    torch.save(built, first / "v1.pt")
+
+    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact=str(first / "v1.pt"))
+    assert ws.state["artifact_id"] == "self-generated:" + "d" * 12
+    assert ws.state["artifact_provenance"] == SELF_GENERATED
+
+    recipe = tiny_recipe(base_dir, calibrated_artifact=SELF_GENERATED_REFERENCE)
+    with caplog.at_level("WARNING", logger="lfa.workspace"):
+        ws.train(corpus_a, recipe=recipe, device="cpu")
+    warned = [r.message for r in caplog.records if r.name == "lfa.workspace"
+              and r.levelname == "WARNING"]
+    assert not any("artifact" in note for note in warned), warned
+
+    extended = ws.extend(need=NEED, k_domain=K_DOMAIN, device="cpu")
+    assert load_artifact(extended)["1_pre_mlp"]["n_samples"] == 1000 + NEED
+
+
+def test_artifact_meta_is_empty_without_an_artifact(tmp_path, base_dir):
+    ws = new_workspace(tmp_path / "ws", base_dir)
+    ws.state["current_artifact"] = None
     assert ws._artifact_meta() == {}
 
 
 def test_init_self_generated_rollback_keeps_files_it_did_not_write(tmp_path, base_dir,
                                                                     monkeypatch):
     """The rollback removes what this init made -- not a v1 file that was already there."""
-    import lfa.workspace as ws_module
-
-    def failing(model_id, out_path, options, **kwargs):
-        Path(out_path).with_suffix(".corpus.jsonl").write_text('{"text": "x"}\n')
+    def failing(model_id, options, **kwargs):
         raise RuntimeError("no card")
-    monkeypatch.setattr(ws_module, "build_artifact_self_generated", failing)
+    monkeypatch.setattr(workspace_module, "obtain_self_generated", failing)
     kept = tmp_path / "ws" / "artifacts" / "v1.pt"
     kept.parent.mkdir(parents=True)
     kept.write_bytes(b"not mine")
@@ -1294,7 +1253,7 @@ def test_init_self_generated_rollback_keeps_files_it_did_not_write(tmp_path, bas
     with pytest.raises(RuntimeError, match="no card"):
         Workspace.init(tmp_path / "ws", str(base_dir), artifact=SELF_GENERATED)
     assert kept.read_bytes() == b"not mine"
-    assert not (tmp_path / "ws" / "artifacts" / "v1.corpus.jsonl").exists()
+    assert sorted(p.name for p in kept.parent.iterdir()) == ["v1.pt"]
 
 
 # ------------------------------------------------------------------------- the supplement step
@@ -1325,10 +1284,10 @@ def supplement_writer(monkeypatch):
     return calls
 
 
-def test_train_writes_the_supplement_from_the_training_side_and_records_it(tmp_path, registry,
+def test_train_writes_the_supplement_from_the_training_side_and_records_it(tmp_path,
                                                                             base_dir, corpus_a,
                                                                             supplement_writer):
-    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact="tiny")
+    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact=TINY_ARTIFACT_PATH)
     recipe = tiny_recipe(base_dir, val_fraction=0.25, supplement_fraction=0.2)
 
     entry = ws.train(corpus_a, recipe=recipe, device="cpu")
@@ -1344,9 +1303,9 @@ def test_train_writes_the_supplement_from_the_training_side_and_records_it(tmp_p
     assert entry["n_val_docs"] == 2                                 # held-out count untouched
 
 
-def test_a_matching_supplement_is_reused_not_rewritten(tmp_path, registry, base_dir, corpus_a,
+def test_a_matching_supplement_is_reused_not_rewritten(tmp_path, base_dir, corpus_a,
                                                         supplement_writer):
-    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact="tiny")
+    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact=TINY_ARTIFACT_PATH)
     recipe = tiny_recipe(base_dir, supplement_fraction=0.2)
     ws.train(corpus_a, recipe=recipe, device="cpu")
     ws.train(corpus_a, recipe=recipe, device="cpu")                # a repeat of the stage
@@ -1355,9 +1314,9 @@ def test_a_matching_supplement_is_reused_not_rewritten(tmp_path, registry, base_
     assert len(supplement_writer) == 1                              # the same description reuses
 
 
-def test_a_different_domain_description_rewrites_the_supplement(tmp_path, registry, base_dir,
+def test_a_different_domain_description_rewrites_the_supplement(tmp_path, base_dir,
                                                                 corpus_a, supplement_writer):
-    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact="tiny")
+    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact=TINY_ARTIFACT_PATH)
     recipe = tiny_recipe(base_dir, supplement_fraction=0.2)
     ws.train(corpus_a, recipe=recipe, device="cpu")
     ws.train(corpus_a, recipe=recipe, device="cpu", domain_description="Bronze Age metallurgy")
@@ -1368,11 +1327,11 @@ def test_a_different_domain_description_rewrites_the_supplement(tmp_path, regist
     assert [c["domain"] for c in supplement_writer][-1] == "geology"
 
 
-def test_an_edited_corpus_regenerates_the_supplement(tmp_path, registry, base_dir,
+def test_an_edited_corpus_regenerates_the_supplement(tmp_path, base_dir,
                                                      supplement_writer):
     from conftest import make_corpus
     corpus = make_corpus(tmp_path / "domain_x", "geology")
-    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact="tiny")
+    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact=TINY_ARTIFACT_PATH)
     recipe = tiny_recipe(base_dir, supplement_fraction=0.2)
     ws.train(corpus, recipe=recipe, device="cpu")
     (corpus / "doc_0.txt").write_text("a different document about geology " * 6)
@@ -1381,9 +1340,9 @@ def test_an_edited_corpus_regenerates_the_supplement(tmp_path, registry, base_di
     assert supplement_writer[0]["corpus_sha256"] != supplement_writer[1]["corpus_sha256"]
 
 
-def test_supplement_false_trains_at_zero_and_warns(tmp_path, registry, base_dir, corpus_a,
+def test_supplement_false_trains_at_zero_and_warns(tmp_path, base_dir, corpus_a,
                                                     supplement_writer, caplog):
-    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact="tiny")
+    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact=TINY_ARTIFACT_PATH)
     recipe = tiny_recipe(base_dir, supplement_fraction=0.2)
     with caplog.at_level("WARNING", logger="lfa.workspace"):
         entry = ws.train(corpus_a, recipe=recipe, device="cpu", supplement=False)
@@ -1392,20 +1351,20 @@ def test_supplement_false_trains_at_zero_and_warns(tmp_path, registry, base_dir,
                for r in caplog.records)
 
 
-def test_a_supplement_path_is_used_as_given(tmp_path, registry, base_dir, corpus_a,
+def test_a_supplement_path_is_used_as_given(tmp_path, base_dir, corpus_a,
                                              supplement_writer):
     given = tmp_path / "mine.jsonl"
     given.write_text('{"prompt": "q?", "response": "%s"}\n' % ("word " * 10) * 3)
-    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact="tiny")
+    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact=TINY_ARTIFACT_PATH)
     entry = ws.train(corpus_a, recipe=tiny_recipe(base_dir, supplement_fraction=0.2),
                      device="cpu", supplement=given)
     assert not supplement_writer and entry["supplement"]["path"] == str(given)
     assert entry["supplement"]["n_pairs_available"] == 3
 
 
-def test_prepare_supplement_writes_once_and_names_the_file(tmp_path, registry, base_dir,
+def test_prepare_supplement_writes_once_and_names_the_file(tmp_path, base_dir,
                                                             corpus_a, supplement_writer):
-    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact="tiny")
+    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact=TINY_ARTIFACT_PATH)
     first = ws.prepare_supplement(corpus_a, recipe=tiny_recipe(base_dir), device="cpu")
     second = ws.prepare_supplement(corpus_a, recipe=tiny_recipe(base_dir), device="cpu")
     assert first == second and first.name == "supplement.jsonl" and len(supplement_writer) == 1
@@ -1414,8 +1373,8 @@ def test_prepare_supplement_writes_once_and_names_the_file(tmp_path, registry, b
 
 
 def test_the_unanchored_control_mixes_the_stage_supplement_at_its_fraction(
-        tmp_path, registry, base_dir, corpus_a, supplement_writer, monkeypatch):
-    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact="tiny")
+        tmp_path, base_dir, corpus_a, supplement_writer, monkeypatch):
+    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact=TINY_ARTIFACT_PATH)
     entry = ws.train(corpus_a, recipe=tiny_recipe(base_dir, supplement_fraction=0.2),
                      device="cpu")
     mixed = []
@@ -1433,19 +1392,19 @@ def test_the_unanchored_control_mixes_the_stage_supplement_at_its_fraction(
     assert mixed == [(entry["supplement"]["path"], 0.2)]
 
 
-def test_a_single_device_map_still_writes_the_supplement(tmp_path, registry, base_dir,
+def test_a_single_device_map_still_writes_the_supplement(tmp_path, base_dir,
                                                          corpus_a, supplement_writer):
-    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact="tiny")
+    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact=TINY_ARTIFACT_PATH)
     entry = ws.train(corpus_a, recipe=tiny_recipe(base_dir, supplement_fraction=0.2),
                      device={"": "cpu"})
     assert len(supplement_writer) == 1 and supplement_writer[0]["device"] == "cpu"
     assert entry["supplement"]["n_pairs_used"] > 0
 
 
-def test_a_sharded_map_with_allow_sharding_gets_past_the_supplement_step(tmp_path, registry,
+def test_a_sharded_map_with_allow_sharding_gets_past_the_supplement_step(tmp_path,
                                                                          base_dir, corpus_a,
                                                                          supplement_writer):
-    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact="tiny")
+    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact=TINY_ARTIFACT_PATH)
     sharded = {"model": "cpu", "lm_head": "cpu:1"}
     try:
         ws.train(corpus_a, recipe=tiny_recipe(base_dir, supplement_fraction=0.2),
@@ -1480,17 +1439,17 @@ def _fake_regenerate_builder(monkeypatch, tiny_artifact):
     return calls
 
 
-def test_regenerate_before_a_trained_stage_is_a_stage_order_error(tmp_path, registry, base_dir):
-    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact="tiny")
+def test_regenerate_before_a_trained_stage_is_a_stage_order_error(tmp_path, base_dir):
+    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact=TINY_ARTIFACT_PATH)
     with pytest.raises(StageOrderError, match="Nothing to"):
         ws.regenerate_artifact(device="cpu")
 
 
-def test_regenerate_writes_v2_from_the_fused_model_with_no_chat_share(tmp_path, registry,
+def test_regenerate_writes_v2_from_the_fused_model_with_no_chat_share(tmp_path,
                                                                        base_dir, corpus_a,
                                                                        tiny_artifact, monkeypatch):
     calls = _fake_regenerate_builder(monkeypatch, tiny_artifact)
-    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact="tiny")
+    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact=TINY_ARTIFACT_PATH)
     ws.train(corpus_a, recipe=tiny_recipe(base_dir, supplement_fraction=0.0), device="cpu")
 
     out = ws.regenerate_artifact(device="cpu")
@@ -1503,11 +1462,11 @@ def test_regenerate_writes_v2_from_the_fused_model_with_no_chat_share(tmp_path, 
     assert ws.state["pending_extend"] is False
 
 
-def test_the_next_stage_records_the_route_it_anchored_under(tmp_path, registry, base_dir,
+def test_the_next_stage_records_the_route_it_anchored_under(tmp_path, base_dir,
                                                              corpus_a, corpus_b, tiny_artifact,
                                                              monkeypatch):
     _fake_regenerate_builder(monkeypatch, tiny_artifact)
-    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact="tiny")
+    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact=TINY_ARTIFACT_PATH)
     recipe = tiny_recipe(base_dir, supplement_fraction=0.0)
     ws.train(corpus_a, recipe=recipe, device="cpu")
     ws.regenerate_artifact(device="cpu")
@@ -1516,7 +1475,7 @@ def test_the_next_stage_records_the_route_it_anchored_under(tmp_path, registry, 
 
 
 def test_a_chain_spec_accepts_a_top_level_artifact_route_and_refuses_a_per_domain_one(
-        tmp_path, registry, base_dir, corpus_a, corpus_b, tiny_artifact, monkeypatch):
+        tmp_path, base_dir, corpus_a, corpus_b, tiny_artifact, monkeypatch):
     calls = _fake_regenerate_builder(monkeypatch, tiny_artifact)
     ws = _chain_workspace(tmp_path, base_dir)
     spec = tmp_path / "domains.yaml"
@@ -1537,11 +1496,11 @@ def test_a_chain_spec_accepts_a_top_level_artifact_route_and_refuses_a_per_domai
         ws.chain(spec, device="cpu", need=NEED, k_domain=K_DOMAIN)
 
 
-def test_regenerate_warns_off_calibration_and_continues(tmp_path, registry, base_dir, corpus_a,
+def test_regenerate_warns_off_calibration_and_continues(tmp_path, base_dir, corpus_a,
                                                         corpus_b, tiny_artifact, monkeypatch,
                                                         caplog):
     _fake_regenerate_builder(monkeypatch, tiny_artifact)
-    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact="tiny")
+    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact=TINY_ARTIFACT_PATH)
     recipe = tiny_recipe(base_dir, supplement_fraction=0.0, calibrated_artifact="tiny")
     ws.train(corpus_a, recipe=recipe, device="cpu")
     ws.regenerate_artifact(device="cpu")

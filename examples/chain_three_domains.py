@@ -131,11 +131,8 @@ def materialise(spec_path: Path, out: Path, *, n_documents: int, n_sentences: in
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--model", required=True, help="a Hub id or a local checkpoint path")
-    parser.add_argument("--artifact", default="qwen3-0.6b-gmm1543k-int8",
-                        help="a published artifact id or a path to an artifact file "
-                             "(default: %(default)s)")
-    parser.add_argument("--artifact-id", dest="artifact_id",
-                        help="the published id a locally-passed artifact FILE is a copy of")
+    parser.add_argument("--artifact", required=True,
+                        help="`self-generated` or the path to an artifact file")
     parser.add_argument("--out", required=True, help="directory for the corpora and the workspace")
     parser.add_argument("--spec", type=Path, default=DEFAULT_SPEC,
                         help="the chain spec to run (default: %(default)s)")
@@ -163,7 +160,7 @@ def main(argv: list[str] | None = None) -> int:
                        epochs=args.epochs)
 
     workspace = Workspace.init(out / "workspace", args.model, artifact=args.artifact,
-                               artifact_id=args.artifact_id, recipe=args.recipe)
+                               recipe=args.recipe)
     entries = workspace.chain(spec, device=args.device)
 
     print(f"\n{len(entries)} stages trained:")

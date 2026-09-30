@@ -30,8 +30,8 @@ EXAMPLES = REPO_ROOT / "examples"
 #: Every subcommand the CLI defines. Kept as a literal list rather than read off the parser: the
 #: point is to notice a subcommand that stopped parsing, and a list generated from the parser
 #: would follow it into the change.
-SUBCOMMANDS = ["init", "fetch-artifact", "list-artifacts", "train", "extend", "evaluate", "fuse",
-               "chain", "build-artifact", "prepare-seed-corpus", "prepare-domain"]
+SUBCOMMANDS = ["init", "list-artifacts", "train", "extend", "evaluate", "fuse", "chain",
+               "build-artifact", "prepare-seed-corpus", "prepare-domain"]
 
 
 def run(command: list[str], **kwargs) -> subprocess.CompletedProcess:
@@ -52,29 +52,6 @@ def assert_succeeded(result: subprocess.CompletedProcess) -> None:
     assert result.returncode == 0, (
         f"exit {result.returncode}\n--- stdout ---\n{result.stdout}\n--- stderr ---\n"
         f"{result.stderr}")
-
-
-#: Where a reader is told what to do while the release assets do not exist. Each of these has to
-#: name `--artifact-id`: a bare `--artifact <path>` gives a workspace that warns falsely on every
-#: stage and then refuses at the first `extend`, an hour and a half after the mistake was made.
-PRE_RELEASE_FALLBACK_SITES = ["README.md", "docs/quickstart.md", "examples/quickstart.py",
-                              "examples/chain_three_domains.py"]
-
-
-@pytest.mark.parametrize("relative_path", PRE_RELEASE_FALLBACK_SITES)
-def test_the_local_artifact_route_is_documented_with_its_id(relative_path):
-    """The documented route must be a route that works, not one that works for one stage.
-
-    Found 2026-09-07: all four of these said `--artifact /path/to/distribution_stats.pt` and none
-    of them said `--artifact-id`. The shipped artifact carries neither per-site sample counts nor
-    a `__meta__` block, so a workspace built that way cannot compute the new domain's sample share
-    and refuses to extend -- after stage one has trained.
-    """
-    # Whitespace-collapsed: two of these wrap the command across lines, and a line break in a
-    # docstring is not a different instruction.
-    text = " ".join((REPO_ROOT / relative_path).read_text().split())
-    assert "--artifact /path/to/distribution_stats.pt" in text
-    assert "--artifact-id qwen3-0.6b-gmm1543k-int8" in text
 
 
 @pytest.fixture(scope="module")

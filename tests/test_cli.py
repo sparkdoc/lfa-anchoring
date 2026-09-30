@@ -24,13 +24,23 @@ from lfa.workspace import Workspace
 
 #: Every subcommand the CLI publishes; the help and the parse of each one is asserted below.
 SUBCOMMANDS = [
-    "init", "fetch-artifact", "train", "extend", "evaluate", "fuse", "chain",
+    "init", "train", "extend", "evaluate", "fuse", "chain",
     "build-artifact", "prepare-seed-corpus", "prepare-domain", "list-artifacts",
     "prepare-supplement", "regenerate-artifact",
 ]
 
 
 # ------------------------------------------------------------------------------------ fixtures
+
+#: The fixture artifact's path, set once per module: what `--artifact PATH` is given.
+TINY_ARTIFACT_PATH: str = ""
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _tiny_artifact_path(tiny_artifact):
+    global TINY_ARTIFACT_PATH
+    TINY_ARTIFACT_PATH = str(tiny_artifact[1])
+
 
 @pytest.fixture(scope="module")
 def recipe_path(tmp_path_factory, base_dir):
@@ -39,10 +49,10 @@ def recipe_path(tmp_path_factory, base_dir):
 
 
 @pytest.fixture(scope="module")
-def trained(tmp_path_factory, registry, base_dir, corpus_a, recipe_path):
+def trained(tmp_path_factory, base_dir, corpus_a, recipe_path):
     """A workspace taken through `lfa init` and one `lfa train`, entirely through argv."""
     workspace = tmp_path_factory.mktemp("cli") / "ws"
-    assert main(["init", str(workspace), "--model", str(base_dir), "--artifact", "tiny"]) == 0
+    assert main(["init", str(workspace), "--model", str(base_dir), "--artifact", TINY_ARTIFACT_PATH]) == 0
     assert main(["train", "--workspace", str(workspace), "--corpus", str(corpus_a),
                  "--recipe", str(recipe_path), "--device", "cpu"]) == 0
     return workspace
@@ -78,23 +88,45 @@ def test_every_subcommand_renders_its_own_help(subcommand, capsys):
 
 # ------------------------------------------------------------------------------ list-artifacts
 
-def test_list_artifacts_prints_the_shipped_artifact_id(capsys):
+def test_list_artifacts_lists_the_store(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr("lfa.cli.list_store", lambda: [
+        {"path": tmp_path / "e", "model_id": "Qwen/Qwen3-0.6B",
+         "frame": {"n_raw": 2500, "max_new_tokens": 2048, "gmm_k": 32},
+         "built_at": "2026-09-28", "size_mb": 108, "state": "built"}])
     assert main(["list-artifacts"]) == 0
-
     out = capsys.readouterr().out
-    assert "qwen3-0.6b-gmm1543k-int8" in out
-    assert "qwen3-0.6b-diagonal" in out
+    assert "Qwen/Qwen3-0.6B" in out and "2500 documents x 2048 tokens" in out and "108 MB" in out
 
 
-# ------------------------------------------------------------------------------ fetch-artifact
+def test_list_artifacts_on_an_empty_store_says_how_to_fill_it(monkeypatch, capsys):
+    monkeypatch.setattr("lfa.cli.list_store", lambda: [])
+    assert main(["list-artifacts"]) == 0
+    assert "--artifact self-generated" in capsys.readouterr().out
 
-def test_fetch_artifact_writes_the_artifact_into_the_destination(tmp_path, registry, capsys):
-    dest = tmp_path / "artifacts"
 
-    assert main(["fetch-artifact", "tiny", "--dest", str(dest)]) == 0
+def test_list_artifacts_reads_the_store_the_environment_names(tmp_path, monkeypatch, capsys):
+    """Unpatched: `$LFA_ARTIFACT_STORE` pointing at nothing is an empty store, not an error."""
+    monkeypatch.setenv("LFA_ARTIFACT_STORE", str(tmp_path / "no_store_here"))
+    assert main(["list-artifacts"]) == 0
+    assert "No self-generated artifacts" in capsys.readouterr().out
 
-    assert (dest / "tiny.pt").is_file()
-    assert str(dest / "tiny.pt") in capsys.readouterr().out
+
+# ---------------------------------------------------------------------------------------- init
+
+def test_init_needs_an_artifact_and_its_help_names_self_generated(capsys):
+    with pytest.raises(SystemExit) as exit_info:
+        main(["init", "ws", "--model", "m"])
+    assert exit_info.value.code == 2
+    assert "--artifact" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        main(["init", "--help"])
+    assert "self-generated" in capsys.readouterr().out
+
+
+def test_there_is_no_subcommand_that_downloads_an_artifact(capsys):
+    with pytest.raises(SystemExit):
+        main(["fetch-artifact", "x"])
+    assert "invalid choice" in capsys.readouterr().err
 
 
 # --------------------------------------------------------------------------------- init, train
@@ -110,10 +142,10 @@ def test_init_then_train_leaves_one_history_entry(trained, corpus_a):
     assert Path(history[0]["adapter"], "adapter_config.json").is_file()
 
 
-def test_train_reports_the_run_directory_it_wrote(tmp_path, registry, base_dir, corpus_a,
+def test_train_reports_the_run_directory_it_wrote(tmp_path, base_dir, corpus_a,
                                                   recipe_path, capsys):
     workspace = tmp_path / "ws"
-    main(["init", str(workspace), "--model", str(base_dir), "--artifact", "tiny"])
+    main(["init", str(workspace), "--model", str(base_dir), "--artifact", TINY_ARTIFACT_PATH])
     capsys.readouterr()
 
     assert main(["train", "--workspace", str(workspace), "--corpus", str(corpus_a),
@@ -122,11 +154,11 @@ def test_train_reports_the_run_directory_it_wrote(tmp_path, registry, base_dir, 
     assert str(workspace / "runs" / "stage1") in capsys.readouterr().out
 
 
-def test_the_recipes_loader_frame_reaches_the_runs_config(tmp_path, registry, base_dir, corpus_a,
+def test_the_recipes_loader_frame_reaches_the_runs_config(tmp_path, base_dir, corpus_a,
                                                          recipe_path):
     """There is no flag for it: `keep_short_whole` is the recipe's, and the run records it."""
     workspace = tmp_path / "ws"
-    assert main(["init", str(workspace), "--model", str(base_dir), "--artifact", "tiny"]) == 0
+    assert main(["init", str(workspace), "--model", str(base_dir), "--artifact", TINY_ARTIFACT_PATH]) == 0
 
     assert main(["train", "--workspace", str(workspace), "--corpus", str(corpus_a),
                  "--recipe", str(recipe_path), "--device", "cpu"]) == 0
@@ -136,28 +168,9 @@ def test_the_recipes_loader_frame_reaches_the_runs_config(tmp_path, registry, ba
         recipe_path.read_text())["keep_short_whole"]
 
 
-def test_a_local_artifact_can_be_recorded_as_the_published_one_it_copies(tmp_path, registry,
-                                                                        base_dir, tiny_artifact):
-    """`--artifact-id`: the file was fetched out of band, but the recipe's calibration still
-    reads against the registry id rather than against a path."""
-    _, artifact_path = tiny_artifact
+def test_full_weight_reaches_the_runs_config(tmp_path, base_dir, corpus_a, recipe_path):
     workspace = tmp_path / "ws"
-
-    assert main(["init", str(workspace), "--model", str(base_dir),
-                 "--artifact", str(artifact_path), "--artifact-id", "tiny"]) == 0
-
-    assert json.loads((workspace / "workspace.json").read_text())["artifact_id"] == "tiny"
-
-
-def test_an_unpublished_artifact_id_is_refused(tmp_path, registry, base_dir, tiny_artifact):
-    _, artifact_path = tiny_artifact
-    assert main(["init", str(tmp_path / "ws"), "--model", str(base_dir),
-                 "--artifact", str(artifact_path), "--artifact-id", "not-published"]) == 2
-
-
-def test_full_weight_reaches_the_runs_config(tmp_path, registry, base_dir, corpus_a, recipe_path):
-    workspace = tmp_path / "ws"
-    assert main(["init", str(workspace), "--model", str(base_dir), "--artifact", "tiny"]) == 0
+    assert main(["init", str(workspace), "--model", str(base_dir), "--artifact", TINY_ARTIFACT_PATH]) == 0
 
     assert main(["train", "--workspace", str(workspace), "--corpus", str(corpus_a),
                  "--recipe", str(recipe_path), "--device", "cpu", "--full-weight"]) == 0
@@ -179,12 +192,12 @@ def test_the_cli_reports_its_version(capsys):
     assert capsys.readouterr().out.strip() == f"lfa-anchoring {__version__}"
 
 
-def test_init_says_the_next_command_rather_than_repeating_the_library_line(tmp_path, registry,
+def test_init_says_the_next_command_rather_than_repeating_the_library_line(tmp_path,
                                                                             base_dir, capsys):
     """`Workspace.init` logs that it created the workspace and the CLI configures logging, so
     printing the same sentence here showed the very first line the package emits twice."""
     assert main(["init", str(tmp_path / "ws"), "--model", str(base_dir),
-                 "--artifact", "tiny"]) == 0
+                 "--artifact", TINY_ARTIFACT_PATH]) == 0
 
     printed = capsys.readouterr().out.strip().splitlines()
     assert len(printed) == 1
@@ -206,9 +219,10 @@ def test_an_interrupted_command_says_how_to_continue_rather_than_printing_a_trac
     captured = capsys.readouterr()
     assert "Traceback" not in captured.err
     assert "--resume" in captured.err and "interrupted" in captured.err
+    assert "`lfa init`" in captured.err                   # a self-generated build resumes too
 
 
-def test_chain_passes_the_extension_knobs_it_advertises(tmp_path, registry, base_dir, monkeypatch):
+def test_chain_passes_the_extension_knobs_it_advertises(tmp_path, base_dir, monkeypatch):
     """`--need` is the knob docs/faq.md tells a memory-constrained user to turn down, and a
     chain runs an extension between every pair of domains."""
     seen = {}
@@ -217,7 +231,7 @@ def test_chain_passes_the_extension_knobs_it_advertises(tmp_path, registry, base
     spec = tmp_path / "domains.yaml"
     spec.write_text("domains: []\n")
     workspace = tmp_path / "ws"
-    assert main(["init", str(workspace), "--model", str(base_dir), "--artifact", "tiny"]) == 0
+    assert main(["init", str(workspace), "--model", str(base_dir), "--artifact", TINY_ARTIFACT_PATH]) == 0
 
     assert main(["chain", str(spec), "--workspace", str(workspace),
                  "--need", "1234", "--k-domain", "3"]) == 0
@@ -247,25 +261,27 @@ def test_a_sharding_request_without_the_flag_exits_two_with_one_line(trained, co
     assert "allow-sharding" in lines[0] or "allow_sharding" in lines[0]
 
 
-def test_an_unknown_artifact_id_exits_two_with_one_line(tmp_path, base_dir, capsys):
+def test_an_artifact_that_is_neither_self_generated_nor_a_file_exits_two_with_one_line(
+        tmp_path, base_dir, capsys):
     code = main(["init", str(tmp_path / "ws"), "--model", str(base_dir),
                  "--artifact", "no-such-artifact"])
 
     assert code == 2
-    assert len(error_lines(capsys)) == 1
+    lines = error_lines(capsys)
+    assert len(lines) == 1
+    assert "--artifact self-generated" in lines[0]
 
 
 @pytest.mark.parametrize("subcommand", ["fuse", "evaluate"])
 def test_reading_a_workspace_with_no_trained_stage_exits_two_with_one_line(subcommand, tmp_path,
-                                                                          registry, base_dir,
-                                                                          capsys):
+                                                                          base_dir, capsys):
     """`lfa fuse` (or `evaluate`) right after `init`: a first-session mistake, not an exotic one.
 
     It used to raise a bare `RuntimeError`, which is not in `USER_FACING_ERRORS`, so the message --
     which already ends in the command to run instead -- arrived as the last line of a traceback.
     """
     workspace = tmp_path / "ws"
-    assert main(["init", str(workspace), "--model", str(base_dir), "--artifact", "tiny"]) == 0
+    assert main(["init", str(workspace), "--model", str(base_dir), "--artifact", TINY_ARTIFACT_PATH]) == 0
     capsys.readouterr()
 
     code = main([subcommand, "--workspace", str(workspace)])
@@ -278,9 +294,13 @@ def test_reading_a_workspace_with_no_trained_stage_exits_two_with_one_line(subco
 
 def test_a_workspace_with_no_artifact_exits_two_with_one_line(tmp_path, base_dir, corpus_a,
                                                               recipe_path, capsys):
-    """`init --artifact` can be told not to fetch; training then has no p(h) to anchor against."""
+    """`init` always puts an artifact in place; a workspace without one (written by an older
+    version, or with its artifact entry cleared by hand) has no p(h) to anchor against."""
     workspace = tmp_path / "ws"
-    Workspace.init(workspace, str(base_dir), artifact="qwen3-0.6b-gmm1543k-int8", fetch=False)
+    Workspace.init(workspace, str(base_dir), artifact=TINY_ARTIFACT_PATH)
+    state = json.loads((workspace / "workspace.json").read_text())
+    state["current_artifact"] = None
+    (workspace / "workspace.json").write_text(json.dumps(state))
     capsys.readouterr()
 
     code = main(["train", "--workspace", str(workspace), "--corpus", str(corpus_a),
@@ -289,7 +309,7 @@ def test_a_workspace_with_no_artifact_exits_two_with_one_line(tmp_path, base_dir
     assert code == 2
     lines = error_lines(capsys)
     assert len(lines) == 1
-    assert "fetch-artifact" in lines[0]
+    assert "--artifact self-generated" in lines[0]
 
 
 def test_a_seed_corpus_source_that_cannot_be_loaded_exits_two_with_one_line(tmp_path, capsys,
@@ -335,7 +355,7 @@ def test_evaluate_keeps_the_domain_axis_when_the_hub_is_unreachable(trained, mon
 
 
 @pytest.mark.parametrize("broken", ["recipe", "chain spec"])
-def test_a_yaml_file_that_does_not_parse_exits_two_with_one_line(broken, tmp_path, registry,
+def test_a_yaml_file_that_does_not_parse_exits_two_with_one_line(broken, tmp_path,
                                                                  base_dir, corpus_a, capsys):
     """A typo in a YAML file is a user's mistake, and it names the file like every other one.
 
@@ -343,7 +363,7 @@ def test_a_yaml_file_that_does_not_parse_exits_two_with_one_line(broken, tmp_pat
     the parse error escaped, as `yaml.parser.ParserError`.
     """
     workspace = tmp_path / "ws"
-    assert main(["init", str(workspace), "--model", str(base_dir), "--artifact", "tiny"]) == 0
+    assert main(["init", str(workspace), "--model", str(base_dir), "--artifact", TINY_ARTIFACT_PATH]) == 0
     broken_file = tmp_path / f"{broken.split()[0]}.yaml"
     broken_file.write_text("domains: [\n  - name: alpha")          # unterminated flow sequence
     capsys.readouterr()
@@ -373,12 +393,12 @@ def test_a_directory_that_is_not_a_workspace_exits_two_with_one_line(tmp_path, c
     assert "lfa init" in lines[0]                # the message ends in the command to run instead
 
 
-def test_initialising_over_an_existing_workspace_exits_two_with_one_line(tmp_path, registry,
+def test_initialising_over_an_existing_workspace_exits_two_with_one_line(tmp_path,
                                                                          base_dir, capsys):
     workspace = tmp_path / "ws"
-    assert main(["init", str(workspace), "--model", str(base_dir), "--artifact", "tiny"]) == 0
+    assert main(["init", str(workspace), "--model", str(base_dir), "--artifact", TINY_ARTIFACT_PATH]) == 0
 
-    code = main(["init", str(workspace), "--model", str(base_dir), "--artifact", "tiny"])
+    code = main(["init", str(workspace), "--model", str(base_dir), "--artifact", TINY_ARTIFACT_PATH])
 
     assert code == 2
     lines = error_lines(capsys)
@@ -388,10 +408,10 @@ def test_initialising_over_an_existing_workspace_exits_two_with_one_line(tmp_pat
 
 # ------------------------------------------------------------------------------ extend, chain
 
-def test_extend_folds_the_stage_into_a_second_artifact_version(tmp_path, registry, base_dir,
+def test_extend_folds_the_stage_into_a_second_artifact_version(tmp_path, base_dir,
                                                                corpus_a, recipe_path):
     workspace = tmp_path / "ws"
-    assert main(["init", str(workspace), "--model", str(base_dir), "--artifact", "tiny"]) == 0
+    assert main(["init", str(workspace), "--model", str(base_dir), "--artifact", TINY_ARTIFACT_PATH]) == 0
     assert main(["train", "--workspace", str(workspace), "--corpus", str(corpus_a),
                  "--recipe", str(recipe_path), "--device", "cpu"]) == 0
 
@@ -405,10 +425,10 @@ def test_extend_folds_the_stage_into_a_second_artifact_version(tmp_path, registr
     assert state["pending_extend"] is False
 
 
-def test_chain_trains_every_domain_in_the_spec(tmp_path, registry, base_dir, corpus_a, corpus_b,
+def test_chain_trains_every_domain_in_the_spec(tmp_path, base_dir, corpus_a, corpus_b,
                                                recipe_path):
     workspace = tmp_path / "ws"
-    assert main(["init", str(workspace), "--model", str(base_dir), "--artifact", "tiny",
+    assert main(["init", str(workspace), "--model", str(base_dir), "--artifact", TINY_ARTIFACT_PATH,
                  "--recipe", str(recipe_path)]) == 0
     spec = tmp_path / "domains.yaml"
     spec.write_text(yaml.safe_dump({"domains": [{"name": "alpha", "corpus": str(corpus_a)},
@@ -491,24 +511,59 @@ def test_build_artifact_over_a_corpus_keeps_its_own_sample_count(monkeypatch, ca
     assert seen["max_samples"] == 1_500_000
 
 
-def test_init_self_generated_is_routed_to_the_builder(tmp_path, base_dir, tiny_artifact,
-                                                       monkeypatch, capsys):
+def _fake_store_entry(tmp_path, fixture, seen, monkeypatch):
+    """Patch the workspace's `obtain_self_generated` with a finished entry, recording its call."""
     import lfa.workspace as ws_module
-    _, fixture = tiny_artifact
-    seen = {}
+    entry = tmp_path / "entry"
+    entry.mkdir()
+    (entry / "artifact.pt").write_bytes(fixture.read_bytes())
+    (entry / "corpus.jsonl").write_text('{"text": "x"}\n')
+    manifest = {"corpus_sha256": "f" * 64}
+    (entry / "corpus.jsonl.manifest.json").write_text(json.dumps(manifest))
 
-    def fake_build(model_id, out_path, options, **kwargs):
-        seen["n_raw"] = options.n_raw
-        Path(out_path).write_bytes(fixture.read_bytes())
-        Path(out_path).with_suffix(".corpus.jsonl").write_text('{"text": "x"}\n')
-        Path(str(Path(out_path).with_suffix(".corpus.jsonl")) + ".manifest.json").write_text(
-            '{"corpus_sha256": "%s"}' % ("f" * 64))
-        return Path(out_path)
-    monkeypatch.setattr(ws_module, "build_artifact_self_generated", fake_build)
+    def fake_obtain(model_id, options, *, rebuild=False, **_):
+        seen.update(n_raw=options.n_raw, rebuild=rebuild)
+        return entry / "artifact.pt", manifest
+    monkeypatch.setattr(ws_module, "obtain_self_generated", fake_obtain)
+
+
+def test_init_self_generated_is_routed_to_the_store(tmp_path, base_dir, tiny_artifact,
+                                                     monkeypatch, capsys):
+    seen = {}
+    _fake_store_entry(tmp_path, tiny_artifact[1], seen, monkeypatch)
 
     assert main(["init", str(tmp_path / "ws"), "--model", str(base_dir),
                  "--artifact", "self-generated", "--n-raw", "7"]) == 0
-    assert seen["n_raw"] == 7
+    assert seen == {"n_raw": 7, "rebuild": False}
+    state = json.loads((tmp_path / "ws" / "workspace.json").read_text())
+    assert state["artifact_id"] == "self-generated:" + "f" * 12
+
+
+def test_init_rebuild_reaches_the_store(tmp_path, base_dir, tiny_artifact, monkeypatch, capsys):
+    seen = {}
+    _fake_store_entry(tmp_path, tiny_artifact[1], seen, monkeypatch)
+
+    assert main(["init", str(tmp_path / "ws"), "--model", str(base_dir),
+                 "--artifact", "self-generated", "--rebuild"]) == 0
+    assert seen["rebuild"] is True
+
+
+def test_a_self_generated_build_already_running_exits_two_with_one_line(tmp_path, base_dir,
+                                                                        monkeypatch, capsys):
+    """`StoreLocked` is a `RuntimeError`, so it is reported as a line only because it is named."""
+    import lfa.workspace as ws_module
+    from lfa.artifact.store import StoreLocked
+
+    def locked(model_id, options, **_):
+        raise StoreLocked("the entry is being built by process 4242 (lock /x/.lock). Wait.")
+    monkeypatch.setattr(ws_module, "obtain_self_generated", locked)
+
+    code = main(["init", str(tmp_path / "ws"), "--model", str(base_dir),
+                 "--artifact", "self-generated"])
+    assert code == 2
+    lines = error_lines(capsys)
+    assert len(lines) == 1 and "4242" in lines[0]
+    assert not (tmp_path / "ws").exists()
 
 
 def test_train_no_supplement_and_supplement_file_are_exclusive(capsys):

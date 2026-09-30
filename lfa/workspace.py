@@ -19,7 +19,8 @@ On disk::
     <workspace>/
       workspace.json                  the state below
       history.json                    one entry per training run, in order
-      artifacts/v1.pt, v2.pt, ...     p(h): v1 as fetched, vN+1 = vN extended with domain N
+      artifacts/v1.pt, v2.pt, ...     p(h): v1 as put in place at init, vN+1 = vN extended
+                                      with domain N
       models/stage1_fused/            base + stage 1, the model stage 2 adapts
       runs/stage1/                    a training run (config.json, final_model/, history)
 
@@ -48,8 +49,8 @@ import yaml
 from .adapters import get_adapter
 from .artifact.build import build_artifact_self_generated
 from .artifact.extend import artifact_carries_base_count, extend_artifact, gmm_site_keys
-from .artifact.fetch import ARTIFACTS, fetch_artifact
 from .artifact.schema import META_KEY, SELF_GENERATED, validate_against_model
+from .artifact.store import obtain_self_generated
 from .corpus import load_corpus, split_documents
 from .evaluate import (
     DOMAIN_ROW,
@@ -85,8 +86,8 @@ __all__ = ["Workspace", "StageOrderError", "WorkspaceNotReady", "WORKSPACE_FILE"
 WORKSPACE_FILE = "workspace.json"
 HISTORY_FILE = "history.json"
 
-#: The ``artifact`` value that makes :meth:`Workspace.init` build v1 from the model's own text
-#: instead of fetching or copying one.
+#: The ``artifact`` value that makes :meth:`Workspace.init` build v1 from the model's own text,
+#: or reuse one built earlier (:mod:`lfa.artifact.store`).
 SELF_GENERATED_ARTIFACT = "self-generated"
 
 #: Every field a chain spec's domain entry may carry (see :meth:`Workspace.chain`). Anything
@@ -279,6 +280,11 @@ def _table(before: dict, after: dict, unanchored: dict | None) -> str:
                       "", f"{GENERAL_ROW}: not measured ({', '.join(unmeasured)})"])
 
 
+def _meta_of(path: Path) -> dict:
+    """The ``__meta__`` block of the artifact file at ``path`` (``{}`` when it carries none)."""
+    return dict(torch.load(path, map_location="cpu", weights_only=False).get(META_KEY) or {})
+
+
 def _bundled_recipe_for(model_id: str) -> str | None:
     """The bundled recipe tuned for ``model_id`` (:meth:`lfa.recipe.Recipe.bundled_for`)."""
     return Recipe.bundled_for(model_id)
@@ -298,16 +304,15 @@ class Workspace:
             ``current_model``
                 What the *next* stage adapts: the base, or the fused model an extension left.
             ``current_artifact`` / ``artifact_version``
-                The p(h) file the next stage anchors against, and its version (v1 = as fetched).
+                The p(h) file the next stage anchors against, and its version (v1 = as put in
+                place at init).
             ``artifact_id``
-                The registry id v1 came from, ``None`` for a local file, or
-                ``"self-generated:<corpus sha256[:12]>"`` for one built from the model's own
-                text. It is what :meth:`lfa.recipe.Recipe.warnings` is read against, and it
-                supplies the base sample count an extension needs when the artifact itself
-                carries none.
+                ``"self-generated:<corpus sha256[:12]>"`` for an artifact fitted on the model's
+                own text (built at init or passed as a file whose meta says so), else the path it
+                was passed as. It is what :meth:`lfa.recipe.Recipe.warnings` is read against.
             ``artifact_provenance``
-                ``"self-generated"`` when v1 was built from the model's own text at init,
-                ``None`` otherwise.
+                ``"self-generated"`` when v1 was fitted on the model's own text, ``None``
+                otherwise.
             ``stage``
                 How many domains have been trained.
             ``recipe``
@@ -338,50 +343,45 @@ class Workspace:
         cls,
         path: str | Path,
         model_id: str,
-        artifact: str = "qwen3-0.6b-gmm1543k-int8",
+        artifact: str,
         recipe: str | None = None,
-        fetch: bool = True,
-        artifact_id: str | None = None,
         selfgen: SelfGenOptions | None = None,
+        *,
+        rebuild: bool = False,
     ) -> "Workspace":
         """Create a workspace over ``model_id`` and put its first p(h) artifact in place.
 
         Args:
             path: the workspace directory (created if needed). It must not already hold one.
-            model_id: a Hub id or a local checkpoint path. It is not loaded here -- init stays
-                cheap, and the artifact is checked against the model when a stage starts.
-            artifact: a registry id (see :data:`lfa.artifact.fetch.ARTIFACTS`), a path to an
-                artifact file, or ``"self-generated"``. A registry id wins over a path, so a local
-                file named like a published artifact cannot shadow it. ``"self-generated"``
-                builds v1 here, with no download: the model writes its own corpus
-                (``artifacts/v1.corpus.jsonl``, manifest beside it) and p(h) is fitted on it
-                (:func:`lfa.artifact.build.build_artifact_self_generated`) -- a GPU job, not a
-                cheap init. Either way the artifact ends up at ``artifacts/v1.pt``, so the
-                workspace carries its own p(h) and later versions sit beside it.
+            model_id: a Hub id or a local checkpoint path. It is not loaded here -- the artifact
+                is checked against the model when a stage starts.
+            artifact: ``"self-generated"`` or the path to an artifact file. ``"self-generated"``
+                has the model write its own corpus and fits p(h) on it
+                (:func:`lfa.artifact.build.build_artifact_self_generated`) -- a GPU job of hours
+                on an 8 GB card, not a cheap init. The build happens in the local store
+                (:mod:`lfa.artifact.store`), keyed on the checkpoint and the frame, so it is done
+                once per model: a later init over the same model at the same frame copies the
+                finished artifact in, and a build that stopped part-way resumes where it
+                stopped. The corpus and its manifest are copied in beside it
+                (``artifacts/v1.corpus.jsonl``). A path is copied as it is -- another
+                workspace's ``artifacts/v1.pt``, for one; a file whose meta says it was fitted
+                on the model's own text keeps that provenance. Either way the artifact ends up
+                at ``artifacts/v1.pt``, so the workspace carries its own p(h) and later versions
+                sit beside it.
             recipe: the default recipe for this workspace -- a bundled name or a path. When
                 omitted, a bundled recipe whose own ``model_id`` is this model is adopted; if
                 none is, every training call has to name one.
-            fetch: download a registry artifact that is not already there. ``False`` leaves the
-                workspace without a p(h) (and says so), for a machine with no network.
-            artifact_id: the registry id ``artifact`` is a copy of, when it is passed as a *path*
-                to a file fetched out of band. It is recorded as the workspace's ``artifact_id``,
-                which is what :meth:`lfa.recipe.Recipe.warnings` reads the recipe's calibration
-                against -- so naming it here stops a recipe warning that lambda was calibrated
-                against a different artifact when it was calibrated against exactly this one. It
-                is taken on the caller's word (the file is not digest-checked against the
-                registry), so name it only for a file you know the provenance of. Passing it
-                beside an ``artifact`` that is itself a registry id is accepted when the two agree
-                and refused when they disagree -- a conflicting pair is a mistake, not a choice.
-                Refused beside ``artifact="self-generated"``, which names itself by its corpus
-                hash.
             selfgen: the generation and fit frame for ``artifact="self-generated"`` (default
                 :class:`~lfa.selfgen.artifact_corpus.SelfGenOptions`, the recorded frame);
-                ignored for any other artifact.
+                ignored for a file.
+            rebuild: with ``artifact="self-generated"``, move the store's matching entry aside
+                and build afresh (the old entry is kept, not deleted).
 
         Raises:
             FileExistsError: ``path`` already holds a workspace.
-            ValueError: ``artifact`` is none of the three kinds, or ``artifact_id`` conflicts
-                with it.
+            ValueError: ``artifact`` is neither ``"self-generated"`` nor an existing file.
+            lfa.artifact.store.StoreLocked: another process is already building the same
+                self-generated artifact.
         """
         path = Path(path)
         if (path / WORKSPACE_FILE).exists():
@@ -395,44 +395,18 @@ class Workspace:
 
         # Nothing is created until every argument is known to be good: a refused init used to
         # leave `<path>/artifacts/` behind, which reads as a half-made workspace.
-        # The registry is consulted first: a file that happens to be named like a published
-        # artifact must not shadow the published artifact, which is the one the recipe's lambda
-        # was calibrated against.
         self_generated = artifact == SELF_GENERATED_ARTIFACT
-        if self_generated:
-            if artifact_id is not None:
-                raise ValueError("artifact_id is for a local copy of a published artifact; a "
-                                 "self-generated one names itself by its corpus hash.")
-            artifact_id, source = None, None
-        elif artifact in ARTIFACTS:
-            if artifact_id is not None and artifact_id != artifact:
-                # More likely a mistake than an intention, and silently keeping `artifact` would
-                # record a provenance the caller did not ask for.
-                raise ValueError(
-                    f"artifact={artifact!r} is itself a published artifact id, but artifact_id="
-                    f"{artifact_id!r} names a different one. Pass artifact_id only for a local "
-                    "artifact FILE that is a copy of a published artifact."
-                )
-            artifact_id, source = artifact, None
-        elif Path(artifact).exists():
-            source = Path(artifact)
-            if artifact_id is not None and artifact_id not in ARTIFACTS:
-                raise ValueError(
-                    f"artifact_id={artifact_id!r} is not a published artifact id "
-                    f"({', '.join(sorted(ARTIFACTS))}). Leave it out for a local artifact that "
-                    "is not a copy of a published one."
-                )
-            if artifact_id is not None:
-                logger.info("Local artifact %s recorded as the published %r", source, artifact_id)
-        else:
+        source = None if self_generated else Path(artifact).expanduser()
+        if source is not None and not source.is_file():
             raise ValueError(
-                f"{artifact!r} is neither a path that exists nor a published artifact id "
-                f"({', '.join(sorted(ARTIFACTS))})."
-            )
+                f"{artifact!r} is not an artifact file. Pass --artifact self-generated to have "
+                "the model build one from its own text (reused from the local store when it has "
+                "been built before), or the path to an artifact file, such as another "
+                "workspace's artifacts/v1.pt.")
         destination = artifacts_dir / "v1.pt"
         # Remembered so that a failure below can put the directory tree back as it found it: the
-        # arguments being good does not mean the artifact will arrive, and today the likeliest
-        # refusal of all is `ArtifactNotPublished` from the fetch three lines down.
+        # arguments being good does not mean the artifact will arrive -- a self-generated build
+        # is hours of GPU work that can stop at any point of it.
         created = [directory for directory in (path, artifacts_dir) if not directory.exists()]
         path.mkdir(parents=True, exist_ok=True)
         artifacts_dir.mkdir(exist_ok=True)
@@ -441,38 +415,35 @@ class Workspace:
         try:
             if self_generated:
                 options = selfgen or SelfGenOptions()
-                build_artifact_self_generated(model_id, destination, options,
-                                              corpus_path=artifacts_dir / "v1.corpus.jsonl")
-                manifest = json.loads((artifacts_dir / "v1.corpus.jsonl.manifest.json").read_text())
+                stored, manifest = obtain_self_generated(model_id, options, rebuild=rebuild)
+                shutil.copyfile(stored, destination)
+                for suffix in ("", ".manifest.json"):
+                    shutil.copyfile(stored.parent / f"corpus.jsonl{suffix}",
+                                    artifacts_dir / f"v1.corpus.jsonl{suffix}")
                 artifact_id = f"{SELF_GENERATED}:{manifest['corpus_sha256'][:12]}"
-            elif source is not None:
+                provenance = SELF_GENERATED
+            else:
                 shutil.copyfile(source, destination)
+                meta = _meta_of(destination)
+                if meta.get("provenance") == SELF_GENERATED and meta.get("corpus_sha256"):
+                    artifact_id = f"{SELF_GENERATED}:{meta['corpus_sha256'][:12]}"
+                    provenance = SELF_GENERATED
+                else:
+                    artifact_id, provenance = str(artifact), None
                 logger.info("Artifact %s copied to %s", source, destination)
-            elif destination.exists():
-                logger.info("Artifact %s already present at %s", artifact_id, destination)
-            elif fetch:
-                fetched = fetch_artifact(artifact_id, artifacts_dir)
-                fetched.replace(destination)
         except BaseException:
             # Only what this call made, and only while still empty: `rmdir` refuses a directory
             # with anything in it, which is the guard that keeps this from touching a workspace
-            # that was already there. A self-generated build writes its corpus before it fits,
-            # so a failure mid-fit leaves `v1*` files of its own that have to go first.
-            if self_generated:
-                for leftover in set(artifacts_dir.glob("v1*")) - already_there:
-                    leftover.unlink(missing_ok=True)
+            # that was already there. The `v1*` files this call copied in go first. The store is
+            # never touched: a build that stopped resumes there on the next init.
+            for leftover in set(artifacts_dir.glob("v1*")) - already_there:
+                leftover.unlink(missing_ok=True)
             for directory in reversed(created):
                 try:
                     directory.rmdir()
                 except OSError:
                     pass
             raise
-        if not fetch and source is None and not destination.exists():
-            destination = None
-            logger.warning(
-                "No p(h) artifact in this workspace: %r was not fetched (fetch=False). Run "
-                "`lfa fetch-artifact %s` before training.", artifact_id, artifact_id,
-            )
 
         if recipe is None:
             recipe = _bundled_recipe_for(model_id)
@@ -484,10 +455,10 @@ class Workspace:
             "model_id": model_id,
             "base_model": model_id,
             "current_model": model_id,
-            "current_artifact": str(destination) if destination else None,
+            "current_artifact": str(destination),
             "artifact_version": 1,
             "artifact_id": artifact_id,
-            "artifact_provenance": SELF_GENERATED if self_generated else None,
+            "artifact_provenance": provenance,
             "stage": 0,
             "recipe": recipe,
             "last_stage_adapter": None,
@@ -618,9 +589,9 @@ class Workspace:
         artifact = self.state["current_artifact"]
         if artifact is None:
             raise WorkspaceNotReady(
-                "This workspace has no p(h) artifact. Fetch one with `lfa fetch-artifact "
-                f"{self.state['artifact_id'] or '<id>'} --dest {self.path / 'artifacts'}` "
-                "or re-initialise with a local artifact path."
+                "This workspace has no p(h) artifact. Create a new workspace with `lfa init "
+                "<path> --model <model> --artifact self-generated` (or --artifact <an artifact "
+                "file>)."
             )
 
         resolved = self._resolve_recipe(recipe)
@@ -1065,10 +1036,11 @@ class Workspace:
     def _artifact_id(self) -> str:
         """What the recipe's calibration is read against.
 
-        The registry id of the artifact this workspace started from, or its path when it came
-        from disk. An *extension* of that artifact keeps the id: extending is the recipe's own
-        designed path for a later stage (and its ``stage2_lambda_multiplier`` is the measured
-        response to it), not a substitution of one p(h) for another.
+        The id of the artifact this workspace started from (``"self-generated:<corpus
+        sha256[:12]>"`` or the path it was passed as). An *extension* of that artifact keeps the
+        id: extending is the recipe's own designed path for a later stage (and its
+        ``stage2_lambda_multiplier`` is the measured response to it), not a substitution of one
+        p(h) for another.
         """
         return self.state["artifact_id"] or str(self.state["current_artifact"])
 
@@ -1081,8 +1053,7 @@ class Workspace:
         path = self.state.get("current_artifact")
         if not path or not Path(path).is_file():
             return {}
-        params = torch.load(path, map_location="cpu", weights_only=False)
-        return dict(params.get(META_KEY) or {})
+        return _meta_of(Path(path))
 
     # --------------------------------------------------------------------------------- extend
 
@@ -1215,9 +1186,8 @@ class Workspace:
 
         ``None`` means the artifact answers for itself -- it carries per-block counts, or a
         ``__meta__`` total -- and :func:`lfa.artifact.extend.extend_artifact` reads it there.
-        Otherwise the registry entry the artifact came from supplies it (the shipped artifact
-        predates the field and is 1,543,040 vectors per site). With neither, the domain's weight
-        share cannot be computed at all, and a guess would silently mis-weight the mixture.
+        Without either, the domain's weight share cannot be computed at all, and a guess would
+        silently mis-weight the mixture.
 
         Loading the artifact for this costs one CPU read of a file that is about to be read
         again; the alternative is fusing a model for an extension that cannot be completed.
@@ -1232,17 +1202,11 @@ class Workspace:
 
         if answers_for_itself:
             return None
-        registry = ARTIFACTS.get(self.state["artifact_id"] or "")
-        if registry is not None:
-            return int(registry["n_samples_total"])
+        current = self.state["current_artifact"]
         raise ValueError(
-            f"{self.state['current_artifact']} carries no per-site n_samples and no "
-            "__meta__.n_samples_total, and this workspace does not know which published "
-            "artifact it is, so the new domain cannot be weighted by its sample share. Fix it "
-            "where it started: `lfa init <a new workspace> --model <model> --artifact <the same "
-            "file> --artifact-id qwen3-0.6b-gmm1543k-int8`, which records the id that supplies "
-            "the count (the shipped qwen3-0.6b artifact was collected over 1,543,040 vectors "
-            "per site). From Python you can instead pass base_n to "
+            f"{current} carries no per-site n_samples and no __meta__.n_samples_total, so the "
+            "new domain cannot be weighted by its sample share. Every artifact this package "
+            "builds records it; an artifact from elsewhere needs it added, or pass base_n to "
             "lfa.artifact.extend.extend_artifact directly."
         )
 

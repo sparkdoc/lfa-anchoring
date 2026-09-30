@@ -62,12 +62,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--model", required=True,
                         help="a Hub id or a local checkpoint path")
-    parser.add_argument("--artifact", default="qwen3-0.6b-gmm1543k-int8",
-                        help="a published artifact id or a path to an artifact file "
-                             "(default: %(default)s)")
-    parser.add_argument("--artifact-id", dest="artifact_id",
-                        help="the published id a locally-passed artifact FILE is a copy of, so "
-                             "the recipe's calibration is read against it rather than a path")
+    parser.add_argument("--artifact", required=True,
+                        help="`self-generated` or the path to an artifact file")
     parser.add_argument("--corpus", required=True,
                         help="a file or directory of documents to adapt to")
     parser.add_argument("--out", required=True,
@@ -96,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
     #    copied in) and carries the p(h) artifact and the history. It is what keeps the next
     #    domain from silently anchoring against the wrong p(h).
     workspace = Workspace.init(args.out, args.model, artifact=args.artifact,
-                               artifact_id=args.artifact_id, recipe=args.recipe)
+                               recipe=args.recipe)
 
     # 2. One domain. The anchor draws its hidden states from the artifact, never from the corpus
     #    of any earlier domain -- that is what "data-free at adaptation time" means.
