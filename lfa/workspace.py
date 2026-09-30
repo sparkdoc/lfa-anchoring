@@ -37,7 +37,6 @@ import gc
 import hashlib
 import json
 import logging
-import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -51,7 +50,7 @@ from .artifact.build import build_artifact_self_generated
 from .artifact.extend import artifact_carries_base_count, extend_artifact, gmm_site_keys
 from .artifact.schema import META_KEY, SELF_GENERATED, validate_against_model
 from .artifact.store import obtain_self_generated
-from .corpus import load_corpus, split_documents
+from .corpus import load_corpus
 from .evaluate import (
     DOMAIN_ROW,
     GENERAL_ROW,
@@ -73,8 +72,7 @@ from .models import (
 from .recipe import BUNDLED_DIR, Recipe
 from .sampler import Sampler
 from .selfgen.artifact_corpus import SelfGenOptions
-from .selfgen.generate import checkpoint_sha256, sha256_text
-from .selfgen.supplement import SupplementOptions, template_sha256, write_supplement
+from .supplements import beside_corpus, supplement_for
 from .train import train as run_training
 
 logger = logging.getLogger("lfa.workspace")
@@ -200,12 +198,6 @@ def _primary_device(device: str | dict) -> str:
     if isinstance(device, dict):
         return str(next(iter(device.values())))
     return str(device)
-
-
-def _domain_description_for(corpus_path: Path) -> str:
-    """The corpus directory's name with `_`/`-` as spaces; what the template says the text is on."""
-    name = corpus_path.stem if corpus_path.is_file() else corpus_path.name
-    return re.sub(r"[_\-]+", " ", name).strip() or "the domain"
 
 
 def _dtype_for(device: str | dict) -> torch.dtype:
@@ -550,9 +542,10 @@ class Workspace:
             resume: continue the run already in this stage's output directory.
             supplement: the question-and-answer pairs mixed into the training side at the
                 recipe's ``supplement_fraction``. ``True`` (the default) reuses the supplement
-                under ``supplements/`` when its manifest matches this corpus's training side,
-                the current model and the template, and has the current model -- the stage's
-                entry model -- write it otherwise (see :meth:`prepare_supplement`). A path is
+                under ``supplements/``, or one prepared beside the corpus, when its manifest
+                matches this corpus's training side, the current model and the template, and
+                has the current model -- the stage's entry model -- write it into
+                ``supplements/`` otherwise (see :meth:`prepare_supplement`). A path is
                 mixed in as given. ``False`` trains on the raw corpus alone, off the frame the
                 recipe's lambda was calibrated at, and warns. Ignored when the recipe's
                 fraction is 0.
@@ -974,36 +967,24 @@ class Workspace:
                         placement: str | dict, force: bool = False) -> tuple[Path, dict]:
         """The supplement for ``corpus_path``: reused when its manifest matches, else written.
 
-        A match is the training side's corpus hash, the writer checkpoint's hash, the template's
-        hash and the domain description (explicit, or derived from the corpus path), so a
-        different ``domain_description`` rewrites rather than being silently ignored. The writer
-        is the workspace's CURRENT model -- the stage's entry model -- so in a chain the fused
-        model writes the next domain's pairs (the C15 protocol). ``placement`` is already
-        resolved by the caller (so a sharding the caller allowed is not refused here); the
-        writer runs on its primary device.
+        Looked for in the workspace's ``supplements/`` first, then beside the corpus (where
+        ``lfa prepare-domain --supplement`` and ``lfa prepare-supplement --model`` put one), and
+        written into the workspace when neither matches. A match is the training side's corpus
+        hash, the writer checkpoint's hash, the template's hash and the domain description
+        (explicit, or derived from the corpus path), so a different ``domain_description``
+        rewrites rather than being silently ignored (:func:`lfa.supplements.supplement_for`).
+        The writer is the workspace's CURRENT model -- the stage's entry model -- so in a chain
+        the fused model writes the next domain's pairs (each stage's pairs come from the model
+        that stage starts from), and a later stage never reuses a supplement the base model
+        wrote beside the corpus. ``placement`` is already resolved by the caller (so a sharding
+        the caller allowed is not refused here); the writer runs on its primary device.
         """
-        train_docs, _ = split_documents(corpus_path, recipe.val_fraction, recipe.seed)
-        corpus_hash = sha256_text(train_docs)
-        writer_id = str(self.state["current_model"])
-        writer_hash = checkpoint_sha256(writer_id)
-        directory = self.path / "supplements" / corpus_hash[:12]
-        out = directory / "supplement.jsonl"
-        manifest_path = Path(str(out) + ".manifest.json")
-        description = domain_description or _domain_description_for(corpus_path)
-        if out.is_file() and manifest_path.is_file() and not force:
-            manifest = json.loads(manifest_path.read_text())
-            if (manifest.get("corpus_sha256") == corpus_hash
-                    and manifest.get("writer_sha256") == writer_hash
-                    and manifest.get("template_sha256") == template_sha256()
-                    and manifest.get("domain_description") == description):
-                logger.info("Supplement reused: %s", out)
-                return out, manifest
-        logger.info("Writing the supplement for %s with %s (%d training documents)", corpus_path,
-                    writer_id, len(train_docs))
-        manifest = write_supplement(writer_id, train_docs, out, domain_description=description,
-                                    options=SupplementOptions(), corpus_sha256=corpus_hash,
-                                    device=_primary_device(placement))
-        return out, manifest
+        return supplement_for(
+            corpus_path, str(self.state["current_model"]), recipe,
+            write_root=self.path / "supplements",
+            search_roots=[self.path / "supplements", beside_corpus(corpus_path)],
+            domain_description=domain_description, device=_primary_device(placement),
+            force=force)
 
     def prepare_supplement(self, corpus, *, recipe: Recipe | str | Path | None = None,
                            domain_description: str | None = None,

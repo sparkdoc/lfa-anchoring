@@ -570,3 +570,94 @@ def test_train_no_supplement_and_supplement_file_are_exclusive(capsys):
     with pytest.raises(SystemExit) as exit_info:
         main(["train", "--corpus", "c", "--no-supplement", "--supplement", "s.jsonl"])
     assert exit_info.value.code == 2
+
+
+# ------------------------------------------------------------------ the supplement with the data
+
+def test_prepare_domain_with_a_supplement_needs_a_model(tmp_path, capsys):
+    src = tmp_path / "src.txt"
+    src.write_text("word " * 400)
+    assert main(["prepare-domain", str(src), "--out", str(tmp_path / "out"),
+                 "--supplement"]) == 2
+    assert "--model" in capsys.readouterr().err
+    assert not (tmp_path / "out").exists()
+
+
+def test_prepare_domain_with_a_supplement_writes_both(tmp_path, monkeypatch):
+    src = tmp_path / "src.txt"
+    src.write_text("word " * 400)
+    seen = {}
+    monkeypatch.setattr("lfa.cli.prepare_supplement",
+                        lambda corpus, model_id, **kw: seen.update(corpus=corpus, model=model_id,
+                                                                   **kw) or tmp_path / "s.jsonl")
+    assert main(["prepare-domain", str(src), "--out", str(tmp_path / "out"), "--supplement",
+                 "--model", "Qwen/Qwen3-0.6B", "--domain-description", "old books"]) == 0
+    assert list((tmp_path / "out").glob("*.txt"))
+    assert seen["model"] == "Qwen/Qwen3-0.6B" and seen["domain_description"] == "old books"
+
+
+def test_prepare_supplement_with_a_model_needs_no_workspace(tmp_path, monkeypatch):
+    seen = {}
+    monkeypatch.setattr("lfa.cli.prepare_supplement",
+                        lambda corpus, model_id, **kw: seen.update(model=model_id) or tmp_path)
+    assert main(["prepare-supplement", "--corpus", str(tmp_path), "--model", "m"]) == 0
+    assert seen == {"model": "m"}
+
+
+def test_prepare_supplement_without_a_model_is_the_workspace_route_here(tmp_path, monkeypatch):
+    """No flag at all: the workspace in the current directory writes, as before `--model`."""
+    seen = {}
+
+    class _Opened:
+        def prepare_supplement(self, corpus, **kw):
+            seen.update(corpus=corpus)
+            return tmp_path / "ws-supplement.jsonl"
+
+    monkeypatch.setattr("lfa.cli.Workspace.open",
+                        lambda path: seen.update(workspace=path) or _Opened())
+    monkeypatch.setattr("lfa.cli.prepare_supplement",
+                        lambda *a, **kw: pytest.fail("the workspace-free route was taken"))
+    assert main(["prepare-supplement", "--corpus", "c"]) == 0
+    assert seen == {"workspace": ".", "corpus": "c"}
+
+
+@pytest.mark.parametrize("workspace", [".", "ws"])
+def test_prepare_supplement_refuses_a_workspace_and_a_model_together(tmp_path, monkeypatch,
+                                                                     capsys, workspace):
+    """Explicit `--workspace .` is refused too: explicitness is not read off the value."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("lfa.cli.prepare_supplement",
+                        lambda *a, **kw: pytest.fail("nothing may be written"))
+    monkeypatch.setattr("lfa.cli.Workspace.open",
+                        lambda path: pytest.fail("no workspace may be opened"))
+    assert main(["prepare-supplement", "--corpus", str(tmp_path / "c"),
+                 "--workspace", workspace, "--model", "m"]) == 2
+    lines = error_lines(capsys)
+    assert len(lines) == 1 and "--workspace" in lines[0] and "--model" in lines[0]
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_prepare_domain_with_a_supplement_and_no_recipe_writes_nothing(tmp_path, monkeypatch,
+                                                                       capsys):
+    src = tmp_path / "src.txt"
+    src.write_text("word " * 400)
+    monkeypatch.setattr("lfa.cli.prepare_supplement",
+                        lambda *a, **kw: pytest.fail("nothing may be written"))
+    assert main(["prepare-domain", str(src), "--out", str(tmp_path / "out"), "--supplement",
+                 "--model", "nobody/nothing"]) == 2
+    lines = error_lines(capsys)
+    assert len(lines) == 1 and "--recipe" in lines[0]
+    assert not (tmp_path / "out").exists()
+
+
+def test_prepare_domain_passes_the_resolved_recipe_on(tmp_path, monkeypatch):
+    from lfa import Recipe
+
+    src = tmp_path / "src.txt"
+    src.write_text("word " * 400)
+    seen = {}
+    monkeypatch.setattr("lfa.cli.prepare_supplement",
+                        lambda corpus, model_id, **kw: seen.update(kw) or tmp_path / "s.jsonl")
+    assert main(["prepare-domain", str(src), "--out", str(tmp_path / "out"), "--supplement",
+                 "--model", "Qwen/Qwen3-0.6B"]) == 0
+    assert isinstance(seen["recipe"], Recipe) and seen["recipe"].name == "qwen3-0.6b"

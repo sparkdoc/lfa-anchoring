@@ -1258,15 +1258,15 @@ def test_init_self_generated_rollback_keeps_files_it_did_not_write(tmp_path, bas
 
 # ------------------------------------------------------------------------- the supplement step
 
-def _fake_supplement_writer(calls):
+def _fake_supplement_writer(calls, writer_hash):
     def write(model_id, documents, out_path, *, domain_description, options, corpus_sha256,
               generate=None, writer=None, device="cuda:0"):
         calls.append(dict(model_id=model_id, n_docs=len(documents), domain=domain_description,
-                          corpus_sha256=corpus_sha256, device=device))
+                          corpus_sha256=corpus_sha256, device=device, out_path=Path(out_path)))
         Path(out_path).parent.mkdir(parents=True, exist_ok=True)
         Path(out_path).write_text('{"prompt": "q?", "response": "%s", "source_index": 0}\n'
                                   % ("an answer " * 8) * 6)
-        manifest = {"writer_sha256": "w" * 64, "corpus_sha256": corpus_sha256,
+        manifest = {"writer_sha256": writer_hash(model_id), "corpus_sha256": corpus_sha256,
                     "template_sha256": "t" * 64, "domain_description": domain_description,
                     "n_pairs": 6, "lfa_version": "0.2.0"}
         Path(str(out_path) + ".manifest.json").write_text(json.dumps(manifest))
@@ -1275,12 +1275,21 @@ def _fake_supplement_writer(calls):
 
 
 @pytest.fixture
-def supplement_writer(monkeypatch):
-    import lfa.workspace as ws_module
+def supplement_writer(monkeypatch, base_dir):
+    import lfa.supplements as supplements_module
+
+    def writer_hash(model_id):
+        # The base checkpoint hashes to a fixed value the tests read back; any other writer --
+        # a chain's fused model, say -- hashes to something else, as a real checkpoint would.
+        if model_id == str(base_dir):
+            return "w" * 64
+        return hashlib.sha256(model_id.encode()).hexdigest()
+
     calls = []
-    monkeypatch.setattr(ws_module, "write_supplement", _fake_supplement_writer(calls))
-    monkeypatch.setattr(ws_module, "checkpoint_sha256", lambda m: "w" * 64)
-    monkeypatch.setattr(ws_module, "template_sha256", lambda: "t" * 64)
+    monkeypatch.setattr(supplements_module, "write_supplement",
+                        _fake_supplement_writer(calls, writer_hash))
+    monkeypatch.setattr(supplements_module, "checkpoint_sha256", writer_hash)
+    monkeypatch.setattr(supplements_module, "template_sha256", lambda: "t" * 64)
     return calls
 
 
@@ -1370,6 +1379,40 @@ def test_prepare_supplement_writes_once_and_names_the_file(tmp_path, base_dir,
     assert first == second and first.name == "supplement.jsonl" and len(supplement_writer) == 1
     ws.prepare_supplement(corpus_a, recipe=tiny_recipe(base_dir), device="cpu", force=True)
     assert len(supplement_writer) == 2
+
+
+def test_a_supplement_prepared_beside_the_corpus_is_reused_by_train(tmp_path, base_dir,
+                                                                    supplement_writer):
+    from lfa.supplements import beside_corpus, prepare_supplement
+
+    corpus = make_corpus(tmp_path / "my_domain", "cookery")
+    recipe = tiny_recipe(base_dir, supplement_fraction=0.2)
+    prepared = prepare_supplement(corpus, str(base_dir), recipe=recipe, device="cpu")
+    assert prepared.is_relative_to(beside_corpus(corpus.resolve()))
+
+    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact=TINY_ARTIFACT_PATH)
+    entry = ws.train(corpus, recipe=recipe, device="cpu")
+    assert len(supplement_writer) == 1                              # written once, in total
+    assert entry["supplement"]["path"] == str(prepared)
+    assert not (tmp_path / "ws" / "supplements").exists()
+
+
+def test_a_supplement_another_model_wrote_beside_the_corpus_is_not_reused(tmp_path, base_dir,
+                                                                          supplement_writer):
+    """A chain's later stage: the pairs beside the corpus came from a model this stage does not
+    start from, so they are not this stage's supplement -- the stage writes its own."""
+    from lfa.supplements import beside_corpus, prepare_supplement
+
+    corpus = make_corpus(tmp_path / "my_domain", "cookery")
+    recipe = tiny_recipe(base_dir, supplement_fraction=0.2)
+    elsewhere = prepare_supplement(corpus, "some/other-writer", recipe=recipe, device="cpu")
+    assert elsewhere.is_relative_to(beside_corpus(corpus.resolve()))
+
+    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact=TINY_ARTIFACT_PATH)
+    entry = ws.train(corpus, recipe=recipe, device="cpu")
+    assert [c["model_id"] for c in supplement_writer] == ["some/other-writer", str(base_dir)]
+    assert Path(entry["supplement"]["path"]).is_relative_to(tmp_path / "ws" / "supplements")
+    assert entry["supplement"]["writer_sha256"] == "w" * 64
 
 
 def test_the_unanchored_control_mixes_the_stage_supplement_at_its_fraction(

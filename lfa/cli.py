@@ -41,6 +41,7 @@ from .selfgen.artifact_corpus import (  # noqa: F401
     SelfGenOptions,
 )
 from .selfgen.supplement import NoPairsWritten
+from .supplements import prepare_supplement, recipe_for
 from .train import ResumeSourceHasNoAdapter
 from .workspace import StageOrderError, Workspace, WorkspaceNotReady
 
@@ -144,6 +145,20 @@ def _train(args) -> int:
 
 
 def _prepare_supplement(args) -> int:
+    # One writer: a model named with --model (no workspace; the file lands beside the corpus),
+    # or else the workspace's current model. Naming both is ambiguous about which model writes
+    # and where, so it is refused before anything is written. `--workspace` has no argparse
+    # default on this subcommand so that an explicit `--workspace .` is told apart from none.
+    if args.model and args.workspace is not None:
+        raise ValueError("--model and --workspace name two different writers: pass --model ID "
+                         "to write beside the corpus without a workspace, or --workspace PATH "
+                         "(default: here) to have that workspace's current model write.")
+    if args.model:
+        print(prepare_supplement(args.corpus, args.model, recipe=args.recipe,
+                                 domain_description=args.domain_description,
+                                 device=args.device, force=args.force))
+        return 0
+    args.workspace = "." if args.workspace is None else args.workspace
     print(_open(args).prepare_supplement(args.corpus, recipe=args.recipe,
                                          domain_description=args.domain_description,
                                          device=args.device, force=args.force))
@@ -207,8 +222,19 @@ def _prepare_seed_corpus(args) -> int:
 
 
 def _prepare_domain(args) -> int:
+    recipe = None
+    if args.supplement:
+        if not args.model:
+            raise ValueError("--supplement needs --model: the supplement is written by the model "
+                             "you will train, e.g. --model Qwen/Qwen3-0.6B.")
+        # Resolved before the corpus is written, so a missing recipe refuses the whole command
+        # rather than leaving a corpus with no supplement beside it.
+        recipe = recipe_for(args.model, args.recipe)
     # No report of its own: `prepare_domain` already logs what it wrote and what it skipped.
     prepare_domain(args.inputs, args.out, min_length=args.min_length, combine=args.combine)
+    if args.supplement:
+        print(prepare_supplement(args.out, args.model, recipe=recipe,
+                                 domain_description=args.domain_description, device=args.device))
     return 0
 
 
@@ -318,9 +344,16 @@ def build_parser() -> argparse.ArgumentParser:
     # -------------------------------------------------------------------- prepare-supplement
     supp = subcommands.add_parser(
         "prepare-supplement",
-        help="have the workspace's current model write the question-and-answer supplement "
-             "for a corpus, to inspect before training (train writes it itself otherwise)")
-    _add_workspace(supp)
+        help="have a model write the question-and-answer supplement for a corpus, to inspect "
+             "before training (train writes it itself otherwise)")
+    # Not `_add_workspace`: the default is applied in the handler (still the current directory),
+    # so that an explicit `--workspace` can be refused alongside `--model`.
+    supp.add_argument("--workspace", metavar="PATH",
+                      help="write with this workspace's current model, into the workspace "
+                           "(default: the current directory; not with --model)")
+    supp.add_argument("--model", metavar="ID",
+                      help="write with this model, without a workspace; the file lands beside "
+                           "the corpus in <corpus>.supplement/, where `train` finds it")
     supp.add_argument("--corpus", required=True, metavar="DIR")
     supp.add_argument("--recipe", metavar="NAME|PATH")
     supp.add_argument("--domain-description", dest="domain_description", metavar="TEXT")
@@ -463,6 +496,19 @@ def build_parser() -> argparse.ArgumentParser:
                              "reads a file as one document, so a combined corpus is a single "
                              "document contributing every chunk -- which training will warn "
                              "about. Use it to inspect the cleaned text, not to train on")
+    domain.add_argument("--supplement", action="store_true",
+                        help="also have --model write the question-and-answer supplement for "
+                             "the prepared corpus; it makes the domain answerable when the model "
+                             "is asked about it, and `train` mixes it in")
+    domain.add_argument("--model", metavar="ID",
+                        help="the model that writes the supplement: the one you will train")
+    domain.add_argument("--recipe", metavar="NAME|PATH",
+                        help="the recipe whose training side the supplement is written from "
+                             "(default: the bundled recipe for --model)")
+    domain.add_argument("--domain-description", dest="domain_description", metavar="TEXT",
+                        help="what the template says the text is on (default: the --out "
+                             "directory's name)")
+    _add_device(domain)
     domain.set_defaults(handler=_prepare_domain)
 
     return parser
