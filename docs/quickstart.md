@@ -255,9 +255,9 @@ A traceback whose last frames are in `lfa/` is a bug in this package — please 
 traceback that ends inside somebody else's code is your environment rather than this package: a
 CUDA out-of-memory from torch, a compiler error from triton on a machine without Python headers
 (which `lfa` warns about once, up front), a Hub timeout inside `datasets`. The last few frames say
-which of the two you have. Ctrl-C is neither: an interrupted command prints one line saying how to
-pick it up — `--resume` for a training run, the same command again for an artifact build — and
-exits 130.
+which of the two you have. Ctrl-C is neither: an interrupted command says how to pick it up —
+`--resume` for a training run, the same command again for an artifact build (an `init` also
+names the store entry it was building) — and exits 130.
 
 One failure is deliberately *not* a refusal: if WikiText-2 cannot be fetched, `evaluate` says so
 and reports the general axis as unmeasured rather than losing the domain number you came for.

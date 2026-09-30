@@ -73,6 +73,24 @@ def test_a_failed_fit_keeps_the_corpus_and_the_next_call_fits_without_regenerati
     assert path.is_file() and calls[0] == calls[1] == entry / "artifact.partial.pt"
 
 
+def test_ctrl_c_during_a_build_names_the_entry_and_releases_the_lock(isolated_store, monkeypatch,
+                                                                      caplog):
+    """Spec §2.3: an interrupted build prints one line naming the store entry and saying the same
+    command resumes it. The interrupt itself still propagates, so the CLI exits 130."""
+    def interrupted(model_id, out_path, options, *, corpus_path, generate=None, writer=None):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(store, "build_artifact_self_generated", interrupted)
+    options = SelfGenOptions(n_raw=60)
+    entry = store.entry_dir("m", "a" * 64, options)
+    with caplog.at_level("INFO"), pytest.raises(KeyboardInterrupt):
+        store.obtain_self_generated("m", options)
+    lines = [r.getMessage() for r in caplog.records if str(entry) in r.getMessage()]
+    assert len(lines) == 1 and "lfa init" in lines[0] and "resume" in lines[0]
+    assert not (entry / ".lock").exists()
+    assert (entry / "entry.json").is_file()      # the entry is kept for the resume
+
+
 def test_rebuild_moves_the_old_entry_aside(isolated_store, monkeypatch):
     calls = []
     monkeypatch.setattr(store, "build_artifact_self_generated", _fake_build(calls))

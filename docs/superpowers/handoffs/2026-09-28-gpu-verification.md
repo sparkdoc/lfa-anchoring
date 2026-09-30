@@ -137,15 +137,14 @@ stamp() { trap '' INT; while IFS= read -r line; do printf '%(%H:%M:%S)T %s\n' -1
 1. Watch the per-batch line, `self-generated corpus: n/2500 documents (e empty)` (32 documents per
    batch at the default batch size). After about a third, roughly 800/2500, press **Ctrl-C**.
    Expected: exit status 130, no traceback.
-2. **The Ctrl-C message: record what it prints.** Spec §2.3 says the line names the store entry and
-   says the same command resumes. At 85c8fe8 the handler (`lfa/cli.py`, the `except
-   KeyboardInterrupt` branch of `main`) prints a generic message: it says an interrupted
-   self-generated build resumes when the same `lfa init` or `lfa build-artifact` command is run
-   again, and it names no path. The whole-branch review may have changed it since, so check it
-   against the spec rather than against a fixed string. Does it name the entry directory? Does it
-   say the same command resumes? Put the verbatim line in your report to the owner. If it still
-   names no entry, report that as a spec deviation. It is a code change, not part of this
-   verification.
+2. **The Ctrl-C message names the store entry.** Spec §2.3 says the line names the store entry and
+   says the same command resumes. Two lines are printed after `^C`: first the store's, ``Interrupted:
+   the build is kept in the store entry <path>, and running the same `lfa init` command again
+   resumes it at its next batch.`` (`lfa/artifact/store.py`, `obtain_self_generated`), then the
+   CLI's generic `lfa: interrupted. ...` line. Confirm the first names an entry directory and
+   that it is the same path `lfa list-artifacts` shows for the entry in step 3. Put both verbatim
+   lines in your report to the owner, and report a missing store line or a path that differs
+   from the listed one as a deviation.
 3. After the interrupt, confirm the state on disk:
    - `lfa list-artifacts` shows the entry as `in progress: n/2500 documents` with its path. Call
      that path `ENTRY` below.

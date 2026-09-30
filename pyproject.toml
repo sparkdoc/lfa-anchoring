@@ -30,9 +30,8 @@ dev = ["pytest>=8", "pytest-cov", "build", "nbformat>=5.9", "nbclient>=0.9", "ip
 [project.scripts]
 lfa = "lfa.cli:main"
 
-# `sparkdoc` is the same placeholder `lfa/artifact/fetch.py::_RELEASE_BASE` carries, and RELEASING.md
-# step 4 fills all of them in one edit. Declared at all because the README is the PyPI long
-# description: without these a visitor there has no pointer to where the documentation lives.
+# Declared because the README is the PyPI long description: these links point a visitor on the
+# PyPI page at the repository and at its documentation.
 [project.urls]
 Homepage = "https://github.com/sparkdoc/lfa-anchoring"
 Repository = "https://github.com/sparkdoc/lfa-anchoring"

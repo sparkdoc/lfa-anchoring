@@ -274,8 +274,15 @@ def _table(before: dict, after: dict, unanchored: dict | None) -> str:
 
 
 def _meta_of(path: Path) -> dict:
-    """The ``__meta__`` block of the artifact file at ``path`` (``{}`` when it carries none)."""
-    return dict(torch.load(path, map_location="cpu", weights_only=False).get(META_KEY) or {})
+    """The ``__meta__`` block of the artifact file at ``path`` (``{}`` when it carries none).
+
+    Raises:
+        TypeError: the file is a torch file whose payload is not a dict, so not an artifact.
+    """
+    payload = torch.load(path, map_location="cpu", weights_only=False)
+    if not isinstance(payload, dict):
+        raise TypeError(f"{path} holds a {type(payload).__name__}, not an artifact's dict")
+    return dict(payload.get(META_KEY) or {})
 
 
 def _bundled_recipe_for(model_id: str) -> str | None:
@@ -372,7 +379,8 @@ class Workspace:
 
         Raises:
             FileExistsError: ``path`` already holds a workspace.
-            ValueError: ``artifact`` is neither ``"self-generated"`` nor an existing file.
+            ValueError: ``artifact`` is neither ``"self-generated"`` nor an existing file, or is
+                a file that cannot be read as an artifact.
             lfa.artifact.store.StoreLocked: another process is already building the same
                 self-generated artifact.
         """
@@ -417,7 +425,14 @@ class Workspace:
                 provenance = SELF_GENERATED
             else:
                 shutil.copyfile(source, destination)
-                meta = _meta_of(destination)
+                try:
+                    meta = _meta_of(destination)
+                except Exception as exc:
+                    raise ValueError(
+                        f"{artifact} could not be read as an LFA artifact "
+                        f"({exc.__class__.__name__}). Pass --artifact self-generated, or the "
+                        "path to an artifact file such as another workspace's artifacts/v1.pt."
+                    ) from exc
                 if meta.get("provenance") == SELF_GENERATED and meta.get("corpus_sha256"):
                     artifact_id = f"{SELF_GENERATED}:{meta['corpus_sha256'][:12]}"
                     provenance = SELF_GENERATED

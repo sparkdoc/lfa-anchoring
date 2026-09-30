@@ -127,8 +127,9 @@ self-generated corpus: <n>/2500 documents (<e> empty)
   at the next batch of each share, with the batch size the build started with and the same
   per-batch seed, and the empties already counted still count against the limit, so the refusal
   above applies to the whole build and not to the resumed tail. Rows appended after the last
-  progress record are dropped on resume, so nothing is duplicated. Ctrl-C prints one line saying
-  that the same command resumes the build, and exits 130.
+  progress record are dropped on resume, so nothing is duplicated. Ctrl-C says that the same
+  command resumes the build, and exits 130; under `lfa init` it also names the store entry
+  that holds the partial build (the path `lfa list-artifacts` shows).
 * **Finished**: the partial file is renamed to the corpus, the manifest written, and the progress
   file removed. The corpus hash is computed over the final file, so a resumed build's manifest is
   indistinguishable in form from an uninterrupted one's.

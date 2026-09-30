@@ -237,8 +237,15 @@ def obtain_self_generated(model_id: str, options: SelfGenOptions, *, rebuild: bo
             return _reused(artifact, corpus)
         _write_entry_json(entry, model_id, writer_sha256, options)
         partial = entry / _PARTIAL_ARTIFACT
-        build_artifact_self_generated(model_id, partial, options, corpus_path=corpus,
-                                      generate=generate, writer=writer)
+        try:
+            build_artifact_self_generated(model_id, partial, options, corpus_path=corpus,
+                                          generate=generate, writer=writer)
+        except KeyboardInterrupt:
+            # The one place that knows which entry was being built; the lock is released by
+            # `_lock` on the way out, and the interrupt goes on up so the command still stops.
+            logger.info("Interrupted: the build is kept in the store entry %s, and running the "
+                        "same `lfa init` command again resumes it at its next batch.", entry)
+            raise
         os.replace(partial, artifact)
     logger.info("Self-generated artifact stored at %s", artifact)
     return artifact, _manifest(corpus)

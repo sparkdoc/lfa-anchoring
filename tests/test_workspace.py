@@ -218,14 +218,29 @@ def test_a_refused_init_leaves_nothing_behind(tmp_path, base_dir):
     assert (good.path / "artifacts" / "v1.pt").is_file()
 
 
-def test_a_file_that_is_not_an_artifact_leaves_no_workspace_behind(tmp_path, base_dir):
-    """The file route reads the copy's meta after copying it in; a copy that cannot be read must
-    go with the directories this call made, as a failed build's files do."""
+@pytest.mark.parametrize("payload", ["not a torch file", ["a", "list"]],
+                         ids=["not-torch", "torch-but-not-a-dict"])
+def test_a_file_that_is_not_an_artifact_is_refused_and_leaves_no_workspace_behind(
+        tmp_path, base_dir, payload):
+    """The file route reads the copy's meta after copying it in. A copy that cannot be read is a
+    refusal (one sentence ending in what to do, not a traceback), and it goes with the
+    directories this call made, as a failed build's files do."""
     not_an_artifact = tmp_path / "notes.pt"
-    not_an_artifact.write_text("not a torch file")
-    with pytest.raises(Exception):
+    if isinstance(payload, str):
+        not_an_artifact.write_text(payload)
+    else:
+        torch.save(payload, not_an_artifact)
+    with pytest.raises(ValueError, match=r"could not be read as an LFA artifact .*"
+                                         r"Pass --artifact self-generated"):
         Workspace.init(tmp_path / "ws", str(base_dir), artifact=str(not_an_artifact))
     assert not (tmp_path / "ws").exists()
+
+    # Into an existing directory: the copied v1.pt goes, the directory the caller made stays.
+    existing = tmp_path / "mine"
+    existing.mkdir()
+    with pytest.raises(ValueError, match="could not be read as an LFA artifact"):
+        Workspace.init(existing, str(base_dir), artifact=str(not_an_artifact))
+    assert list(existing.iterdir()) == []
 
 
 def test_re_initialising_a_workspace_names_a_command_a_cli_user_can_run(tmp_path, base_dir):
