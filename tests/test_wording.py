@@ -1,8 +1,8 @@
 """Shipped text is written for a user of this package, not for a reader of the research record.
 
 The research repository, its claim ids and its retired artifact are not things a user can open,
-so no shipped file names them. `docs/verification.md` is a dated record of the port and
-`docs/superpowers/` holds development documents; both are exempt. A notebook is scanned cell by
+so no shipped file names them. `docs/verification.md` is a dated record of the port, and is
+exempt. A notebook is scanned cell by
 cell: each cell's source, which a user runs and reads, and the outputs recorded under each code
 cell, which a user reads without running anything.
 """
@@ -17,7 +17,7 @@ SCANNED_ROOTS = ["lfa", "README.md", "RELEASING.md", "docs", "examples", "pyproj
                  "MANIFEST.in"]
 
 EXEMPT = {"docs/verification.md"}
-EXEMPT_DIRS = {"docs/superpowers", "__pycache__", ".worktrees"}
+EXEMPT_DIRS = {"__pycache__", ".worktrees"}
 SUFFIXES = {".py", ".md", ".yaml", ".yml", ".toml", ".txt", ".ipynb", ".in"}
 
 #: Built by parts so this file does not match itself.
