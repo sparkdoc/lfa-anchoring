@@ -194,8 +194,11 @@ yourself when you no longer want it.
 lfa init runs/second --model Qwen/Qwen3-0.6B --artifact runs/my_domain/artifacts/v1.pt
 ```
 
-`--artifact` takes any artifact file and copies it in as `artifacts/v1.pt`. What the workspace
-records comes from the file's meta: a self-generated file keeps its provenance and its id
+`--artifact` takes an artifact this package built — another workspace's `artifacts/v1.pt`, or a
+file `lfa build-artifact` wrote — and copies it in as `artifacts/v1.pt`. A file built anywhere
+else is refused before the workspace is created: one with no `__meta__` block, one whose meta
+names another builder in `built_with`, or one whose mixture heads are not diagonal. What the
+workspace records comes from the file's meta: a self-generated file keeps its provenance and its id
 (`self-generated:<corpus sha256[:12]>`), exactly as if it had been built at `init`, so the recipe
 judges it by its frame and `extend` works. Any other file is recorded by the path you passed, with
 no provenance, and the recipe notes that it is not the artifact its λ is calibrated against.
@@ -213,7 +216,8 @@ the same `--out`. `lfa init --artifact <path>` then puts the file in a workspace
 
 `build-artifact` runs the model over the corpus, records what arrives at each anchoring site, and
 fits it. What is stored per site: the mean, a PCA basis spanning `--pca-variance` (0.95) of the
-variance with its eigenvalues, and a `--gmm-k` (32) component mixture fitted in that basis, plus
+variance with its eigenvalues, and a `--gmm-k` (32) component mixture with diagonal covariances
+fitted in that basis, plus
 per-dimension standard deviations — which the sampler uses for the **off-basis residual** it adds
 back on every draw, so the sampled marginals are right rather than short.
 
@@ -223,9 +227,10 @@ the corpus **token frequencies** are kept (~600 KB against ~300 MB) and
 `Sampler.build_embedding_lookup_from_model` rebuilds the table at load time. Layer 0 is then
 sampled frequency-weighted.
 
-The build also writes a `__meta__` block — model id, hidden size, layer count, site list, and
-`n_samples_total` — and validates the finished artifact against the model before saving. Every
-training run validates it again. `n_samples_total` is a **per-site** count, not a sum across sites:
+The build also writes a `__meta__` block — model id, hidden size, layer count, site list,
+`n_samples_total`, and `built_with: lfa-anchoring`, which is what a file is accepted on — and
+validates the finished artifact against the model before saving. Every training run validates it
+again. `n_samples_total` is a **per-site** count, not a sum across sites:
 every site sees the same token stream. Each site's block also carries its own `n_samples`, which is
 what an extension weights the new domain against; an artifact without them is refused.
 

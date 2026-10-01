@@ -15,6 +15,7 @@ import json
 from pathlib import Path
 
 import pytest
+import torch
 import yaml
 
 from conftest import tiny_recipe
@@ -286,6 +287,21 @@ def test_an_artifact_that_is_neither_self_generated_nor_a_file_exits_two_with_on
     lines = error_lines(capsys)
     assert len(lines) == 1
     assert "--artifact self-generated" in lines[0]
+
+
+def test_an_artifact_this_package_did_not_build_exits_two_with_one_line(tmp_path, base_dir,
+                                                                       tiny_artifact, capsys):
+    params, _ = tiny_artifact
+    foreign = tmp_path / "foreign.pt"
+    torch.save({key: value for key, value in params.items() if key != "__meta__"}, foreign)
+    code = main(["init", str(tmp_path / "ws"), "--model", str(base_dir),
+                 "--artifact", str(foreign)])
+
+    assert code == 2
+    lines = error_lines(capsys)
+    assert len(lines) == 1
+    assert "not built by lfa-anchoring" in lines[0] and "lfa build-artifact" in lines[0]
+    assert not (tmp_path / "ws").exists()
 
 
 @pytest.mark.parametrize("subcommand", ["fuse", "evaluate"])

@@ -22,19 +22,16 @@ def test_validate_mismatch(tiny_artifact, tiny_model):
         validate_against_model(params, model, get_adapter(model), model_id="other")
 
 
-def test_make_meta_says_who_built_the_statistics_and_who_wrote_the_block():
-    """`built_with` is provenance for the STATISTICS, so a meta block added to an artifact this
-    package did not build must be able to say so (RELEASING.md step 1 does). `lfa_version` records
-    who wrote the block either way, so the two never have to answer the same question."""
+def test_make_meta_says_this_package_built_the_statistics():
+    """`built_with` is what an artifact is accepted on, so it is not a parameter: every meta block
+    this package writes says it built the statistics. `lfa_version` records which version."""
     from lfa import __version__
 
-    default = make_meta("m", 8, 2, ["pre_mlp"], 100)
-    assert default["built_with"] == "lfa-anchoring"
-
-    added = make_meta("m", 8, 2, ["pre_mlp"], 100,
-                      built_with="research code; meta block added by lfa-anchoring")
-    assert added["built_with"] == "research code; meta block added by lfa-anchoring"
-    assert added["lfa_version"] == default["lfa_version"] == __version__
+    meta = make_meta("m", 8, 2, ["pre_mlp"], 100)
+    assert meta["built_with"] == "lfa-anchoring"
+    assert meta["lfa_version"] == __version__
+    with pytest.raises(TypeError):
+        make_meta("m", 8, 2, ["pre_mlp"], 100, built_with="research code")
 
 
 def test_meta_carries_provenance_when_given_and_none_otherwise():
@@ -62,3 +59,51 @@ def test_make_meta_records_the_self_generated_frame():
                      selfgen_frame={"n_raw": 60})
     assert meta["selfgen_frame"] == {"n_raw": 60}
     assert "selfgen_frame" not in make_meta("m", 8, 2, ["pre_qkv"], 10)
+
+
+# ------------------------------------------------------------------ only artifacts built here
+# The package accepts only p(h) artifacts it built itself: every file it writes carries a meta
+# block saying `built_with: lfa-anchoring` and diagonal mixture heads, so either missing is a
+# file built somewhere else, refused with a sentence that ends in what to do instead.
+
+def _without_meta(params):
+    return {key: value for key, value in params.items() if key != "__meta__"}
+
+
+def _built_with(params, who):
+    return dict(params, __meta__=dict(params["__meta__"], built_with=who))
+
+
+def _with_full_covariance(params):
+    entry = dict(params["1_pre_mlp"], gmm_covariance_type="full")
+    return dict(params, **{"1_pre_mlp": entry})
+
+
+@pytest.mark.parametrize("make", [_without_meta, lambda p: _built_with(p, "research code"),
+                                  _with_full_covariance],
+                         ids=["no-meta", "foreign-built_with", "full-covariance"])
+def test_load_artifact_refuses_a_file_this_package_did_not_build(tiny_artifact, tmp_path, make):
+    params, _ = tiny_artifact
+    path = tmp_path / "elsewhere.pt"
+    torch.save(make(params), path)
+    with pytest.raises(ValueError, match=r"not built by lfa-anchoring.*lfa build-artifact`\.$"):
+        load_artifact(path)
+
+
+@pytest.mark.parametrize("make", [_without_meta, lambda p: _built_with(p, "research code"),
+                                  _with_full_covariance],
+                         ids=["no-meta", "foreign-built_with", "full-covariance"])
+def test_validate_against_model_refuses_an_artifact_this_package_did_not_build(
+        tiny_artifact, tiny_model, make):
+    """No early return for a meta-less artifact: a missing meta is an error here too."""
+    params, _ = tiny_artifact; model, _ = tiny_model
+    with pytest.raises(ValueError, match="not built by lfa-anchoring"):
+        validate_against_model(make(params), model, get_adapter(model))
+
+
+def test_the_refusal_names_who_built_a_foreign_file(tiny_artifact, tmp_path):
+    params, _ = tiny_artifact
+    path = tmp_path / "elsewhere.pt"
+    torch.save(_built_with(params, "research code"), path)
+    with pytest.raises(ValueError, match="'research code'"):
+        load_artifact(path)

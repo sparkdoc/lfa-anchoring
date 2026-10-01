@@ -39,8 +39,9 @@ wheel the same script is ``python -m lfa.examples.chain_three_domains``.
 ``--artifact self-generated`` has the model write its own text and fits p(h) on it: hours
 once per model, and every later run over the same model reuses the finished artifact from the
 local store (``~/.cache/lfa/artifacts``, or ``$LFA_ARTIFACT_STORE``). ``--artifact`` also takes
-the path to an artifact file, which is copied in instead of building one. Either way the step
-between two domains extends the workspace's own copy; the stored artifact is never modified.
+the path to an artifact this package built, which is copied in instead of building one. Either
+way the step between two domains extends the workspace's own copy; the stored artifact is never
+modified.
 """
 
 from __future__ import annotations
@@ -131,7 +132,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--model", required=True, help="a Hub id or a local checkpoint path")
     parser.add_argument("--artifact", required=True,
-                        help="self-generated, or an artifact file")
+                        help="self-generated, or an artifact file this package built")
     parser.add_argument("--out", required=True, help="directory for the corpora and the workspace")
     parser.add_argument("--spec", type=Path, default=DEFAULT_SPEC,
                         help="the chain spec to run (default: %(default)s)")

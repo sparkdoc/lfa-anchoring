@@ -21,6 +21,7 @@ from lfa.artifact.fit import TorchGMM, fit_site
 from lfa.artifact.schema import (
     ArtifactModelMismatch,
     load_artifact,
+    make_meta,
     validate_against_model,
 )
 from lfa.losses import anchor_loss
@@ -140,11 +141,20 @@ def test_torch_gmm_recovers_blob_means():
     g = torch.Generator().manual_seed(0)
     centres = torch.tensor([[-8.0, 0.0], [8.0, 0.0], [0.0, 9.0]])
     x = torch.cat([c + 0.2 * torch.randn(400, 2, generator=g) for c in centres])
-    gmm = TorchGMM(n_components=3, covariance_type="diag", random_state=0, device="cpu").fit(x)
+    gmm = TorchGMM(n_components=3, random_state=0, device="cpu").fit(x)
     assert gmm.weights_.shape == (3,) and torch.allclose(gmm.weights_.sum(), torch.tensor(1.0))
     found = gmm.means_
     for c in centres:
         assert (found - c).norm(dim=1).min() < 0.1
+
+
+def test_torch_gmm_fits_diagonal_covariances_only():
+    """The package writes diagonal heads only, so its fitter has no other kind to offer."""
+    x = torch.randn(300, 4, generator=torch.Generator().manual_seed(1))
+    gmm = TorchGMM(n_components=2, random_state=0, device="cpu").fit(x)
+    assert gmm.covariances_.shape == (2, 4)
+    with pytest.raises(TypeError):
+        TorchGMM(n_components=2, covariance_type="full")
 
 
 def test_fit_site_entry_matches_the_shipped_conventions(collected):
@@ -266,6 +276,7 @@ def test_validate_accepts_a_site_wider_than_the_hidden_size(tiny_model):
     params = {
         "0_pre_o": {"mean": torch.zeros(64), "std": torch.ones(64)},
         "0_pre_mlp": {"mean": torch.zeros(32), "std": torch.ones(32)},
+        "__meta__": make_meta("wide", 32, 1, ["pre_o", "pre_mlp"], 10),
     }
     validate_against_model(params, model, get_adapter(model))
 

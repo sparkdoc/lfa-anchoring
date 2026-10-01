@@ -84,7 +84,7 @@ def test_the_mixture_fits_on_cuda_through_its_own_device_generator():
     centres = torch.tensor([[-8.0, 0.0], [8.0, 0.0], [0.0, 9.0]])
     points = torch.cat([c + 0.2 * torch.randn(400, 2, generator=generator) for c in centres])
 
-    gmm = TorchGMM(n_components=3, covariance_type="diag", random_state=0, device=DEVICE)
+    gmm = TorchGMM(n_components=3, random_state=0, device=DEVICE)
     gmm.fit(points.to(DEVICE))
 
     assert gmm._generator.device.type == "cuda"

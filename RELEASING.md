@@ -154,6 +154,15 @@ supplement); rank 4, one seed (the regenerate route).
 * **Not ported**: `--enforce-spec` (a comparison-only device) and the reasoning and instruction
   supplement modes (a supplement written in a skill's mode left that skill no better).
   Self-generated rehearsal, a replay method, is out of scope.
+* **Only artifacts this package built are read.** `init --artifact PATH`, `extend_artifact`,
+  `load_artifact`, `Sampler` and `validate_against_model` refuse a file with no `__meta__` block,
+  one whose `built_with` is not `lfa-anchoring`, or one with a mixture head that is not diagonal.
+  `extend` refuses a base artifact without per-site `n_samples`.
+* **Removed since 0.1.x**: `extend_artifact(base_n=)`, `lfa.merge.annotate_count`,
+  `lfa.models.MissingBuildToolchain`, `make_meta(built_with=)`, `TorchGMM(covariance_type=)`
+  (it fits diagonal covariances only), and the reading of
+  full-covariance, whitened and top-m GMM heads (`Sampler.sample_gmm`, `fit_domain_gmm`,
+  `merge_gmm_blocks`).
 * Docs: README (the five-command pipeline), `docs/quickstart.md` (the full pipeline, step by
   step), `docs/preparing-your-data.md` (new: formats, corpus shapes, the supplement),
   `docs/the-artifact.md` (renamed and rewritten: the self-generated build, the store, a real-text

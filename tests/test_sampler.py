@@ -89,3 +89,23 @@ def test_seeding_changes_reproducibility_not_the_distribution(tiny_artifact, tin
     assert not torch.equal(a, b)
     assert torch.allclose(a.mean(0), b.mean(0), atol=0.05)
     assert torch.allclose(a.std(0), b.std(0), rtol=0.05)
+
+
+def test_a_file_this_package_did_not_build_is_refused(tiny_artifact, tmp_path):
+    import pytest
+    params, _ = tiny_artifact
+    path = tmp_path / "elsewhere.pt"
+    torch.save({key: value for key, value in params.items() if key != "__meta__"}, path)
+    with pytest.raises(ValueError, match="not built by lfa-anchoring"):
+        Sampler(path, device="cpu")
+
+
+def test_a_dict_with_a_head_this_package_never_writes_is_refused(tiny_artifact):
+    """The package writes diagonal heads only; a full-covariance one is refused, not sampled."""
+    import copy
+    import pytest
+    params, _ = tiny_artifact
+    full = copy.deepcopy(params)
+    full["1_pre_mlp"]["gmm_covariance_type"] = "full"
+    with pytest.raises(ValueError, match="'full'"):
+        Sampler(full, device="cpu")

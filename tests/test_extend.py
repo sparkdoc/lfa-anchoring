@@ -133,6 +133,18 @@ def test_a_base_without_per_site_counts_is_refused_before_anything_loads(
         _extend(tmp_path / "out.pt", path, tmp_path / "no-model", corpus_file)
 
 
+def test_a_base_this_package_did_not_build_is_refused_before_anything_loads(
+        tmp_path, tiny_artifact, corpus_file):
+    base, _ = tiny_artifact
+    params = {key: value for key, value in base.items() if key != "__meta__"}
+    path = tmp_path / "no_meta.pt"
+    torch.save(params, path)
+
+    # No fused model exists at this path: the refusal comes before any model is loaded.
+    with pytest.raises(ValueError, match="not built by lfa-anchoring"):
+        _extend(tmp_path / "out.pt", path, tmp_path / "no-model", corpus_file)
+
+
 def test_per_entry_counts_win_over_the_meta_total(tmp_path, tiny_artifact, fused_dir,
                                                   corpus_file):
     """A block that carries its own count is believed over the meta, however the meta reads."""
@@ -210,31 +222,6 @@ def test_fit_domain_gmm_recovers_the_domains_modes(base_entry):
     assert centres[0] == pytest.approx(-3.5, abs=0.3)
     assert centres[1] == pytest.approx(4.5, abs=0.3)
     assert torch.allclose(block["gmm_weights"], torch.full((2,), 0.5), atol=0.05)
-
-
-def test_fit_domain_gmm_follows_a_whitened_top_m_base_entry(base_entry):
-    """Some shipped artifacts carry whitened top-m heads; the domain head must match the base's
-    convention and width, or the union concatenates two different coordinate systems."""
-    whitened = copy.deepcopy(base_entry)
-    head_dim = 4
-    whitened["gmm_means"] = whitened["gmm_means"][:, :head_dim]
-    whitened["gmm_covariances"] = whitened["gmm_covariances"][:, :head_dim]
-    whitened["gmm_whitened"] = True
-
-    activations = _two_blobs(base_entry)
-    block = fit_domain_gmm(activations, whitened, 2, seed=0, device="cpu")
-
-    assert block["gmm_whitened"] is True
-    assert block["gmm_means"].shape == (2, head_dim)
-
-    basis = whitened["pca_components"].float()[:, :head_dim]
-    eig = whitened["pca_eigenvalues"].float()[:head_dim]
-    z = ((activations - whitened["mean"].float()) @ basis) / eig.sqrt()
-    mixture_mean = (block["gmm_weights"].unsqueeze(1) * block["gmm_means"]).sum(0)
-    assert torch.allclose(mixture_mean, z.mean(0), atol=1e-3)
-    mixture_var = (block["gmm_weights"].unsqueeze(1)
-                   * (block["gmm_covariances"] + block["gmm_means"] ** 2)).sum(0) - mixture_mean ** 2
-    assert torch.allclose(mixture_var, z.var(0, unbiased=False), rtol=0.05, atol=1e-3)
 
 
 def test_the_union_places_the_domain_where_the_domain_is(base_entry):

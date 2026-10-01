@@ -222,9 +222,9 @@ def test_a_refused_init_leaves_nothing_behind(tmp_path, base_dir):
                          ids=["not-torch", "torch-but-not-a-dict"])
 def test_a_file_that_is_not_an_artifact_is_refused_and_leaves_no_workspace_behind(
         tmp_path, base_dir, payload):
-    """The file route reads the copy's meta after copying it in. A copy that cannot be read is a
-    refusal (one sentence ending in what to do, not a traceback), and it goes with the
-    directories this call made, as a failed build's files do."""
+    """The file route reads the file's meta before anything is created. A file that cannot be
+    read is a refusal (one sentence ending in what to do, not a traceback), and leaves no
+    directory behind."""
     not_an_artifact = tmp_path / "notes.pt"
     if isinstance(payload, str):
         not_an_artifact.write_text(payload)
@@ -235,12 +235,31 @@ def test_a_file_that_is_not_an_artifact_is_refused_and_leaves_no_workspace_behin
         Workspace.init(tmp_path / "ws", str(base_dir), artifact=str(not_an_artifact))
     assert not (tmp_path / "ws").exists()
 
-    # Into an existing directory: the copied v1.pt goes, the directory the caller made stays.
+    # Into an existing directory: nothing is added to it, and the directory the caller made stays.
     existing = tmp_path / "mine"
     existing.mkdir()
     with pytest.raises(ValueError, match="could not be read as an LFA artifact"):
         Workspace.init(existing, str(base_dir), artifact=str(not_an_artifact))
     assert list(existing.iterdir()) == []
+
+
+@pytest.mark.parametrize("meta", [None, "research code"], ids=["no-meta", "foreign-built_with"])
+def test_init_refuses_an_artifact_this_package_did_not_build_before_creating_anything(
+        tmp_path, base_dir, meta):
+    """Only artifacts this package built are accepted: a file with no meta block, or one whose
+    meta says something else built it, is refused before the workspace directory exists."""
+    params = torch.load(TINY_ARTIFACT_PATH, map_location="cpu", weights_only=False)
+    if meta is None:
+        del params["__meta__"]
+    else:
+        params["__meta__"]["built_with"] = meta
+    elsewhere = tmp_path / "built_elsewhere.pt"
+    torch.save(params, elsewhere)
+
+    with pytest.raises(ValueError, match=r"not built by lfa-anchoring.*"
+                                         r"--artifact self-generated.*lfa build-artifact`\.$"):
+        Workspace.init(tmp_path / "ws", str(base_dir), artifact=str(elsewhere))
+    assert not (tmp_path / "ws").exists()
 
 
 def test_re_initialising_a_workspace_names_a_command_a_cli_user_can_run(tmp_path, base_dir):
@@ -720,6 +739,19 @@ def test_the_base_count_predicate_reads_the_mixture_sites_only(tmp_path, base_di
     torch.save(params, ws.state["current_artifact"])
 
     ws._require_base_counts()                            # the mixture sites carry their own
+
+
+def test_the_base_count_check_refuses_an_artifact_this_package_did_not_build(
+        tmp_path, base_dir, tiny_artifact):
+    """The workspace's current artifact is read raw before an extension's fuse; a file put there
+    that this package did not build is refused then, not after the fuse."""
+    base, _ = tiny_artifact
+    ws = new_workspace(tmp_path, base_dir)
+    params = {key: value for key, value in copy.deepcopy(base).items() if key != "__meta__"}
+    torch.save(params, ws.state["current_artifact"])
+
+    with pytest.raises(ValueError, match="not built by lfa-anchoring"):
+        ws._require_base_counts()
 
 
 def _strip_counts(artifact_path, base):
@@ -1454,7 +1486,7 @@ def test_a_sharded_map_with_allow_sharding_gets_past_the_supplement_step(tmp_pat
     assert len(supplement_writer) == 1 and supplement_writer[0]["device"] == "cpu"
 
 
-# ------------------------------------------------------------------- regenerate-artifact (C15)
+# ------------------------------------------------- regenerate-artifact: the regenerate route
 
 def _fake_regenerate_builder(monkeypatch, tiny_artifact):
     import lfa.workspace as ws_module
@@ -1495,7 +1527,7 @@ def test_regenerate_writes_v2_from_the_fused_model_with_no_chat_share(tmp_path,
     assert out == tmp_path / "ws" / "artifacts" / "v2.pt" and out.is_file()
     assert (tmp_path / "ws" / "artifacts" / "v2.corpus.jsonl").is_file()
     assert calls[0]["model_id"] == str(tmp_path / "ws" / "models" / "stage1_fused")
-    assert calls[0]["n_chat"] == 0                                  # the C15 frame
+    assert calls[0]["n_chat"] == 0             # the recorded regenerate frame: no chat share
     assert ws.state["artifact_version"] == 2 and ws.state["artifact_route"] == "regenerate"
     assert ws.state["pending_extend"] is False
 

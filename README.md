@@ -53,7 +53,8 @@ documents of its own and p(h) is fitted on them — about 3 h 40 min on one RTX 
 8 GB card has not been measured. The result
 is kept in a local store, so every later workspace over the same model reuses it
 (`lfa list-artifacts` shows what is there), and a build that was interrupted resumes when the
-same command is run again.
+same command is run again. `--artifact` also takes a path, but only to an artifact this package
+built: another workspace's `artifacts/v1.pt`, or what `lfa build-artifact` wrote.
 
 **`prepare-domain`** turns text, Markdown, HTML or PDF into the corpus, a flat directory of `.txt`
 files. With `--supplement`, the model then writes question-and-answer pairs over the corpus, which

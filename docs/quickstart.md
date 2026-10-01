@@ -107,9 +107,11 @@ documents (e empty)`. Each finished batch is on disk before the next starts, so:
 * **`--rebuild`** builds afresh even when the store has a match. The old entry is moved aside to
   `<entry>.replaced-<timestamp>/`, never deleted.
 
-**Reusing a file.** `--artifact path/to/v1.pt` copies any artifact file in instead — another
-workspace's `artifacts/v1.pt`, for one. A file that was fitted on the model's own text keeps that
-provenance, so the recipe judges it exactly as if it had been built here.
+**Reusing a file.** `--artifact path/to/v1.pt` copies in an artifact this package built instead —
+another workspace's `artifacts/v1.pt`, or a file `lfa build-artifact` wrote (`--self-generated`, or
+`--corpus` for real text). A file built anywhere else is refused. A file that was fitted on the
+model's own text keeps that provenance, so the recipe judges it exactly as if it had been built
+here.
 
 **A trial build** for trying the pipeline end to end before paying for the real one:
 

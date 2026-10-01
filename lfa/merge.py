@@ -63,12 +63,22 @@ def merge_gmm_blocks(base_val: dict, dom_val: dict, alpha: float) -> dict | None
     per domain, the accumulating-sufficient-statistic property extended from moments to mixtures.
 
     REQUIRES dom_val's GMM to have been fit in base_val's basis (`pca_components`) — the collector
-    projects the new domain onto the shipped basis before fitting, so the coordinates are shared.
+    projects the new domain onto the shipped basis before fitting, so the coordinates are shared —
+    and both heads to be diagonal, the only kind this package writes.
     Returns the merged gmm fields, or None if either block lacks a GMM.
+
+    Raises:
+        ValueError: either head is not diagonal (``gmm_covariance_type`` other than ``"diag"``).
     """
     import torch
     if "gmm_weights" not in base_val or "gmm_weights" not in dom_val:
         return None
+    for side, block in (("base", base_val), ("domain", dom_val)):
+        if block.get("gmm_covariance_type") != "diag":
+            raise ValueError(
+                f"The {side} block's mixture head is {block.get('gmm_covariance_type')!r}, and "
+                "only 'diag' heads, the kind this package writes, can be merged: build the "
+                "artifact with `lfa build-artifact` or `lfa init --artifact self-generated`.")
     wb, wd = base_val["gmm_weights"].float(), dom_val["gmm_weights"].float()
     weights = torch.cat([(1.0 - alpha) * wb, alpha * wd])
     weights = weights / weights.sum().clamp_min(1e-12)
@@ -78,7 +88,7 @@ def merge_gmm_blocks(base_val: dict, dom_val: dict, alpha: float) -> dict | None
         "gmm_covariances": torch.cat(
             [base_val["gmm_covariances"].float(), dom_val["gmm_covariances"].float()], dim=0),
         "gmm_n_components": int(weights.shape[0]),
-        "gmm_covariance_type": base_val.get("gmm_covariance_type", "diag"),
+        "gmm_covariance_type": "diag",
     }
 
 

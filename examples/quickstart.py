@@ -31,8 +31,8 @@ question-and-answer supplement beside it, in ``data/my_domain.supplement/``, whe
 it (``docs/preparing-your-data.md``). ``--artifact self-generated`` has the model write its own
 text and fits p(h) on it; that costs hours once per model, and every later run over the same
 model reuses the finished artifact from the local store (``~/.cache/lfa/artifacts``, or
-``$LFA_ARTIFACT_STORE``). ``--artifact`` also takes the path to an artifact file -- another
-workspace's ``artifacts/v1.pt``, say -- which is copied in instead of building one.
+``$LFA_ARTIFACT_STORE``). ``--artifact`` also takes the path to an artifact this package built --
+another workspace's ``artifacts/v1.pt``, say -- which is copied in instead of building one.
 
 From an installed wheel, where there is no checkout to run a path from, the same script is
 ``python -m lfa.examples.quickstart``.
@@ -66,7 +66,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--model", required=True,
                         help="a Hub id or a local checkpoint path")
     parser.add_argument("--artifact", required=True,
-                        help="self-generated, or an artifact file")
+                        help="self-generated, or an artifact file this package built")
     parser.add_argument("--corpus", required=True,
                         help="a file or directory of documents to adapt to")
     parser.add_argument("--out", required=True,

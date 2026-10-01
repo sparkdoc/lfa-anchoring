@@ -34,7 +34,9 @@ logger = logging.getLogger(__name__)
 
 
 class TorchGMM:
-    """A Gaussian mixture fitted by EM on the GPU (or CPU), in torch throughout.
+    """A diagonal-covariance Gaussian mixture fitted by EM on the GPU (or CPU), in torch.
+
+    Diagonal is the only kind: it is the only head this package writes and reads.
 
     Ported from the reference implementation. Two things differ from ``sklearn``'s
     ``GaussianMixture``: parameters are exposed as tensors rather than numpy arrays, and the RNG is
@@ -43,10 +45,9 @@ class TorchGMM:
 
     Args:
         n_components: number of mixture components, K.
-        covariance_type: ``"diag"`` (per-dimension variances) or ``"full"``.
         max_iter: EM iterations per initialization.
         tol: stop when the mean log-likelihood moves by less than this.
-        reg_covar: added to every variance, keeping the Cholesky factor well defined.
+        reg_covar: added to every variance, keeping every standard deviation positive.
         n_init: independent initializations; the best log-likelihood is kept.
         random_state: seed for the private generator (``None`` = global RNG).
         device: device to fit on.
@@ -60,14 +61,13 @@ class TorchGMM:
     Attributes:
         weights_: ``[K]`` mixture weights, summing to 1.
         means_: ``[K, D]`` component means.
-        covariances_: ``[K, D]`` (diag) or ``[K, D, D]`` (full) covariances.
+        covariances_: ``[K, D]`` per-dimension variances.
         converged_, n_iter_, lower_bound_: EM diagnostics.
     """
 
     def __init__(
         self,
         n_components: int = 4,
-        covariance_type: str = "full",
         max_iter: int = 100,
         tol: float = 1e-3,
         reg_covar: float = 1e-6,
@@ -77,13 +77,10 @@ class TorchGMM:
         verbose: bool = False,
         init_params: str = "kmeans",
     ):
-        if covariance_type not in ("full", "diag"):
-            raise ValueError(f"covariance_type must be 'full' or 'diag', got {covariance_type!r}")
         if init_params not in ("kmeans", "kmeans++"):
             raise ValueError(f"init_params must be 'kmeans' or 'kmeans++', got {init_params!r}")
 
         self.n_components = n_components
-        self.covariance_type = covariance_type
         self.max_iter = max_iter
         self.tol = tol
         self.reg_covar = reg_covar
@@ -107,7 +104,7 @@ class TorchGMM:
         self._weights: torch.Tensor | None = None
         self._means: torch.Tensor | None = None
         self._covariances: torch.Tensor | None = None
-        self._cholesky: torch.Tensor | None = None
+        self._std: torch.Tensor | None = None
 
     # ---------------------------------------------------------------- RNG helpers
 
@@ -173,24 +170,12 @@ class TorchGMM:
 
         self._weights = torch.ones(K, device=self.device, dtype=X.dtype) / K
         data_var = X.var(dim=0).mean()
-        if self.covariance_type == "full":
-            eye = torch.eye(n_features, device=self.device, dtype=X.dtype)
-            self._covariances = eye.unsqueeze(0).repeat(K, 1, 1) * data_var
-        else:
-            self._covariances = torch.ones(K, n_features, device=self.device, dtype=X.dtype) * data_var
-        self._compute_cholesky()
+        self._covariances = torch.ones(K, n_features, device=self.device, dtype=X.dtype) * data_var
+        self._compute_std()
 
-    def _compute_cholesky(self) -> None:
-        """Cholesky factors of the regularized covariances (elementwise sqrt when diagonal)."""
-        if self.covariance_type == "full":
-            eye = torch.eye(self._covariances.shape[-1], device=self.device,
-                            dtype=self._covariances.dtype)
-            try:
-                self._cholesky = torch.linalg.cholesky(self._covariances + self.reg_covar * eye)
-            except RuntimeError:
-                self._cholesky = torch.linalg.cholesky(self._covariances + 0.01 * eye)
-        else:
-            self._cholesky = torch.sqrt(self._covariances + self.reg_covar)
+    def _compute_std(self) -> None:
+        """Per-dimension standard deviations of the regularized variances."""
+        self._std = torch.sqrt(self._covariances + self.reg_covar)
 
     def _compute_log_prob(self, X: torch.Tensor) -> torch.Tensor:
         """``[N, K]`` log ``p(x | component)``."""
@@ -198,13 +183,8 @@ class TorchGMM:
         log_prob = torch.zeros(n_samples, self.n_components, device=self.device, dtype=X.dtype)
         for k in range(self.n_components):
             diff = X - self._means[k]
-            if self.covariance_type == "full":
-                y = torch.linalg.solve_triangular(self._cholesky[k], diff.T, upper=False)
-                mahalanobis = (y ** 2).sum(dim=0)
-                log_det = 2 * torch.log(torch.diag(self._cholesky[k])).sum()
-            else:
-                mahalanobis = ((diff / self._cholesky[k]) ** 2).sum(dim=1)
-                log_det = 2 * torch.log(self._cholesky[k]).sum()
+            mahalanobis = ((diff / self._std[k]) ** 2).sum(dim=1)
+            log_det = 2 * torch.log(self._std[k]).sum()
             log_prob[:, k] = -0.5 * (n_features * np.log(2 * np.pi) + log_det + mahalanobis)
         return log_prob
 
@@ -219,19 +199,12 @@ class TorchGMM:
         self._weights = nk / n_samples
         self._means = (resp.T @ X) / nk.unsqueeze(1)
 
-        if self.covariance_type == "full":
-            self._covariances = torch.zeros(self.n_components, n_features, n_features,
-                                            device=self.device, dtype=X.dtype)
-            for k in range(self.n_components):
-                weighted_diff = (X - self._means[k]) * resp[:, k:k + 1].sqrt()
-                self._covariances[k] = (weighted_diff.T @ weighted_diff) / nk[k]
-        else:
-            self._covariances = torch.zeros(self.n_components, n_features,
-                                            device=self.device, dtype=X.dtype)
-            for k in range(self.n_components):
-                self._covariances[k] = (resp[:, k:k + 1] * (X - self._means[k]) ** 2).sum(dim=0) / nk[k]
+        self._covariances = torch.zeros(self.n_components, n_features,
+                                        device=self.device, dtype=X.dtype)
+        for k in range(self.n_components):
+            self._covariances[k] = (resp[:, k:k + 1] * (X - self._means[k]) ** 2).sum(dim=0) / nk[k]
 
-        self._compute_cholesky()
+        self._compute_std()
 
     # ---------------------------------------------------------------- public API
 
@@ -264,7 +237,7 @@ class TorchGMM:
                                self._covariances.clone(), iteration + 1)
 
         self._weights, self._means, self._covariances, self.n_iter_ = best_params
-        self._compute_cholesky()
+        self._compute_std()
         self.lower_bound_ = best_log_likelihood
         self.converged_ = True
 
@@ -285,10 +258,7 @@ class TorchGMM:
             if n_k == 0:
                 continue
             z = self._randn((n_k, n_features), self._means.dtype)
-            if self.covariance_type == "full":
-                samples[mask] = self._means[k] + z @ self._cholesky[k].T
-            else:
-                samples[mask] = self._means[k] + z * self._cholesky[k]
+            samples[mask] = self._means[k] + z * self._std[k]
         return samples, components
 
     def score_samples(self, X: torch.Tensor | np.ndarray) -> torch.Tensor:
@@ -303,7 +273,7 @@ class TorchGMM:
         n_samples, n_features = X.shape[0], X.shape[1]
         total_ll = float(self.score_samples(X).sum())
         K, D = self.n_components, n_features
-        n_params = K * D + (K - 1) + (K * D * (D + 1) // 2 if self.covariance_type == "full" else K * D)
+        n_params = K * D + (K - 1) + K * D
         return -2.0 * total_ll + n_params * float(np.log(n_samples))
 
     def _require_fitted(self) -> None:
@@ -371,7 +341,7 @@ def fit_site(
         logger.warning("Reservoir holds %d samples; fitting K=%d instead of %d.",
                        coords.shape[0], k, gmm_k)
 
-    gmm = TorchGMM(n_components=k, covariance_type="diag", n_init=n_init,
+    gmm = TorchGMM(n_components=k, n_init=n_init,
                    random_state=seed, device=device).fit(coords)
 
     # Reference percentiles of the fitted log-likelihood, as in the source: they are read as

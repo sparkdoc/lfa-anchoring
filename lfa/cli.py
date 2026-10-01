@@ -283,7 +283,9 @@ def build_parser() -> argparse.ArgumentParser:
                       help="`self-generated` to have the model write its own corpus and fit "
                            "p(h) on it (about 3 h 40 min on an RTX 3090, once per model: it is "
                            "kept in the local store, ~/.cache/lfa/artifacts or "
-                           "$LFA_ARTIFACT_STORE, and reused), or the path to an artifact file")
+                           "$LFA_ARTIFACT_STORE, and reused), or the path to an artifact this "
+                           "package built: another workspace's artifacts/v1.pt, or what "
+                           "`lfa build-artifact` wrote")
     init.add_argument("--rebuild", action="store_true",
                       help="with --artifact self-generated: build afresh even when the store "
                            "has a matching artifact (the old entry is moved aside, not deleted)")

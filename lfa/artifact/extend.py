@@ -16,14 +16,14 @@ adds ``k_domain`` components per site: **O(1) in the number of rounds**, against
 requirement to rehearse every prior corpus at every stage. Only the new domain is ever sampled, so
 the adaptation stays data-free with respect to everything that came before.
 
-**The domain head is emitted in the base entry's own coordinate convention**, because
+**The domain head is emitted in the base entry's own coordinates**, because
 :func:`lfa.merge.merge_gmm_blocks` concatenates the two component sets and keeps the *base*
-entry's mean, basis and ``gmm_whitened`` flag. The fit itself always runs on whitened coordinates
-``((h - mean) @ V) / sqrt(eig)`` -- EM on raw PCA coordinates is badly conditioned when the
-eigenvalues span orders of magnitude -- and the result is then un-whitened back into the base's
-frame unless the base's own head is whitened (some top-m artifacts are), in which case it is left
-as fitted and marked. Mixing the two conventions in one mixture would silently rescale every
-domain component by ``sqrt(eigenvalue)`` per coordinate; nothing downstream would raise.
+entry's mean and basis. The base head is diagonal over un-whitened PCA coordinates
+``(h - mean) @ V``, the only kind :func:`lfa.artifact.fit.fit_site` writes. The fit itself runs on
+whitened coordinates ``((h - mean) @ V) / sqrt(eig)`` -- EM on raw PCA coordinates is badly
+conditioned when the eigenvalues span orders of magnitude -- and the result is then un-whitened
+back into the base's frame. Left whitened, every domain component would be rescaled by
+``sqrt(eigenvalue)`` per coordinate against the base's; nothing downstream would raise.
 """
 
 from __future__ import annotations
@@ -56,13 +56,12 @@ def fit_domain_gmm(
     seed: int = 0,
     device: str = "cuda:0",
 ) -> dict:
-    """Fit ``H`` as a small mixture in ``base_entry``'s basis, in the base's own convention.
+    """Fit ``H`` as a small diagonal mixture in ``base_entry``'s basis and coordinates.
 
     Args:
         H: ``[N, D]`` activations collected at this site through the fused model.
         base_entry: the base artifact's entry for the same site. Its ``mean``,
-            ``pca_components`` and ``pca_eigenvalues`` define the coordinates; its ``gmm_means``
-            width and ``gmm_whitened`` flag define the convention the result must match.
+            ``pca_components`` and ``pca_eigenvalues`` define the coordinates.
         k: components to fit, capped at one per 200 samples.
         seed: EM/k-means seed.
         device: device to fit on.
@@ -74,11 +73,6 @@ def fit_domain_gmm(
     """
     basis = base_entry["pca_components"].float()                    # [D, n_comp]
     eigenvalues = base_entry["pca_eigenvalues"].float().clamp_min(1e-8)
-
-    # A top-m head covers only the leading coordinates; the domain's components are concatenated
-    # onto it, so they must be exactly as wide.
-    head_dim = base_entry["gmm_means"].shape[1] if "gmm_means" in base_entry else basis.shape[1]
-    basis, eigenvalues = basis[:, :head_dim], eigenvalues[:head_dim]
     mean = base_entry["mean"].float()
 
     z = ((H.float() - mean) @ basis) / eigenvalues.sqrt()           # whitened base coordinates
@@ -86,7 +80,7 @@ def fit_domain_gmm(
 
     # n_init=3 as in the reference implementation: a domain mixture is fitted once per site per
     # stage, so the cheapest insurance against a bad k-means++ draw is worth taking.
-    gmm = TorchGMM(n_components=k, covariance_type="diag", max_iter=100, tol=1e-3,
+    gmm = TorchGMM(n_components=k, max_iter=100, tol=1e-3,
                    reg_covar=1e-4, n_init=3, random_state=seed, device=device,
                    init_params="kmeans").fit(z.to(device))
 
@@ -94,23 +88,18 @@ def fit_domain_gmm(
     means = gmm.means_.detach().cpu().float()
     covariances = gmm.covariances_.detach().cpu().float()
 
-    block = {
+    # Back to un-whitened base coordinates: a whitened mean scales by sqrt(eig), a whitened
+    # variance by eig.
+    return {
         "gmm_weights": weights,
+        "gmm_means": means * eigenvalues.sqrt(),
+        "gmm_covariances": covariances * eigenvalues,
         "gmm_n_components": int(k),
         "gmm_covariance_type": "diag",
         "mean": H.float().mean(0),
         "std": H.float().std(0),
         "n_samples": int(len(H)),
     }
-    if base_entry.get("gmm_whitened"):
-        block["gmm_means"], block["gmm_covariances"] = means, covariances
-        block["gmm_whitened"] = True
-    else:
-        # Back to un-whitened base coordinates: a whitened mean scales by sqrt(eig), a whitened
-        # variance by eig.
-        block["gmm_means"] = means * eigenvalues.sqrt()
-        block["gmm_covariances"] = covariances * eigenvalues
-    return block
 
 
 def _collect_domain_activations(
@@ -209,9 +198,9 @@ def _collect_domain_activations(
 def gmm_site_keys(params: dict) -> list[str]:
     """The artifact's sites that carry a mixture -- the ones an extension adds components to.
 
-    Not every site has one: the recipe artifact prices the linear sites with a correlated
-    covariance and no GMM. Anything asking whether the artifact carries its sample counts has to
-    ask about *these* keys, since they are the only ones the merge touches.
+    A site whose reservoir was too small to fit a head on keeps its PCA basis only
+    (:func:`lfa.artifact.fit.fit_site`). Anything asking whether the artifact carries its sample
+    counts has to ask about *these* keys, since they are the only ones the merge touches.
     """
     return [key for key, entry in params.items()
             if parse_site_key(key) is not None and isinstance(entry, dict)
@@ -259,8 +248,8 @@ def extend_artifact(
         fused_model_path: the model the domain is collected through -- the *fused* base+A model
             that stage two will anchor, not the base. Its activations are what the new components
             must describe.
-        base_artifact_path: the artifact to extend (itself possibly the output of an earlier
-            extension: the merge accumulates).
+        base_artifact_path: the artifact to extend, which this package must have built (itself
+            possibly the output of an earlier extension: the merge accumulates).
         corpus_path: the new domain's training corpus, read exactly as training reads it.
         out_path: where to write the extended artifact.
         k_domain: components to fit per site for the new domain, capped at one per 200 samples.
@@ -276,6 +265,13 @@ def extend_artifact(
 
     Returns:
         The path written.
+
+    Raises:
+        lfa.artifact.schema.ForeignArtifact: the base artifact was not built by this package (no
+            meta block, another builder, or a mixture head that is not diagonal).
+        ValueError: the base carries no GMM sites, or a mixture site carries no ``n_samples``.
+            All three refusals come before any model is loaded.
+        lfa.artifact.schema.ArtifactModelMismatch: the base does not describe the fused model.
     """
     out_path = Path(out_path)
     base = load_artifact(base_artifact_path)
@@ -324,7 +320,7 @@ def extend_artifact(
 
     merged = merge_stats(base, domain_stats)
 
-    meta = dict(base.get(META_KEY) or {})
+    meta = dict(base[META_KEY])
     meta["version"] = int(meta.get("version", 1)) + 1
     meta["extended_with"] = list(meta.get("extended_with", [])) + [Path(corpus_path).name]
     # Recomputed rather than carried, and per-site (the base count plus this round's `need`), so

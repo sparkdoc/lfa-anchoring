@@ -3,9 +3,10 @@
 This is the input side of Layerwise Function Anchoring: the anchor compares teacher and student
 outputs of a sub-module on vectors ``h ~ p(h)``, so the quality of the preservation is exactly the
 quality of these samples. Per layer and site the artifact may carry, in increasing fidelity:
-diagonal moments (``mean``/``std``), a PCA basis with eigenvalues, a GMM head fitted in that basis,
-and -- for layer-0 ``pre_qkv`` only -- the exact ``input_layernorm(embed_tokens(id))`` lookup table.
-:meth:`Sampler.sample_best` walks that ladder.
+diagonal moments (``mean``/``std``), a PCA basis with eigenvalues, a diagonal-covariance GMM head
+fitted in that basis, and -- for layer-0 ``pre_qkv`` only -- the exact
+``input_layernorm(embed_tokens(id))`` lookup table. :meth:`Sampler.sample_best` walks that ladder.
+Only artifacts this package built are read (:func:`lfa.artifact.schema.require_own_artifact`).
 
 Two properties of the PCA and GMM paths are easy to lose and cost anchoring strength when lost:
 
@@ -30,7 +31,13 @@ from pathlib import Path
 
 import torch
 
-from .artifact.schema import LM_HEAD_SITE, load_artifact, parse_site_key, site_key
+from .artifact.schema import (
+    LM_HEAD_SITE,
+    load_artifact,
+    parse_site_key,
+    require_own_artifact,
+    site_key,
+)
 from .quantize import dequantize_params
 
 
@@ -42,16 +49,25 @@ class Sampler:
         Args:
             artifact: path to an artifact file, or an already-loaded (and dequantized) params dict.
                 A dict is used as given -- the caller keeps ownership of it, and the lookup table
-                built by :meth:`build_embedding_lookup_from_model` is written into it.
+                built by :meth:`build_embedding_lookup_from_model` is written into it. Either way
+                it must be an artifact this package built.
             device: device to generate samples on.
             seed: if given, all draws use a private generator seeded with it. If ``None``, draws use
                 the global RNG, matching the reference implementation call for call.
+
+        Raises:
+            lfa.artifact.schema.ForeignArtifact: the artifact was not built by this package --
+                among other things, a mixture head that is not diagonal is refused here rather
+                than sampled.
         """
         self.device = device
-        # `dequantize_params` is idempotent and a no-op on an already-dequantized artifact, so
-        # running it on the dict path too means a quantized dict fails nowhere.
-        self.params = (dequantize_params(artifact) if isinstance(artifact, dict)
-                       else load_artifact(artifact))
+        if isinstance(artifact, dict):
+            require_own_artifact(artifact)
+            # `dequantize_params` is idempotent and a no-op on an already-dequantized artifact,
+            # so running it on the dict path too means a quantized dict fails nowhere.
+            self.params = dequantize_params(artifact)
+        else:
+            self.params = load_artifact(artifact)
         self.generator = None if seed is None else torch.Generator(device=device).manual_seed(seed)
 
         # Device/dtype cache for the immutable per-site tensors (see `_dev`). The artifact is loaded
@@ -245,7 +261,9 @@ class Sampler:
     def sample_gmm(self, layer: int, site: str, n: int) -> torch.Tensor:
         """Sample from the GMM fitted in this site's PCA basis, projected back to hidden space.
 
-        Captures the multimodal structure a single Gaussian cannot. Returns ``[n, hidden_dim]``.
+        Captures the multimodal structure a single Gaussian cannot. The head is diagonal, fitted
+        on un-whitened coordinates over the whole stored basis -- the only kind this package
+        writes, and the only kind :meth:`__init__` lets in. Returns ``[n, hidden_dim]``.
 
         Raises:
             ValueError: if the site is absent or has no GMM head.
@@ -263,27 +281,7 @@ class Sampler:
         mean = self._dev(key, "mean")
         pca_components = self._dev(key, "pca_components")  # [hidden, pca_dim]
         gmm_weights = self.params[key]["gmm_weights"]  # [K] -- stays on CPU, see _dev
-        gmm_means = self.params[key]["gmm_means"]  # [K, pca_dim]
-        gmm_covariances = self.params[key]["gmm_covariances"]  # [K, pca_dim(, pca_dim)]
-        covariance_type = self.params[key].get("gmm_covariance_type", "full")
-        is_diagonal = gmm_covariances.ndim == 2 or covariance_type == "diag"
-
-        pca_dim = gmm_means.shape[1]
-
-        # Top-m head support: the GMM may cover only the top-m PCA coordinates (where the mixture
-        # structure lives), with the remaining basis coordinates modelled as independent Gaussians
-        # at their fitted eigenvalue variances -- keeps 100% of stored directions at a fraction of
-        # the mixture-fitting cost. `gmm_whitened` marks heads fitted in whitened coordinates
-        # (z/sqrt(eig), for EM conditioning); they are un-whitened at sample time.
-        n_comp_total = pca_components.shape[1]
-        gmm_whitened = bool(self.params[key].get("gmm_whitened", False))
-        eig = self.params[key].get("pca_eigenvalues")
-        if (gmm_whitened or pca_dim < n_comp_total) and eig is None:
-            raise ValueError(
-                f"GMM for {key} has a whitened or top-m head but no pca_eigenvalues -- "
-                "cannot un-whiten the head or sample the Gaussian tail."
-            )
-        eig_d = self._dev(key, "pca_eigenvalues") if eig is not None else None
+        pca_dim = self.params[key]["gmm_means"].shape[1]
 
         component_indices = self._multinomial(gmm_weights, n)  # [n]
 
@@ -293,28 +291,14 @@ class Sampler:
         # mixtures unusable. A gather is O(1) in K and the dominant matmul [n, pca_dim] @
         # [pca_dim, hidden] does not depend on K at all.
         gmm_means_d = self._dev(key, "gmm_means")                      # [K, pca_dim]
-        gmm_cov_d = self._dev(key, "gmm_covariances")
+        gmm_cov_d = self._dev(key, "gmm_covariances")                  # [K, pca_dim]
         idx = component_indices                                        # [n]
         eps = self._randn(n, pca_dim)
-        if is_diagonal:
-            # sqrt of the GATHERED covariance == gather of the sqrt (elementwise ops commute with
-            # indexing), so hoist it: this ran over [n, pca_dim] on every one of the ~85 calls per
-            # step.
-            cov_sqrt = self._derived(key, "_gmm_cov_sqrt", lambda: gmm_cov_d.clamp_min(0).sqrt())
-            samples_pca = gmm_means_d[idx] + eps * cov_sqrt[idx]
-        else:
-            # Cached: factorising [K, pca_dim, pca_dim] on every draw dominated full-covariance
-            # heads. The factorisation depends only on the (immutable) fitted covariance.
-            L = self._derived(key, "_gmm_cov_chol",
-                              lambda: torch.linalg.cholesky(gmm_cov_d))  # [K, pca_dim, pca_dim]
-            samples_pca = gmm_means_d[idx] + torch.einsum("nij,nj->ni", L[idx], eps)
-
-        if gmm_whitened:
-            samples_pca = samples_pca * eig_d[:pca_dim].clamp_min(0).sqrt()
-        if pca_dim < n_comp_total:
-            # fitted Gaussian tail on the remaining basis coordinates
-            tail = self._randn(n, n_comp_total - pca_dim) * eig_d[pca_dim:].clamp_min(0).sqrt()
-            samples_pca = torch.cat([samples_pca, tail], dim=1)
+        # sqrt of the GATHERED covariance == gather of the sqrt (elementwise ops commute with
+        # indexing), so hoist it: this ran over [n, pca_dim] on every one of the ~85 calls per
+        # step.
+        cov_sqrt = self._derived(key, "_gmm_cov_sqrt", lambda: gmm_cov_d.clamp_min(0).sqrt())
+        samples_pca = gmm_means_d[idx] + eps * cov_sqrt[idx]
 
         # Project back to the full space
         samples = mean + samples_pca.float() @ pca_components.T

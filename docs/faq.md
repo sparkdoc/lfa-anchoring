@@ -183,6 +183,15 @@ The natural next models to verify are **Gemma 3 1B** and **Llama 3.2 1B**: both 
 the existing adapter, and both are small enough that the artifact build and a λ sweep fit on one
 24 GB card.
 
+## Can I bring an artifact built somewhere else?
+
+No. The package reads only p(h) artifacts it built itself: `lfa init --artifact self-generated`,
+`lfa build-artifact` (`--self-generated`, or `--corpus` for real text), and what `extend` and
+`regenerate-artifact` write from those — so another workspace's `artifacts/v1.pt` is fine. Every
+one of them carries a `__meta__` block saying `built_with: lfa-anchoring`, with diagonal mixture
+heads; a file without that block, naming another builder, or carrying another kind of head is
+refused before anything is created or loaded.
+
 ## Where is the corpus the paper used?
 
 Not here. The paper's first domain is a collection of philosophy-of-mind papers assembled from the

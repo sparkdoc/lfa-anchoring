@@ -48,7 +48,7 @@ import yaml
 from .adapters import get_adapter
 from .artifact.build import build_artifact_self_generated
 from .artifact.extend import extend_artifact, gmm_site_keys, require_site_counts
-from .artifact.schema import META_KEY, SELF_GENERATED, validate_against_model
+from .artifact.schema import SELF_GENERATED, require_own_artifact, validate_against_model
 from .artifact.store import obtain_self_generated
 from .corpus import load_corpus
 from .evaluate import (
@@ -269,15 +269,24 @@ def _table(before: dict, after: dict, unanchored: dict | None) -> str:
 
 
 def _meta_of(path: Path) -> dict:
-    """The ``__meta__`` block of the artifact file at ``path`` (``{}`` when it carries none).
+    """The ``__meta__`` block of the artifact file at ``path``, which this package must have built.
 
     Raises:
-        TypeError: the file is a torch file whose payload is not a dict, so not an artifact.
+        ValueError: the file cannot be read as an artifact at all.
+        lfa.artifact.schema.ForeignArtifact: it can, but this package did not build it
+            (:func:`~lfa.artifact.schema.require_own_artifact`).
     """
-    payload = torch.load(path, map_location="cpu", weights_only=False)
-    if not isinstance(payload, dict):
-        raise TypeError(f"{path} holds a {type(payload).__name__}, not an artifact's dict")
-    return dict(payload.get(META_KEY) or {})
+    try:
+        payload = torch.load(path, map_location="cpu", weights_only=False)
+        if not isinstance(payload, dict):
+            raise TypeError(f"{path} holds a {type(payload).__name__}, not an artifact's dict")
+    except Exception as exc:
+        raise ValueError(
+            f"{path} could not be read as an LFA artifact ({exc.__class__.__name__}). Pass "
+            "--artifact self-generated, or the path to an artifact this package built, such as "
+            "another workspace's artifacts/v1.pt."
+        ) from exc
+    return dict(require_own_artifact(payload, path))
 
 
 def _bundled_recipe_for(model_id: str) -> str | None:
@@ -358,8 +367,9 @@ class Workspace:
                 once per model: a later init over the same model at the same frame copies the
                 finished artifact in, and a build that stopped part-way resumes where it
                 stopped. The corpus and its manifest are copied in beside it
-                (``artifacts/v1.corpus.jsonl``). A path is copied as it is -- another
-                workspace's ``artifacts/v1.pt``, for one; a file whose meta says it was fitted
+                (``artifacts/v1.corpus.jsonl``). A path must name an artifact this package built
+                -- another workspace's ``artifacts/v1.pt``, or the output of ``lfa
+                build-artifact`` -- and is copied as it is; a file whose meta says it was fitted
                 on the model's own text keeps that provenance. Either way the artifact ends up
                 at ``artifacts/v1.pt``, so the workspace carries its own p(h) and later versions
                 sit beside it.
@@ -376,6 +386,9 @@ class Workspace:
             FileExistsError: ``path`` already holds a workspace.
             ValueError: ``artifact`` is neither ``"self-generated"`` nor an existing file, or is
                 a file that cannot be read as an artifact.
+            lfa.artifact.schema.ForeignArtifact: ``artifact`` is a file this package did not
+                build (no meta block, one naming another builder, or a mixture head that is not
+                diagonal).
             lfa.artifact.store.StoreLocked: another process is already building the same
                 self-generated artifact.
         """
@@ -397,8 +410,10 @@ class Workspace:
             raise ValueError(
                 f"{artifact!r} is not an artifact file. Pass --artifact self-generated to have "
                 "the model build one from its own text (reused from the local store when it has "
-                "been built before), or the path to an artifact file, such as another "
-                "workspace's artifacts/v1.pt.")
+                "been built before), or the path to an artifact this package built, such as "
+                "another workspace's artifacts/v1.pt.")
+        # Read before anything is created: a file this package did not build is refused here.
+        meta = None if source is None else _meta_of(source)
         destination = artifacts_dir / "v1.pt"
         # Remembered so that a failure below can put the directory tree back as it found it: the
         # arguments being good does not mean the artifact will arrive -- a self-generated build
@@ -420,14 +435,6 @@ class Workspace:
                 provenance = SELF_GENERATED
             else:
                 shutil.copyfile(source, destination)
-                try:
-                    meta = _meta_of(destination)
-                except Exception as exc:
-                    raise ValueError(
-                        f"{artifact} could not be read as an LFA artifact "
-                        f"({exc.__class__.__name__}). Pass --artifact self-generated, or the "
-                        "path to an artifact file such as another workspace's artifacts/v1.pt."
-                    ) from exc
                 if meta.get("provenance") == SELF_GENERATED and meta.get("corpus_sha256"):
                     artifact_id = f"{SELF_GENERATED}:{meta['corpus_sha256'][:12]}"
                     provenance = SELF_GENERATED
@@ -1032,7 +1039,8 @@ class Workspace:
     def _artifact_meta(self) -> dict:
         """The ``__meta__`` block of the current artifact.
 
-        ``{}`` when the artifact file is missing or carries no meta. It is what lets
+        ``{}`` when the artifact file is missing (the stage then fails where it loads it). It is
+        what lets
         :meth:`lfa.recipe.Recipe.warnings` judge a self-generated artifact by its provenance.
         """
         path = self.state["current_artifact"]
@@ -1169,15 +1177,17 @@ class Workspace:
         return out
 
     def _require_base_counts(self) -> None:
-        """Refuse an artifact whose mixture sites carry no sample count, before anything is fused.
+        """Refuse an artifact this package did not build, or whose mixture sites carry no sample
+        count, before anything is fused.
 
         Loading the artifact for this costs one CPU read of a file that is about to be read
         again; the alternative is fusing a model for an extension that cannot be completed.
         """
-        params = torch.load(self.state["current_artifact"], map_location="cpu",
-                            weights_only=False)
+        path = self.state["current_artifact"]
+        params = torch.load(path, map_location="cpu", weights_only=False)
+        require_own_artifact(params, path)
         # No mixture sites means there is nothing to extend at all; `extend_artifact` says so.
-        require_site_counts(params, gmm_site_keys(params), self.state["current_artifact"])
+        require_site_counts(params, gmm_site_keys(params), path)
 
     # ------------------------------------------------------------------------------- evaluate
 

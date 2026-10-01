@@ -69,3 +69,14 @@ def test_explicit_alpha_without_counts_leaves_the_block_uncounted():
                       {"0_pre_mlp": _block(2, 3, 2)}, alpha=0.5)["0_pre_mlp"]
     assert "n_samples" not in out
     assert torch.isclose(out["gmm_weights"][:4].sum(), torch.tensor(0.5))
+
+
+@pytest.mark.parametrize("which", ["base", "domain"])
+def test_a_head_that_is_not_diagonal_is_refused(which):
+    """The package writes diagonal heads only; a merge does not default a missing or other type."""
+    base = {"0_pre_mlp": _counted(_block(4, 3, 1), 300)}
+    dom = {"0_pre_mlp": _counted(_block(2, 3, 2), 100)}
+    target = base if which == "base" else dom
+    target["0_pre_mlp"]["gmm_covariance_type"] = "full"
+    with pytest.raises(ValueError, match="diag"):
+        merge_stats(base, dom)
