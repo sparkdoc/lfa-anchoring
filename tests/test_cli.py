@@ -308,26 +308,6 @@ def test_reading_a_workspace_with_no_trained_stage_exits_two_with_one_line(subco
     assert "lfa train" in lines[0]
 
 
-def test_a_workspace_with_no_artifact_exits_two_with_one_line(tmp_path, base_dir, corpus_a,
-                                                              recipe_path, capsys):
-    """`init` always puts an artifact in place; a workspace without one (written by an older
-    version, or with its artifact entry cleared by hand) has no p(h) to anchor against."""
-    workspace = tmp_path / "ws"
-    Workspace.init(workspace, str(base_dir), artifact=TINY_ARTIFACT_PATH)
-    state = json.loads((workspace / "workspace.json").read_text())
-    state["current_artifact"] = None
-    (workspace / "workspace.json").write_text(json.dumps(state))
-    capsys.readouterr()
-
-    code = main(["train", "--workspace", str(workspace), "--corpus", str(corpus_a),
-                 "--recipe", str(recipe_path), "--device", "cpu"])
-
-    assert code == 2
-    lines = error_lines(capsys)
-    assert len(lines) == 1
-    assert "--artifact self-generated" in lines[0]
-
-
 def test_a_seed_corpus_source_that_cannot_be_loaded_exits_two_with_one_line(tmp_path, capsys,
                                                                             monkeypatch):
     """No network is the ordinary case for `prepare-seed-corpus`, and it is not a bug."""
@@ -621,7 +601,7 @@ def test_prepare_supplement_with_a_model_needs_no_workspace(tmp_path, monkeypatc
 
 
 def test_prepare_supplement_without_a_model_is_the_workspace_route_here(tmp_path, monkeypatch):
-    """No flag at all: the workspace in the current directory writes, as before `--model`."""
+    """No flag at all: the workspace in the current directory writes."""
     seen = {}
 
     class _Opened:

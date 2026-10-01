@@ -327,8 +327,8 @@ class Recipe:
                 self-generated artifact (``provenance == "self-generated"``) is judged by its meta
                 rather than by its id: a mismatch note when the text came from another model;
                 against a ``self-generated`` calibration, silent when its recorded
-                ``selfgen_frame`` matches :attr:`self_generated_frame`, a note naming each field
-                that differs when it does not, and a note when it records no frame at all. Any
+                ``selfgen_frame`` matches :attr:`self_generated_frame`, and a note naming each
+                field that differs when it does not (a missing frame differs in every field). Any
                 other artifact against a ``self-generated`` calibration is a re-tune; against a
                 named calibration the ids are compared.
         """
@@ -355,24 +355,19 @@ class Recipe:
                 f"recipe's {self.model_id!r}: lambda is coupled to the p(h) artifact, so "
                 "calibrate it against held-out domain perplexity for this model.")
         elif self.calibrated_artifact == SELF_GENERATED_REFERENCE and self_generated:
-            frame = meta.get("selfgen_frame")
-            if frame is None:
+            # Every self-generated build records its frame; a meta without one has every
+            # field unknown, and is told so like any other off-frame build.
+            frame = meta.get("selfgen_frame") or {}
+            differ = [f"{key} {frame.get(key)!r} (calibrated at {value!r})"
+                      for key, value in self.self_generated_frame.items()
+                      if frame.get(key) != value]
+            if differ:
                 notes.append(
-                    "this self-generated artifact records no generation frame, so it cannot be "
-                    "checked against the frame this recipe's lambda was calibrated at "
-                    f"({_describe(self.self_generated_frame)}); rebuild it with this version "
-                    "(`lfa init ... --artifact self-generated --rebuild`) to have it recorded.")
-            else:
-                differ = [f"{key} {frame.get(key)!r} (calibrated at {value!r})"
-                          for key, value in self.self_generated_frame.items()
-                          if frame.get(key) != value]
-                if differ:
-                    notes.append(
-                        "this self-generated artifact was built at a different frame from the "
-                        "one this recipe's lambda was calibrated at: " + ", ".join(differ)
-                        + ". A trial-sized build is fine for trying the pipeline; for a real "
-                        "run, build at the recorded frame or calibrate lambda against held-out "
-                        "domain perplexity (docs/adding-a-model.md).")
+                    "this self-generated artifact was built at a different frame from the "
+                    "one this recipe's lambda was calibrated at: " + ", ".join(differ)
+                    + ". A trial-sized build is fine for trying the pipeline; for a real "
+                    "run, build at the recorded frame or calibrate lambda against held-out "
+                    "domain perplexity (docs/adding-a-model.md).")
         elif self.calibrated_artifact == SELF_GENERATED_REFERENCE:
             notes.append(
                 f"this recipe's lambda ({quoted}) is calibrated against an artifact fitted on the "

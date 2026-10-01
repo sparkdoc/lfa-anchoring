@@ -5,8 +5,8 @@ Layerwise Function Anchoring (LFA) trains a student against a frozen reference o
 adapted linear, the norms are never adapter targets, and ``freeze_embed`` leaves the embedding and
 the tied head alone -- so the teacher's output on an anchor vector ``h`` is what the student's own
 sub-module computes with its adapter switched off. :class:`AdapterDisabledTeacher` reads it that
-way and no second model is loaded (``teacher_mode="adapter_disabled"``, the default for a LoRA run
-since 0.1.1). Full-weight training moves ``W_base``, so there the student holds no teacher and
+way and no second model is loaded (``teacher_mode="adapter_disabled"``, the default for a LoRA
+run). Full-weight training moves ``W_base``, so there the student holds no teacher and
 :func:`load_teacher` loads a real one, in the same dtype from the same checkpoint, so that at step
 0 the student *is* the teacher and the anchoring signal starts at exactly zero.
 
@@ -60,7 +60,6 @@ __all__ = [
     "AdapterDisabledTeacher",
     "make_adapter_disabled_teacher",
     "frozen_reference",
-    "MissingBuildToolchain",
     "check_gpu_toolchain",
     "assert_trainable_params",
     "load_adapter_for_training",
@@ -94,15 +93,6 @@ class TeacherModeRefused(ValueError):
 #: What ``teacher_mode`` accepts. ``"auto"`` resolves by training mode -- see
 #: :func:`resolve_teacher_mode`.
 TEACHER_MODES = ("auto", "separate", "adapter_disabled")
-
-
-class MissingBuildToolchain(RuntimeError):
-    """A CUDA run that would need to compile on a machine that cannot.
-
-    Kept for callers that catch it (it is still in ``cli.USER_FACING_ERRORS``); it is no longer
-    raised. :func:`check_gpu_toolchain` now logs a one-time warning instead, because the
-    package's own training and generation paths ran on a GPU without ``Python.h`` (2026-09-26).
-    """
 
 
 #: Set to skip :func:`check_gpu_toolchain` on a machine where torch never JIT-compiles.

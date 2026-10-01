@@ -116,9 +116,7 @@ vectors whichever other layers share its pass. At a fixed seed, any group size g
 artifact — the same moments, the same reservoirs, the same fitted mixtures — and a host with less
 RAM simply makes more corpus passes. The artifact's meta still records the value used as
 `layer_group_size`, for the record. The store's key leaves the group size out, and that is safe:
-the group a host chose is not among the things that can make two builds differ. A store entry
-built before 0.2.0 gave each site its own generator is still reused as it is, and differs from a
-fresh build at the same seed.
+the group a host chose is not among the things that can make two builds differ.
 
 ### Durability and resume
 
@@ -228,8 +226,8 @@ sampled frequency-weighted.
 The build also writes a `__meta__` block — model id, hidden size, layer count, site list, and
 `n_samples_total` — and validates the finished artifact against the model before saving. Every
 training run validates it again. `n_samples_total` is a **per-site** count, not a sum across sites:
-every site sees the same token stream, and this is the number a later extension reads back as each
-block's own count.
+every site sees the same token stream. Each site's block also carries its own `n_samples`, which is
+what an extension weights the new domain against; an artifact without them is refused.
 
 `build-artifact` writes blockwise-int8 by default (`--no-quantize` for full precision, which
 doubles the file). Quantization is a storage format: it is applied to a shallow copy on save and

@@ -526,7 +526,7 @@ def test_a_workspace_stage_loads_no_teacher_by_default(tmp_path, base_dir, tiny_
 
 def test_a_workspace_stage_can_still_ask_for_a_separate_teacher(tmp_path, base_dir, tiny_artifact,
                                                                 corpus_a):
-    """``teacher_mode="separate"`` is the pre-0.1.1 behaviour, still available and still recorded."""
+    """``teacher_mode="separate"`` is available to a workspace stage, and recorded."""
     from conftest import tiny_recipe
     from lfa.workspace import Workspace
 

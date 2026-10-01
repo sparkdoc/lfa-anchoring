@@ -192,7 +192,7 @@ generated supplement rather than by the anchor. The paper calls that supplement 
 pairs are the interference, but a stage trained *without* the supplement answers on the earlier
 domain **worse** on the same judge, so "drop the Q&A" is not the reading.
 
-Since 0.2.0 this package writes a supplement too (every stage's entry model writes its own
+This package writes a supplement too (every stage's entry model writes its own
 domain's pairs; [concepts.md](concepts.md#what-the-supplement-does-and-does-not-do) says what it
 is for), but nothing here computes a judged score. Every number it reports is a perplexity computed
 locally. Read that finding as a caution about what perplexity does and does not tell you about a

@@ -54,18 +54,6 @@ def is_moment_block(value) -> bool:
     return isinstance(value, dict) and "mean" in value and "std" in value
 
 
-def annotate_count(stats: dict, n_samples: int) -> dict:
-    """Attach ``n_samples`` to every sampled-sub-module block in-place (self-describing artifact).
-
-    For a legacy artifact whose count lived only in the sibling coverage report.
-    Non-moment entries (embedding_lookup, metadata) are left untouched. Returns ``stats``.
-    """
-    for value in stats.values():
-        if is_moment_block(value):
-            value["n_samples"] = int(n_samples)
-    return stats
-
-
 def merge_gmm_blocks(base_val: dict, dom_val: dict, alpha: float) -> dict | None:
     """Exact n-weighted merge of two GMMs that live in the SAME PCA basis: the component UNION.
 
@@ -115,7 +103,7 @@ def merge_stats(base_stats: dict, domain_stats: dict, alpha: float | None = None
             if "n_samples" not in base_val or "n_samples" not in dom_val:
                 raise ValueError(
                     f"n-weighted merge needs n_samples on both blocks (missing on '{key}'); "
-                    "call annotate_count() on the legacy artifact first, or pass an explicit alpha."
+                    "pass an explicit alpha to merge without counts."
                 )
             n_b, n_d = base_val["n_samples"], dom_val["n_samples"]
             a = alpha_from_counts(n_b, n_d)

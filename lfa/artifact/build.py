@@ -163,9 +163,9 @@ def build_artifact(
         gc.collect()
 
     site_keys = [k for k in params if parse_site_key(k) is not None]
-    # A PER-SITE count, not a cross-site sum: every site sees the same token stream, and this is
-    # what a later extension reads back as each block's own count. Collection stops between
-    # batches, so the counts can differ by up to one batch; the largest is the one to record.
+    # A PER-SITE count, not a cross-site sum: every site sees the same token stream. Collection
+    # stops between batches, so the counts can differ by up to one batch; the largest is the one
+    # to record.
     site_counts = [params[k]["n_samples"] for k in site_keys]
     if len(set(site_counts)) > 1:
         logger.info("Site sample counts differ (%d-%d, one batch of slack); recording %d",

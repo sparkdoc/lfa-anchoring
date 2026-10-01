@@ -273,17 +273,6 @@ def test_open_says_so_when_there_is_no_workspace(tmp_path):
         Workspace.open(tmp_path)
 
 
-def test_training_a_workspace_with_no_artifact_says_how_to_make_one(tmp_path, base_dir,
-                                                                    corpus_a):
-    """`init` always puts an artifact in place now; a workspace written by an older version
-    without one is told how to start a new one rather than which download to run."""
-    ws = new_workspace(tmp_path, base_dir)
-    ws.state["current_artifact"] = None
-
-    with pytest.raises(RuntimeError, match="--artifact self-generated"):
-        ws.train(corpus_a, recipe=tiny_recipe(base_dir), device="cpu")
-
-
 def test_init_adopts_a_bundled_recipe_that_names_the_same_model(tmp_path):
     """A workspace over Qwen3-0.6B finds the shipped recipe by its model_id, not by name."""
     ws = Workspace.init(tmp_path, "Qwen/Qwen3-0.6B", artifact=TINY_ARTIFACT_PATH)
@@ -707,15 +696,16 @@ def test_extend_collects_under_the_frame_the_stage_trained_under(tmp_path, base_
     assert seen["seq_len"] == 64
 
 
-def test_extend_names_base_n_when_nothing_supplies_the_count(tmp_path, base_dir, corpus_a,
+def test_extend_refuses_an_artifact_without_per_site_counts(tmp_path, base_dir, corpus_a,
                                                              tiny_artifact):
     base, path = tiny_artifact
     ws = Workspace.init(tmp_path, str(base_dir), artifact=str(path))
     _strip_counts(ws.state["current_artifact"], base)
     ws.train(corpus_a, recipe=tiny_recipe(base_dir), device="cpu")
 
-    with pytest.raises(ValueError, match="base_n"):
+    with pytest.raises(ValueError, match="n_samples"):
         ws.extend(need=NEED, k_domain=K_DOMAIN, device="cpu")
+    assert not (tmp_path / "models").exists() or not any((tmp_path / "models").iterdir())
 
 
 def test_the_base_count_predicate_reads_the_mixture_sites_only(tmp_path, base_dir,
@@ -727,21 +717,17 @@ def test_the_base_count_predicate_reads_the_mixture_sites_only(tmp_path, base_di
     ws = new_workspace(tmp_path, base_dir)
     params = copy.deepcopy(base)
     params["0_pre_qkv"] = {"mean": torch.zeros(32), "std": torch.ones(32)}   # no mixture, no count
-    # No meta total either, so the per-block counts on the mixture sites are the only answer.
-    params["__meta__"] = {k: v for k, v in params["__meta__"].items() if k != "n_samples_total"}
     torch.save(params, ws.state["current_artifact"])
 
-    assert ws._resolve_base_n() is None                  # the mixture sites carry their own
+    ws._require_base_counts()                            # the mixture sites carry their own
 
 
 def _strip_counts(artifact_path, base):
-    """Rewrite an artifact as one from elsewhere may be shaped: no per-block counts, no meta
-    total."""
+    """Rewrite an artifact without its per-block counts, which nothing this package builds does."""
     params = copy.deepcopy(base)
     for key in list(params):
         if key[0].isdigit():
             params[key].pop("n_samples", None)
-    params["__meta__"] = {k: v for k, v in params["__meta__"].items() if k != "n_samples_total"}
     torch.save(params, artifact_path)
 
 
@@ -1247,12 +1233,6 @@ def test_another_workspaces_self_generated_v1_keeps_the_recipe_silent_and_extend
 
     extended = ws.extend(need=NEED, k_domain=K_DOMAIN, device="cpu")
     assert load_artifact(extended)["1_pre_mlp"]["n_samples"] == 1000 + NEED
-
-
-def test_artifact_meta_is_empty_without_an_artifact(tmp_path, base_dir):
-    ws = new_workspace(tmp_path / "ws", base_dir)
-    ws.state["current_artifact"] = None
-    assert ws._artifact_meta() == {}
 
 
 def test_init_self_generated_rollback_keeps_files_it_did_not_write(tmp_path, base_dir,

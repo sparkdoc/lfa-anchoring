@@ -130,9 +130,6 @@ at least as good at the recipe's λ — one model, one seed, one domain. Any oth
 `calibrated_artifact` is an artifact id or path, compared as a string with the one the workspace
 records.
 
-A recipe file written before 0.2.0 may carry `calibrated_self_generated`; it is refused at load as
-an unknown field, and deleting the line is the whole fix.
-
 ## The couplings, and what the warnings mean
 
 `Workspace.train` calls `Recipe.warnings` before anything is loaded and logs what comes back. None
@@ -168,9 +165,6 @@ rather than its id, and is one of these:
   …, and you are anchoring against '…', which is not one."* — an artifact fitted on real text, or
   one whose provenance is unknown: calibrate λ against held-out domain perplexity
   ([adding-a-model.md](adding-a-model.md), §3).
-
-A self-generated artifact built by an earlier version records no frame, and is told so, with the
-rebuild that records one (`lfa init … --artifact self-generated --rebuild`).
 
 One more is logged by `train` itself rather than by the recipe: *"Training on the raw corpus alone:
 this recipe's lambda was calibrated at supplement_fraction 0.13 and this run mixes none."* It fires
@@ -219,5 +213,4 @@ recorded in that stage's `history.json` entry, so a run says what it did rather 
 asked for.
 
 The chunk offset itself is not a setting: it rotates the chunk boundaries, so every token of every
-document is trained on in every epoch. A switch that reproduced the older, truncating stream
-existed briefly and was removed — see [verification.md](verification.md).
+document is trained on in every epoch.

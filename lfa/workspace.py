@@ -47,7 +47,7 @@ import yaml
 
 from .adapters import get_adapter
 from .artifact.build import build_artifact_self_generated
-from .artifact.extend import artifact_carries_base_count, extend_artifact, gmm_site_keys
+from .artifact.extend import extend_artifact, gmm_site_keys, require_site_counts
 from .artifact.schema import META_KEY, SELF_GENERATED, validate_against_model
 from .artifact.store import obtain_self_generated
 from .corpus import load_corpus
@@ -121,12 +121,11 @@ class StageOrderError(RuntimeError):
 class WorkspaceNotReady(RuntimeError):
     """Raised when a workspace is asked for something it does not have yet.
 
-    Two cases, both of them ordinary first-session mistakes rather than bugs: a training call on a
-    workspace that carries no p(h) artifact, and a read (``evaluate``, ``fuse``) of a workspace
-    that has trained no stage. Both messages end in the command to run instead, so both are in
-    :data:`lfa.cli.USER_FACING_ERRORS` and reach the user as one line rather than as the last line
-    of a traceback -- which a bare ``RuntimeError`` cannot be, since torch raises those for real
-    faults (a CUDA OOM, for one) that must keep their traceback.
+    An ordinary first-session mistake rather than a bug: a read (``evaluate``, ``fuse``) of a
+    workspace that has trained no stage. The message ends in the command to run instead, so it is
+    in :data:`lfa.cli.USER_FACING_ERRORS` and reaches the user as one line rather than as the last
+    line of a traceback -- which a bare ``RuntimeError`` cannot be, since torch raises those for
+    real faults (a CUDA OOM, for one) that must keep their traceback.
     """
 
 
@@ -212,14 +211,12 @@ def _dtype_for(device: str | dict) -> torch.dtype:
 
 def _stage_dtype(entry: dict) -> torch.dtype:
     """The dtype a recorded stage trained in, so an export is not a silent precision change."""
-    return getattr(torch, entry.get("dtype") or "bfloat16")
+    return getattr(torch, entry["dtype"])
 
 
 def _stage_frame(entry: dict) -> bool:
     """The corpus-chunking frame a recorded stage ran under, override included."""
-    if entry.get("keep_short_whole") is not None:
-        return bool(entry["keep_short_whole"])
-    return bool(entry["recipe"]["keep_short_whole"])
+    return bool(entry["keep_short_whole"])
 
 
 def _stage_val_fraction(entry: dict) -> float:
@@ -228,9 +225,7 @@ def _stage_val_fraction(entry: dict) -> float:
     Read from the entry rather than from the recipe so that the split is rebuilt exactly as the
     run made it -- the recipe is what was asked for, the entry is what ran.
     """
-    if entry.get("val_fraction") is not None:
-        return float(entry["val_fraction"])
-    return float(entry["recipe"].get("val_fraction", 0.0))
+    return float(entry["val_fraction"])
 
 
 def _delta(before: float, after: float) -> str:
@@ -574,7 +569,6 @@ class Workspace:
         Raises:
             StageOrderError: a new corpus while a trained stage has not been extended.
             ValueError: no recipe anywhere, or an ``epochs`` the schedule cannot carry.
-            WorkspaceNotReady: the workspace has no artifact to anchor against.
             FileExistsError: the run directory already holds a run and this is not a resume.
         """
         corpus_path = Path(corpus).expanduser().resolve()
@@ -596,12 +590,6 @@ class Workspace:
             )
 
         artifact = self.state["current_artifact"]
-        if artifact is None:
-            raise WorkspaceNotReady(
-                "This workspace has no p(h) artifact. Create a new workspace with `lfa init "
-                "<path> --model <model> --artifact self-generated` (or --artifact <an artifact "
-                "file>)."
-            )
 
         resolved = self._resolve_recipe(recipe)
         overrides = {}
@@ -892,7 +880,7 @@ class Workspace:
         caller. ``adapter_disabled`` (the default for a LoRA run) loads none: PEFT keeps the base
         weight of every adapted module frozen, so the student holds the teacher and
         :class:`~lfa.models.AdapterDisabledTeacher` reads it there. ``separate`` loads a second
-        model, which is what full-weight training needs and what every run before 0.1.1 did.
+        model, which is what full-weight training needs.
 
         The embedding lookup is rebuilt from the teacher here rather than shipped: layer-0
         ``pre_qkv`` is ``input_layernorm(embed_tokens(id))``, exactly reconstructible and ~300 MB
@@ -1044,11 +1032,11 @@ class Workspace:
     def _artifact_meta(self) -> dict:
         """The ``__meta__`` block of the current artifact.
 
-        ``{}`` when the workspace has no artifact file or the artifact carries no meta. It is what
-        lets :meth:`lfa.recipe.Recipe.warnings` judge a self-generated artifact by its provenance.
+        ``{}`` when the artifact file is missing or carries no meta. It is what lets
+        :meth:`lfa.recipe.Recipe.warnings` judge a self-generated artifact by its provenance.
         """
-        path = self.state.get("current_artifact")
-        if not path or not Path(path).is_file():
+        path = self.state["current_artifact"]
+        if not Path(path).is_file():
             return {}
         return _meta_of(Path(path))
 
@@ -1074,7 +1062,7 @@ class Workspace:
 
         Raises:
             StageOrderError: nothing has been trained since the last extension.
-            ValueError: the base artifact carries no sample count and none can be supplied.
+            ValueError: the base artifact carries no per-site sample counts.
         """
         if not self.state["pending_extend"]:
             raise StageOrderError(
@@ -1085,16 +1073,16 @@ class Workspace:
         stage = self.state["stage"]
         placement = resolve_device(device)
 
-        # Resolved before the fuse, so an artifact whose domain share cannot be computed fails in
+        # Checked before the fuse, so an artifact whose domain share cannot be computed fails in
         # a second rather than after merging a model.
-        base_n = self._resolve_base_n()
+        self._require_base_counts()
 
         fused = self._fuse_last_stage()
 
         out = self.path / "artifacts" / f"v{self.state['artifact_version'] + 1}.pt"
         extend_artifact(
             str(fused), self.state["current_artifact"], self.state["last_stage_corpus"], out,
-            base_n=base_n, k_domain=k_domain, need=need,
+            k_domain=k_domain, need=need,
             seq_len=entry["recipe"]["sequence_length"], seed=entry["recipe"]["seed"],
             device=_primary_device(placement), quantize=True,
             # Collected under the frame the stage trained under: the new components have to
@@ -1180,34 +1168,16 @@ class Workspace:
                     stage, fused, version)
         return out
 
-    def _resolve_base_n(self) -> int | None:
-        """The base pool's per-site sample count to weight the new domain against.
-
-        ``None`` means the artifact answers for itself -- it carries per-block counts, or a
-        ``__meta__`` total -- and :func:`lfa.artifact.extend.extend_artifact` reads it there.
-        Without either, the domain's weight share cannot be computed at all, and a guess would
-        silently mis-weight the mixture.
+    def _require_base_counts(self) -> None:
+        """Refuse an artifact whose mixture sites carry no sample count, before anything is fused.
 
         Loading the artifact for this costs one CPU read of a file that is about to be read
         again; the alternative is fusing a model for an extension that cannot be completed.
         """
         params = torch.load(self.state["current_artifact"], map_location="cpu",
                             weights_only=False)
-        gmm_keys = gmm_site_keys(params)
-        # `gmm_keys` empty means there is nothing to extend at all; leave that for
-        # `extend_artifact` to say, rather than reporting it as a missing count.
-        answers_for_itself = not gmm_keys or artifact_carries_base_count(params, gmm_keys)
-        del params
-
-        if answers_for_itself:
-            return None
-        current = self.state["current_artifact"]
-        raise ValueError(
-            f"{current} carries no per-site n_samples and no __meta__.n_samples_total, so the "
-            "new domain cannot be weighted by its sample share. Every artifact this package "
-            "builds records it; an artifact from elsewhere needs it added, or pass base_n to "
-            "lfa.artifact.extend.extend_artifact directly."
-        )
+        # No mixture sites means there is nothing to extend at all; `extend_artifact` says so.
+        require_site_counts(params, gmm_site_keys(params), self.state["current_artifact"])
 
     # ------------------------------------------------------------------------------- evaluate
 
@@ -1343,15 +1313,14 @@ class Workspace:
         """
         control = dataclasses.replace(
             recipe, lambda_qkv=0.0, lambda_mlp=0.0, mu=0.0,
-            full_weight=bool(entry.get("full_weight", recipe.full_weight)),
+            full_weight=bool(entry["full_weight"]),
         )
         config = dataclasses.replace(
             control.to_train_config(entry["stage"], entry["artifact"],
                                     keep_short_whole=_stage_frame(entry)),
             # The stage's own teacher mode, so the control is the same run without the anchor
-            # rather than the same run set up differently. A stage recorded before 0.1.1 has
-            # none and resolves the way any other run would.
-            teacher_mode=entry.get("teacher_mode") or "auto",
+            # rather than the same run set up differently.
+            teacher_mode=entry["teacher_mode"],
         )
         # Named after the run it controls, so a repeat of a stage gets its own control.
         output_dir = self.path / "runs" / f"{Path(entry['output_dir']).name}_unanchored"
@@ -1359,7 +1328,7 @@ class Workspace:
                     "run, as long as the first, with lambda = mu = 0", entry["stage"], output_dir)
         # The stage's own supplement at its own fraction: under the same seed the loader selects
         # the same prefix, so the control trains on exactly the stage's documents.
-        mixed = entry.get("supplement") or {}
+        mixed = entry["supplement"] or {}
         self._run_training(config, Path(entry["corpus"]), entry["base_model"], output_dir,
                            placement=placement, dtype=dtype, allow_sharding=False, resume=False,
                            anchored=False, supplement=mixed.get("path"),

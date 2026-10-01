@@ -303,10 +303,16 @@ def test_a_trial_frame_names_the_fields_that_differ():
     assert "max_new_tokens 128 (calibrated at 2048)" in notes[0]
 
 
-def test_a_self_generated_artifact_with_no_recorded_frame_says_so():
+def test_a_self_generated_meta_with_no_frame_is_off_frame_in_every_field():
+    """Every self-generated build records its frame, so a meta without one is not a separate
+    case: it is told the frame differs, field by field, like any other off-frame build."""
     recipe = Recipe.load("qwen3-0.6b")
     meta = {"provenance": "self-generated", "model_id": recipe.model_id}
-    assert "records no generation frame" in recipe.warnings(32, "x", meta)[0]
+    notes = recipe.warnings(recipe.calibrated_rank, "self-generated:abc", meta)
+    assert len(notes) == 1
+    assert "built at a different frame" in notes[0]
+    for key, value in recipe.self_generated_frame.items():
+        assert f"{key} None (calibrated at {value!r})" in notes[0]
 
 
 def test_another_models_self_generated_artifact_is_a_mismatch():

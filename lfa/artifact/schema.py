@@ -85,8 +85,8 @@ def make_meta(
     Args:
         n_samples_total: hidden vectors collected **per site**, not summed across them. Every site
             sees the same token stream, so the per-site counts are equal up to the batch the
-            collection stops on. It is what a continual extension reads back when the blocks carry
-            no count of their own (:func:`lfa.artifact.extend.extend_artifact`).
+            collection stops on. A record: an extension weights by each block's own
+            ``n_samples`` (:func:`lfa.artifact.extend.extend_artifact`).
         built_with: what collected and fitted these statistics. It defaults to this package, which
             is right for :func:`lfa.artifact.build.build_artifact`; a meta block added to a file
             something else built should say so.

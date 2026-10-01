@@ -69,7 +69,7 @@ user to do. Without it pip resolves the newest torch and peft it can, and the nu
 moves it. ✅ 2026-09-08: an unconstrained venv (torch 2.14.0, peft 0.20.0) failed the extension's
 matched-initialization check that passes at the pinned versions.
 
-Rehearse on an interpreter *without* development headers too: since 0.2.0 `lfa` warns once
+Rehearse on an interpreter *without* development headers too: `lfa` warns once
 rather than refusing when `Python.h` or a compiler is missing, because the package's own training
 and generation paths ran without them (a torch path that JIT-compiles would still fail in gcc). A
 distribution `python3` without its `-dev` package is exactly the machine a new user brings, so the
@@ -141,8 +141,7 @@ supplement); rank 4, one seed (the regenerate route).
   seeded from the build seed and the site, so at a fixed seed every layer group size builds the
   same artifact (one generator used to be shared across a pass's sites, which made the draws
   depend on how layers were grouped), and a slot drawn twice in one batch now goes to the later
-  vector every run instead of to whichever write landed last. An artifact built before this change
-  is not reproduced bit for bit by a rebuild at the same seed.
+  vector every run instead of to whichever write landed last.
 * **The supplement** lives under `<workspace>/supplements/<corpus sha256[:12]>/`, or beside the
   corpus in `<corpus>.supplement/` when it was prepared with the data, and is reused while the
   training side's hash, the writer checkpoint's hash, the template's hash and the domain

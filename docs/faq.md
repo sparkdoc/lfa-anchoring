@@ -2,7 +2,7 @@
 
 ## How much GPU memory does a run need?
 
-About **8 GB** for Qwen3-0.6B at the shipped recipe, since 0.1.1. Measured on an RTX 3090
+About **8 GB** for Qwen3-0.6B at the shipped recipe. Measured on an RTX 3090
 (2026-09-07) at rank 32, batch 6 × 512 tokens, 16 anchor samples: **8.63 GiB allocated at peak,
 10.8 GiB reserved** by the caching allocator — with a second, separately loaded teacher, which is
 what every run did before 0.1.1 and what `--teacher-mode separate` still does. A LoRA run now
@@ -56,12 +56,6 @@ artifact — 84 sites, of which 28 are 2048 wide and 56 are 1024 wide — at the
 200 activations, so 40,000 is far above what 8 components need; it is chosen for coverage of the
 domain, not for the fit's arithmetic.
 
-That agreement is recent: until 2026-09-08 the collection kept every chunk in a list and
-concatenated at the end, so a user measured **35.9 GiB** against this same paragraph — the chunks
-and the concatenations were resident at once, and freeing the chunks did not return their pages.
-Each site now fills one `--need × width` buffer in place, which is what makes the budget above the
-real bill. If you are on an older version, budget twice the number.
-
 **On the `regenerate` route** (`lfa regenerate-artifact`, or a chain with `artifact: regenerate`)
 there is no `--need`: each boundary runs a whole self-generated artifact build, whose bill is the
 build's reservoirs, collected `layer_group_size` layers at a time. With no group size given, the
@@ -81,7 +75,7 @@ quiet five is not.
 
 ## The run warned that this machine cannot compile for the GPU
 
-That is the toolchain check, and since 0.2.0 it is a warning, printed once, rather than a refusal:
+That is the toolchain check. It is a warning, printed once, not a refusal:
 
 ```
 This machine cannot compile for the GPU: the Python development headers (…/Python.h does not
@@ -219,8 +213,7 @@ preserves nothing that means anything, and the positional variety between epochs
 When each document is a unit somebody wrote (an article, a page, a recipe), keep the default.
 
 There is no setting for the chunk offset itself. It rotates the boundaries; that is what the loader
-does. A switch that reproduced an older, truncating stream was briefly offered and has been removed —
-[verification.md](verification.md) says why, and what it means for the numbers on that page.
+does. [verification.md](verification.md) says what that means for the numbers on that page.
 
 ## How large a corpus can I train on?
 

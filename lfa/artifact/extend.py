@@ -36,13 +36,12 @@ import torch
 
 from ..adapters import get_adapter
 from ..corpus import load_corpus
-from ..merge import annotate_count, merge_stats
+from ..merge import merge_stats
 from ..models import load_teacher, load_tokenizer
 from .fit import TorchGMM
 from .schema import META_KEY, load_artifact, parse_site_key, save_artifact, validate_against_model
 
-__all__ = ["fit_domain_gmm", "extend_artifact", "gmm_site_keys",
-           "artifact_carries_base_count"]
+__all__ = ["fit_domain_gmm", "extend_artifact", "gmm_site_keys", "require_site_counts"]
 
 logger = logging.getLogger(__name__)
 
@@ -211,7 +210,7 @@ def gmm_site_keys(params: dict) -> list[str]:
     """The artifact's sites that carry a mixture -- the ones an extension adds components to.
 
     Not every site has one: the recipe artifact prices the linear sites with a correlated
-    covariance and no GMM. Anything reading "does this artifact know its own sample count" has to
+    covariance and no GMM. Anything asking whether the artifact carries its sample counts has to
     ask about *these* keys, since they are the only ones the merge touches.
     """
     return [key for key, entry in params.items()
@@ -219,42 +218,25 @@ def gmm_site_keys(params: dict) -> list[str]:
             and int(entry.get("gmm_n_components", 0)) > 0]
 
 
-def artifact_carries_base_count(base: dict, gmm_keys: list[str]) -> bool:
-    """Whether ``base`` supplies its own per-site sample count, per block or in its meta.
+def require_site_counts(base: dict, gmm_keys: list[str], source) -> None:
+    """Refuse a base whose mixture sites carry no ``n_samples``.
 
-    Defined as "``extend_artifact`` needs no ``base_n``", by asking the resolver itself rather
-    than by restating its rule -- a second copy of the predicate is exactly how a caller ends up
-    weighting the domain against a count the merge does not use.
+    The n-weighted merge reads each block's own count to weight the new domain by its sample
+    share. Every artifact this package builds or extends records one per site, so a site without
+    it means the file was not built here; the merge would refuse it anyway, but only after the
+    collection and the fits.
+
+    Raises:
+        ValueError: a mixture site carries no ``n_samples``.
     """
-    try:
-        _resolve_base_count(base, gmm_keys, None)
-    except ValueError:
-        return False
-    return True
-
-
-def _resolve_base_count(base: dict, gmm_keys: list[str], base_n: int | None) -> int | None:
-    """The base's per-block sample count, or ``None`` when the blocks already carry their own.
-
-    The n-weighted merge needs a count on every block. A built artifact has one per site; an
-    artifact from before the field existed (the real-text qwen3-0.6b one the recipe's lambda was
-    tuned against, for one) carries its count only in ``__meta__`` (or nowhere, in which case the
-    caller must say).
-    """
-    if base_n is not None:
-        return base_n
-    if all("n_samples" in base[key] for key in gmm_keys):
-        return None
-    # `n_samples_total` is a per-site count (see `make_meta`), which is exactly what a block
-    # needs -- not a cross-site sum, which would over-weight the base by the number of sites.
-    meta_total = (base.get(META_KEY) or {}).get("n_samples_total")
-    if meta_total is not None:
-        return int(meta_total)
-    raise ValueError(
-        "The base artifact carries no per-site n_samples and no __meta__.n_samples_total, so the "
-        "domain cannot be weighted by its sample share. Pass base_n: the number of vectors per "
-        "site the base artifact was collected over."
-    )
+    missing = [key for key in gmm_keys if "n_samples" not in base[key]]
+    if missing:
+        raise ValueError(
+            f"{source} carries no n_samples on {len(missing)} of its {len(gmm_keys)} mixture "
+            f"sites (first: {missing[0]}), so the new domain cannot be weighted by its sample "
+            "share. Every artifact this package builds records one per site: build it with "
+            "`lfa build-artifact` or `lfa init --artifact self-generated`."
+        )
 
 
 def extend_artifact(
@@ -263,7 +245,6 @@ def extend_artifact(
     corpus_path,
     out_path,
     *,
-    base_n: int | None = None,
     k_domain: int = 8,
     need: int = 40_000,
     seq_len: int = 512,
@@ -282,11 +263,6 @@ def extend_artifact(
             extension: the merge accumulates).
         corpus_path: the new domain's training corpus, read exactly as training reads it.
         out_path: where to write the extended artifact.
-        base_n: sample count to attribute to each base block, when the base carries none. Read
-            from ``__meta__["n_samples_total"]`` when absent there (the real-text qwen3-0.6b
-            artifact the recipe's lambda was tuned against: 1_543_040); passing it explicitly
-            overrides both. It sets the domain's weight share, ``need / (base_n + need)``, so a
-            wrong value mis-weights the mixture without failing.
         k_domain: components to fit per site for the new domain, capped at one per 200 samples.
         need: activations to collect per site.
         seq_len: chunk length, which should be the one the stage trains at.
@@ -307,7 +283,7 @@ def extend_artifact(
     if not gmm_keys:
         raise ValueError(f"{base_artifact_path} has no GMM sites to extend.")
 
-    resolved_n = _resolve_base_count(base, gmm_keys, base_n)
+    require_site_counts(base, gmm_keys, base_artifact_path)
 
     tokenizer = load_tokenizer(str(fused_model_path))
     # float32 for the same reason the build collects in it: these vectors become a second-moment
@@ -346,16 +322,13 @@ def extend_artifact(
             logger.info("Fitting the domain mixture: site %d/%d (%s)", position, total, key)
         domain_stats[key] = fit_domain_gmm(H, base[key], k_domain, seed=seed, device=device)
 
-    if resolved_n is not None:
-        annotate_count(base, resolved_n)
     merged = merge_stats(base, domain_stats)
 
     meta = dict(base.get(META_KEY) or {})
     meta["version"] = int(meta.get("version", 1)) + 1
     meta["extended_with"] = list(meta.get("extended_with", [])) + [Path(corpus_path).name]
-    # Recomputed rather than carried, and per-site (the base count plus this round's `need`),
-    # because a stale or summed total is what the next extension would read as each block's own
-    # count if that round's blocks were ever stripped of theirs.
+    # Recomputed rather than carried, and per-site (the base count plus this round's `need`), so
+    # the record matches the blocks it describes.
     site_counts = [entry["n_samples"] for key, entry in merged.items()
                    if parse_site_key(key) is not None and isinstance(entry, dict)
                    and "n_samples" in entry]

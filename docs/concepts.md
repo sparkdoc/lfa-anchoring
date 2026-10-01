@@ -223,7 +223,7 @@ domains keeps accumulating — it does not degrade — while *judged answering* 
 domains falls after the third stage, and that the drop is carried by the question-and-answer
 *pairs* in the stage's generated supplement rather than by the anchor. The paper records that
 finding as double-edged, and half of it is easy to lose: removing the supplement altogether makes
-judged answering on the earlier domain **worse**, not better. Since 0.2.0 this companion writes a
+judged answering on the earlier domain **worse**, not better. This companion writes a
 supplement too — [above](#what-the-supplement-does-and-does-not-do) — but it computes no judged
 score at all, so it cannot show either half of that finding: every number it reports is a
 perplexity computed locally.

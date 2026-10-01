@@ -30,8 +30,7 @@ import sys
 from .artifact.build import build_artifact, build_artifact_self_generated
 from .artifact.store import StoreLocked, list_store
 from .evaluate import DatasetUnavailable
-from .models import (DEFAULT_DEVICE, TEACHER_MODES, MissingBuildToolchain,
-                     NoTrainableParameters, ShardingRefused)
+from .models import DEFAULT_DEVICE, TEACHER_MODES, NoTrainableParameters, ShardingRefused
 from .prepare_domain import MissingExtra, prepare_domain
 from .seed_corpus import SourceUnavailable, prepare_seed_corpus
 # CorpusFrameMismatch is a ValueError, so the tuple below already reports it; imported to name it.
@@ -70,9 +69,8 @@ def _lfa_version() -> str:
 #: their traceback rather than be collapsed to a line.
 USER_FACING_ERRORS = (
     StageOrderError, WorkspaceNotReady, ShardingRefused, StoreLocked, SourceUnavailable,
-    DatasetUnavailable, ResumeSourceHasNoAdapter, NoTrainableParameters, MissingBuildToolchain,
-    MissingExtra, NoPairsWritten, DegenerateCorpus, FileNotFoundError, FileExistsError,
-    ValueError,
+    DatasetUnavailable, ResumeSourceHasNoAdapter, NoTrainableParameters, MissingExtra,
+    NoPairsWritten, DegenerateCorpus, FileNotFoundError, FileExistsError, ValueError,
 )
 
 

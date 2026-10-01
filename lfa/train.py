@@ -879,9 +879,9 @@ def train(
         state.epoch = saved["epoch"]
         state.global_step = saved["global_step"]
         state.history = saved["history"]
-        state.baseline = saved.get("baseline")
+        state.baseline = saved["baseline"]
 
-        checkpoint_dir = output_dir / saved.get("model_checkpoint", "final_model")
+        checkpoint_dir = output_dir / saved["model_checkpoint"]
         if config.use_lora and not (checkpoint_dir / "adapter_config.json").exists():
             # Said here rather than left to a later symptom. A LoRA resume whose checkpoint has
             # no adapter used to continue into `optimizer.load_state_dict`, which raises about a

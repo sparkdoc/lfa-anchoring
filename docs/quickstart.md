@@ -246,7 +246,7 @@ the first epoch; [faq.md](faq.md) has what generation cost on an 8 GB card.
 
 The library raises rather than guesses, and the CLI prints those refusals as one line and exits 2:
 a chain out of order, a workspace that is not there or already is or has not trained anything yet
-(what `fuse` and `evaluate` say), a workspace with no p(h) artifact, a device map that would shard,
+(what `fuse` and `evaluate` say), a device map that would shard,
 an artifact build already running for the same model and frame, a partial build under a different
 frame, a dataset that cannot be reached, and a recipe or chain spec
 that does not parse or does not validate, a document that needs an optional extra

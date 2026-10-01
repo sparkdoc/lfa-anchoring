@@ -19,7 +19,7 @@ from transformers import LlamaConfig, LlamaForCausalLM
 
 from lfa.artifact.extend import _collect_domain_activations, extend_artifact, fit_domain_gmm
 from lfa.artifact.schema import ArtifactModelMismatch, load_artifact
-from lfa.merge import alpha_from_counts, annotate_count, merge_stats
+from lfa.merge import alpha_from_counts, merge_stats
 from lfa.sampler import Sampler
 
 NEED = 400
@@ -117,39 +117,20 @@ def test_a_second_extension_unions_again(tmp_path, extended, fused_dir, corpus_f
 
 # --------------------------------------------------------------------------- the base count
 
-def _uncounted_base(tmp_path, base, meta=None):
-    """The tiny artifact with its per-entry counts stripped -- the shipped-artifact shape."""
+def test_a_base_without_per_site_counts_is_refused_before_anything_loads(
+        tmp_path, tiny_artifact, corpus_file):
+    """Every artifact this package builds counts its samples per site; one that does not was not
+    built here, and the domain's weight share cannot be computed from it. The meta's per-site
+    total is a record, not a stand-in: it is not read as the blocks' count."""
+    base, _ = tiny_artifact
     params = copy.deepcopy(base)
-    for key in SITE_KEYS:
-        params[key].pop("n_samples")
-    if meta is None:
-        params.pop("__meta__")
-    else:
-        params["__meta__"] = meta
+    params["1_pre_mlp"].pop("n_samples")
     path = tmp_path / "uncounted.pt"
     torch.save(params, path)
-    return path
 
-
-def test_an_uncounted_base_without_meta_requires_base_n(tmp_path, tiny_artifact, fused_dir,
-                                                        corpus_file):
-    base, _ = tiny_artifact
-    path = _uncounted_base(tmp_path, base)
-
-    with pytest.raises(ValueError, match="base_n"):
-        _extend(tmp_path / "out.pt", path, fused_dir, corpus_file)
-
-    out = _extend(tmp_path / "out.pt", path, fused_dir, corpus_file, base_n=500)
-    assert load_artifact(out)["1_pre_mlp"]["n_samples"] == 500 + NEED
-
-
-def test_meta_n_samples_total_supplies_the_base_count(tmp_path, tiny_artifact, fused_dir,
-                                                      corpus_file):
-    base, _ = tiny_artifact
-    path = _uncounted_base(tmp_path, base, meta={"n_samples_total": 777})
-
-    out = _extend(tmp_path / "from_meta.pt", path, fused_dir, corpus_file)
-    assert load_artifact(out)["1_pre_mlp"]["n_samples"] == 777 + NEED
+    # No fused model exists at this path: the refusal comes before any model is loaded.
+    with pytest.raises(ValueError, match="no n_samples on 1 of its"):
+        _extend(tmp_path / "out.pt", path, tmp_path / "no-model", corpus_file)
 
 
 def test_per_entry_counts_win_over_the_meta_total(tmp_path, tiny_artifact, fused_dir,
@@ -263,7 +244,7 @@ def test_the_union_places_the_domain_where_the_domain_is(base_entry):
     activations = _two_blobs(base_entry)
     block = fit_domain_gmm(activations, base_entry, 2, seed=0, device="cpu")
 
-    base_stats = annotate_count({"1_pre_mlp": copy.deepcopy(base_entry)}, 1000)
+    base_stats = {"1_pre_mlp": {**copy.deepcopy(base_entry), "n_samples": 1000}}
     merged = merge_stats(base_stats, {"1_pre_mlp": block})["1_pre_mlp"]
 
     share = alpha_from_counts(1000, len(activations))

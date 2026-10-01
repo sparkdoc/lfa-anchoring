@@ -1,6 +1,6 @@
 import pytest
 import torch
-from lfa.merge import merge_stats, annotate_count, alpha_from_counts
+from lfa.merge import merge_stats, alpha_from_counts
 
 def _block(K, n, seed):
     g = torch.Generator().manual_seed(seed); D = 8
@@ -10,9 +10,12 @@ def _block(K, n, seed):
             "gmm_weights": w, "gmm_means": torch.randn(K, n, generator=g), "gmm_covariances": torch.rand(K, n, generator=g) + 0.1,
             "gmm_n_components": K, "gmm_covariance_type": "diag"}
 
+def _counted(block, n):
+    return {**block, "n_samples": n}
+
 def test_union_weights_and_counts():
-    base = {"0_pre_mlp": _block(4, 3, 1)}; dom = {"0_pre_mlp": _block(2, 3, 2)}
-    base = annotate_count(base, 300); dom = annotate_count(dom, 100)
+    base = {"0_pre_mlp": _counted(_block(4, 3, 1), 300)}
+    dom = {"0_pre_mlp": _counted(_block(2, 3, 2), 100)}
     out = merge_stats(base, dom)
     e = out["0_pre_mlp"]
     assert e["gmm_n_components"] == 6 and e["gmm_weights"].shape == (6,)
@@ -22,7 +25,7 @@ def test_union_weights_and_counts():
     assert torch.equal(e["mean"], base["0_pre_mlp"]["mean"])   # base mean/basis kept (see source comment)
 
 def test_passthrough_non_moment_keys():
-    base = {"__meta__": {"a": 1}, "0_pre_mlp": annotate_count({"x": _block(2, 3, 3)}, 10)["x"]}
+    base = {"__meta__": {"a": 1}, "0_pre_mlp": _counted(_block(2, 3, 3), 10)}
     out = merge_stats(base, {})
     assert out["__meta__"] == {"a": 1} and out["0_pre_mlp"] is base["0_pre_mlp"]
 
@@ -51,8 +54,8 @@ def test_n_weighted_merge_refuses_blocks_without_counts():
 
 
 def test_explicit_alpha_overrides_the_counts_but_still_accumulates_them():
-    base = annotate_count({"0_pre_mlp": _block(4, 3, 1)}, 300)
-    dom = annotate_count({"0_pre_mlp": _block(2, 3, 2)}, 100)
+    base = {"0_pre_mlp": _counted(_block(4, 3, 1), 300)}
+    dom = {"0_pre_mlp": _counted(_block(2, 3, 2), 100)}
 
     out = merge_stats(base, dom, alpha=0.25)["0_pre_mlp"]
 
