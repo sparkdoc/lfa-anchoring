@@ -110,13 +110,15 @@ smaller group. On the host that built the recorded artifact (125 GiB of RAM, 202
 `layer_group_size=28 for Qwen/Qwen3-0.6B: ~42.7 GiB of reservoirs per group against 117.9 GiB available`,
 and the collection that followed logged `Collected 84 sites, 603973 samples at the thinnest site`.
 
-**The group size is part of the build, not only of its memory bill.** One torch generator is
-shared across a group's sites, so grouping changes the reservoir draws and therefore the fitted
-mixtures — not the exact moments (mean, covariance, basis), which come from sums over every vector.
-Two builds at the same seed and different group sizes are two different artifacts. The artifact's
-meta records the value used as `layer_group_size`, and a rebuild reproduces a file by passing
-`--layer-group-size` with that recorded value (`build-artifact`). The store's key leaves the group
-size out: an entry is reused with whatever group its build chose.
+**The group size is a memory choice only.** Every site draws its reservoir from its own torch
+generator, seeded from the build seed and the site's layer and name, so a site keeps the same
+vectors whichever other layers share its pass. At a fixed seed, any group size gives the same
+artifact — the same moments, the same reservoirs, the same fitted mixtures — and a host with less
+RAM simply makes more corpus passes. The artifact's meta still records the value used as
+`layer_group_size`, for the record. The store's key leaves the group size out, and that is safe:
+the group a host chose is not among the things that can make two builds differ. A store entry
+built before 0.2.0 gave each site its own generator is still reused as it is, and differs from a
+fresh build at the same seed.
 
 ### Durability and resume
 
@@ -174,8 +176,8 @@ What `init` does with the entry:
 * **nothing**: builds into the store, then copies in.
 
 `lfa list-artifacts` prints one line per entry: the model, the frame (documents × tokens, K), its
-state (`built`, `corpus complete, not fitted`, or `in progress: n/N documents`), the date it was
-built, its size on disk and its path.
+state — `built <date>` for a finished entry, otherwise `corpus complete, not fitted` or
+`in progress: n/N documents` — its size on disk and its path.
 
 **Locking.** A build holds `<entry>/.lock`, which records its process id. A second build of the
 same entry — the same `lfa init` in another terminal — is refused with a message naming the lock

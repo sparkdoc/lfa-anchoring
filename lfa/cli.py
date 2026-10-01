@@ -124,9 +124,12 @@ def _list_artifacts(args) -> int:
         frame = entry["frame"] or {}
         shape = (f"{frame.get('n_raw')} documents x {frame.get('max_new_tokens')} tokens, "
                  f"K={frame.get('gmm_k')}")
-        built = entry["built_at"] or "-"
-        print(f"{entry['model_id']}  {shape}  {entry['state']}  built {built}  "
-              f"{entry['size_mb']} MB  {entry['path']}")
+        # A finished entry's state is "built", so it reads "built <date>"; an unfinished one has no
+        # date yet and shows its state alone ("in progress: n/N documents", ...).
+        state = entry["state"]
+        if state == "built":
+            state = f"built {entry['built_at'] or '-'}"
+        print(f"{entry['model_id']}  {shape}  {state}  {entry['size_mb']} MB  {entry['path']}")
     return 0
 
 
@@ -459,7 +462,8 @@ def build_parser() -> argparse.ArgumentParser:
                        help="collect this many layers at a time; host RAM is the binding "
                             "constraint, so this is normally set (7 for Qwen3-0.6B). With "
                             "--self-generated and no value, it is chosen from the model's "
-                            "config and the available host RAM")
+                            "config and the available host RAM. It changes the memory bill, "
+                            "not the fitted statistics")
     build.add_argument("--no-quantize", dest="quantize", action="store_false",
                        help="store the large fields in full precision instead of int8, which "
                             "doubles the file")

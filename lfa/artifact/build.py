@@ -26,7 +26,7 @@ from ..corpus import _available_memory_bytes, load_texts
 from ..models import load_teacher, load_tokenizer, resolve_model_path
 from ..selfgen.artifact_corpus import SelfGenOptions, write_artifact_corpus
 from ..selfgen.generate import generate_texts
-from .collect import collect_hidden_states
+from .collect import _site_seed, collect_hidden_states
 from .fit import fit_site
 from .schema import (
     EMBEDDING_LOOKUP_KEY,
@@ -43,14 +43,6 @@ from .schema import (
 __all__ = ["build_artifact", "build_artifact_self_generated", "choose_layer_group_size"]
 
 logger = logging.getLogger(__name__)
-
-# Per-site seed offsets, so no two sites start their k-means from a correlated draw.
-_SITE_SEED_OFFSET = {"pre_qkv": 0, "pre_o": 1, "pre_mlp": 2, LM_HEAD_SITE: 5}
-
-
-def _site_seed(base_seed: int, layer: int, site: str) -> int:
-    return base_seed + layer * 10 + _SITE_SEED_OFFSET.get(site, 9)
-
 
 def build_artifact(
     model_id: str,
@@ -89,12 +81,14 @@ def build_artifact(
         gmm_k: mixture components per site.
         layer_group_size: collect this many layers at a time instead of all at once, then fit and
             free before the next group, at the cost of one corpus pass per group. ``None`` keeps
-            every site live at once, which is only viable when the arithmetic below fits. The
-            value is recorded in the meta block: the reservoir draws depend on it, so a rebuild
-            passes the same value.
+            every site live at once, which is only viable when the arithmetic below fits. It is a
+            memory choice only: every site draws its reservoir from its own generator, so at a
+            fixed ``seed`` any group size fits the same statistics. The value is recorded in the
+            meta block for the record.
         quantize: store the large fields blockwise-int8 (halves the file; dequantized on load).
         device: device to run collection on.
-        seed: base seed -- the reservoir's draws and each site's GMM initialization derive from it.
+        seed: base seed -- each site's reservoir draws and its GMM initialization derive from it
+            and from the site's layer and name, never from which other sites share a pass.
         dtype: storage dtype of the retained reservoir samples. fp16 (the default, and what a
             self-generated build at the recipe's frame uses) halves the figures below; fp32 keeps
             the samples exact and doubles them.
@@ -216,10 +210,10 @@ def choose_layer_group_size(hidden_size: int, pre_o_width: int, num_layers: int,
     With ``available_bytes`` unreadable (``None``) this returns 7, the Qwen3-0.6B setting
     documented on :func:`build_artifact`.
 
-    The choice is not neutral: grouping changes the reservoir draws and the fitted mixtures, not
-    the exact moments. So the value chosen here depends on the host's free memory at run time,
-    and the artifact's meta records it (``layer_group_size``); to reproduce a build, pass
-    ``--layer-group-size`` with the value in the artifact's meta.
+    The value chosen here depends on the host's free memory at run time, and that is safe: the
+    group size changes how many corpus passes a build makes and what it holds in RAM, not the
+    artifact, so two hosts that choose differently fit the same statistics at the same seed. The
+    artifact's meta records the value used (``layer_group_size``) for the record.
     """
     if available_bytes is None:
         return _DOCUMENTED_LAYER_GROUP_SIZE
@@ -266,10 +260,9 @@ def build_artifact_self_generated(
     (2,500 raw documents, no chat-format share; 600k samples per site; K=32). Scale it down for a
     smoke run. When ``options.layer_group_size`` is ``None`` the group is chosen from the model's
     config and the host's available memory (:func:`choose_layer_group_size`), and the choice is
-    logged.
-    Grouping changes the reservoir draws and the fitted mixtures, not the exact moments, so the
-    value used (chosen or given) is recorded in the artifact's meta as ``layer_group_size``; to
-    reproduce a build, pass ``--layer-group-size`` with that value.
+    logged. The group size is a memory choice only -- at a fixed ``seed`` any value fits the
+    same statistics -- and the value used (chosen or given) is recorded in the artifact's meta as
+    ``layer_group_size``.
     """
     options = options or SelfGenOptions()
     out_path = Path(out_path)

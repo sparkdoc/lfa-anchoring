@@ -27,17 +27,43 @@ batch, in double precision -- so a build is measured in hours, once, and never a
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from dataclasses import dataclass, field
 from typing import Iterable
 
 import torch
 
-from .schema import LM_HEAD_SITE, SITES, site_key
+from .schema import LM_HEAD_SITE, SITES, parse_site_key, site_key
 
 __all__ = ["SiteStats", "collect_hidden_states"]
 
 logger = logging.getLogger(__name__)
+
+# Per-site seed offsets, so no two sites start their k-means from a correlated draw.
+_SITE_SEED_OFFSET = {"pre_qkv": 0, "pre_o": 1, "pre_mlp": 2, LM_HEAD_SITE: 5}
+
+
+def _site_seed(base_seed: int, layer: int, site: str) -> int:
+    """The seed a site's GMM fit starts from (:func:`lfa.artifact.build.build_artifact`).
+
+    It lives here, beside :func:`_reservoir_seed`, so that both per-site derivations are in one
+    place; the formula is unchanged, so a site's fit draws are what they always were.
+    """
+    return base_seed + layer * 10 + _SITE_SEED_OFFSET.get(site, 9)
+
+
+def _reservoir_seed(base_seed: int, layer: int, site: str) -> int:
+    """The seed of a site's reservoir generator: a function of (seed, layer, site) alone.
+
+    Hashed rather than reusing :func:`_site_seed`, because a CPU generator seeded with the same
+    integer as the fit's would replay the same stream -- the first index the k-means
+    initialization draws would be made of the same random bits as the first replacement draw.
+    A hash also keeps two different base seeds from sharing a site's stream, which the additive
+    formula above allows (seed 0 at layer 1 is seed 10 at layer 0).
+    """
+    digest = hashlib.sha256(f"lfa-reservoir:{base_seed}:{layer}:{site}".encode()).digest()
+    return int.from_bytes(digest[:8], "little") & (2**63 - 1)
 
 
 @dataclass
@@ -119,9 +145,18 @@ class SiteStats:
         if n_batch == 0:
             return
         slots = torch.randint(0, self.seen + n_batch, (n_batch,), generator=self.generator)
-        hit = slots < self.reservoir_size
-        if hit.any():
-            self.reservoir[slots[hit]] = x[hit]
+        rows = (slots < self.reservoir_size).nonzero().squeeze(1)
+        if rows.numel():
+            # Two vectors of one batch can draw the same slot. An indexed assignment with a
+            # repeated index leaves which one lands unspecified (it varied from run to run), so
+            # resolve it here: the later vector wins, as applying these draws one at a time would.
+            order = torch.argsort(slots[rows], stable=True)
+            rows = rows[order]
+            ranked = slots[rows]
+            last = torch.ones_like(ranked, dtype=torch.bool)
+            last[:-1] = ranked[1:] != ranked[:-1]
+            rows = rows[last]
+            self.reservoir[slots[rows]] = x[rows]
         self.seen += n_batch
 
     @property
@@ -198,7 +233,9 @@ def collect_hidden_states(
             table (Qwen3: 151669 vs 151936) -- the sampler handles the shorter prefix.
         dtype: reservoir storage dtype (see :class:`SiteStats`).
         seed: seeds the reservoir's replacement draws, making which vectors are kept reproducible.
-            ``None`` draws from the global RNG.
+            Every site gets its own generator, seeded from ``seed`` and the site's layer and name,
+            so a site's draws are the same whichever other ``layers`` share the pass -- the group
+            size is a memory choice, not part of the result. ``None`` draws from the global RNG.
 
     Returns:
         ``(stats, token_counts)``: statistics keyed ``f"{layer}_{site}"``, and raw token counts
@@ -217,11 +254,19 @@ def collect_hidden_states(
         targets.append((site_key(num_layers, LM_HEAD_SITE),
                         adapter.site_module(model, num_layers, LM_HEAD_SITE)))
 
-    # One generator shared by every site: the sites see the same vectors in the same order, so
-    # sharing keeps their reservoirs decorrelated rather than identically sampled.
-    generator = None if seed is None else torch.Generator().manual_seed(seed)
+    # One generator per site, seeded from (seed, layer, site). The sites see the same token
+    # positions in the same order, so distinct seeds keep their reservoirs from keeping the same
+    # positions; and because no site draws from another's stream, a site's reservoir does not
+    # depend on which layers share this pass -- which build_artifact's layer_group_size, chosen
+    # from host RAM, would otherwise make it do.
+    def generator_for(key: str) -> torch.Generator | None:
+        if seed is None:
+            return None
+        layer, site = parse_site_key(key)
+        return torch.Generator().manual_seed(_reservoir_seed(seed, layer, site))
+
     stats: dict[str, SiteStats] = {
-        key: SiteStats(reservoir_size=reservoir_size, dtype=dtype, generator=generator)
+        key: SiteStats(reservoir_size=reservoir_size, dtype=dtype, generator=generator_for(key))
         for key, _ in targets
     }
     mask_holder: dict[str, torch.Tensor | None] = {"mask": None}

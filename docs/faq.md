@@ -70,10 +70,9 @@ and logs the choice: on the machine this was written on, 7 for Qwen3-0.6B at the
 reservoir (about 10.7 GiB of reservoirs per group, against about 24 GiB available); on the host
 with 125 GiB of RAM that built the recorded artifact (2026-09-30), 28, every layer in one pass
 (`layer_group_size=28 for Qwen/Qwen3-0.6B: ~42.7 GiB of reservoirs per group against 117.9 GiB available`).
-The choice is not neutral — one torch generator is shared across a group's sites, so grouping
-changes the reservoir draws and the fitted mixtures, though not the exact moments — so the artifact's meta
-records `layer_group_size`, and a rebuild reproduces a file by passing `--layer-group-size` with
-the recorded value ([the-artifact.md](the-artifact.md#host-ram-the-layer-group)).
+The choice changes the memory bill and the number of corpus passes, not the artifact: at a fixed
+seed any group size gives the same one, and the artifact's meta records `layer_group_size` for the
+record ([the-artifact.md](the-artifact.md#host-ram-the-layer-group)).
 
 **How long it takes.** About **five minutes** at the defaults on one RTX 3090 (measured 5 min 08 s:
 roughly one minute collecting activations through the fused model, then four minutes fitting 84

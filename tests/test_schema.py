@@ -49,7 +49,7 @@ def test_meta_carries_provenance_when_given_and_none_otherwise():
     assert selfgen["corpus_sha256"] == "ab" * 32
 
 
-def test_meta_records_the_layer_group_size_the_reservoir_draws_depend_on():
+def test_meta_records_the_layer_group_size():
     from lfa.artifact.schema import make_meta
 
     plain = make_meta("m", 32, 2, ["pre_qkv"], 10)

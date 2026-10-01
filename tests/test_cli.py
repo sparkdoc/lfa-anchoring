@@ -96,6 +96,22 @@ def test_list_artifacts_lists_the_store(tmp_path, monkeypatch, capsys):
     assert main(["list-artifacts"]) == 0
     out = capsys.readouterr().out
     assert "Qwen/Qwen3-0.6B" in out and "2500 documents x 2048 tokens" in out and "108 MB" in out
+    assert "  built 2026-09-28  " in out and "built  built" not in out      # "built" said once
+
+
+def test_list_artifacts_shows_an_unfinished_entry_by_its_state(tmp_path, monkeypatch, capsys):
+    """An entry with no artifact yet has no build date: its state stands alone."""
+    frame = {"n_raw": 2500, "max_new_tokens": 2048, "gmm_k": 32}
+    monkeypatch.setattr("lfa.cli.list_store", lambda: [
+        {"path": tmp_path / "a", "model_id": "m", "frame": frame, "built_at": None,
+         "size_mb": 3, "state": "in progress: 400/2500 documents"},
+        {"path": tmp_path / "b", "model_id": "m", "frame": frame, "built_at": None,
+         "size_mb": 9, "state": "corpus complete, not fitted"}])
+    assert main(["list-artifacts"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert "  in progress: 400/2500 documents  3 MB  " in lines[0]
+    assert "  corpus complete, not fitted  9 MB  " in lines[1]
+    assert not any("built" in line for line in lines)
 
 
 def test_list_artifacts_on_an_empty_store_says_how_to_fill_it(monkeypatch, capsys):

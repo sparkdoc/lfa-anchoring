@@ -135,10 +135,14 @@ fields `provenance`, `corpus_sha256`, `selfgen_frame`; history keys `supplement`
 `artifact_route`. Evidence scope: one model, one seed (the self-generated artifact, the
 supplement); rank 4, one seed (the regenerate route).
 
-* **The artifact meta also records `layer_group_size`.** One torch generator is shared across a
-  group's sites, so grouping changes the reservoir draws and the fitted mixtures (not the exact
-  moments). The self-generated build chooses the group from host RAM when none is given; a rebuild
-  reproduces a file by passing `--layer-group-size` with the recorded value.
+* **The artifact meta also records `layer_group_size`**, for the record. The self-generated build
+  chooses the group from host RAM when none is given, and the choice does not change the artifact.
+* **Per-site reservoir generators.** Each site's reservoir draws come from its own generator,
+  seeded from the build seed and the site, so at a fixed seed every layer group size builds the
+  same artifact (one generator used to be shared across a pass's sites, which made the draws
+  depend on how layers were grouped), and a slot drawn twice in one batch now goes to the later
+  vector every run instead of to whichever write landed last. An artifact built before this change
+  is not reproduced bit for bit by a rebuild at the same seed.
 * **The supplement** lives under `<workspace>/supplements/<corpus sha256[:12]>/`, or beside the
   corpus in `<corpus>.supplement/` when it was prepared with the data, and is reused while the
   training side's hash, the writer checkpoint's hash, the template's hash and the domain

@@ -96,9 +96,9 @@ def make_meta(
             ``None`` for everything fitted on real text.
         corpus_sha256: the hash of the corpus file the statistics were collected on, when it is a
             generated one.
-        layer_group_size: how many layers were collected per pass; the reservoir draws depend on
-            it, so a rebuild passes the same value. ``None`` when unknown, or when every layer
-            was collected in one pass.
+        layer_group_size: how many layers were collected per pass, for the record: it sets the
+            build's memory bill, not its result. ``None`` when unknown, or when every layer was
+            collected in one pass.
         selfgen_frame: the generation and fit frame of a self-generated artifact
             (:meth:`lfa.selfgen.artifact_corpus.SelfGenOptions.artifact_frame`), which
             :meth:`lfa.recipe.Recipe.warnings` compares with the recipe's calibrated frame.

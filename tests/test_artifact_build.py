@@ -231,7 +231,7 @@ def test_build_artifact_layer_groups_cover_the_same_sites(
 
 def test_build_artifact_meta_records_the_layer_group_size(tmp_path, model_dir, corpus_file,
                                                           built):
-    """Grouping changes the reservoir draws, so a rebuild needs the value the artifact used."""
+    """The value used is recorded for the record (it changes the memory bill, not the fit)."""
     assert load_artifact(built)["__meta__"]["layer_group_size"] is None
     out = tmp_path / "grouped.pt"
     build_artifact(str(model_dir), corpus_file, out, max_samples=1000, seq_len=128,
@@ -451,3 +451,94 @@ def test_auto_layer_group_size_reads_the_config_not_the_model(monkeypatch, caplo
     assert "layer_group_size=8" in caplog.text and "GiB" in caplog.text
     # 200k * (2*1024 + 1024) * 2 B = 1.23 GB per layer: 0.5 * 25 GiB / that = 10.9
     assert build_module._auto_layer_group_size("no-head-dim", 200_000, 2) == 10
+
+
+# ------------------------------------------------- per-site reservoir generators
+
+def test_collect_reservoirs_do_not_depend_on_which_layers_share_a_pass(tiny_model, build_texts):
+    """A site's reservoir is the same whether its layer is collected alone or with the others.
+
+    The group size is chosen from host RAM, so if the draws depended on it, two machines would
+    build different artifacts from the same model, corpus and seed.
+    """
+    model, tokenizer = tiny_model
+    adapter = get_adapter(model)
+
+    def run(layers, include_lm_head):
+        stats, _ = collect_hidden_states(model, tokenizer, adapter, build_texts,
+                                         max_samples=10_000, seq_len=128, batch_size=8,
+                                         reservoir_size=64, device="cpu", progress=False,
+                                         token_frequencies=False, seed=11, layers=layers,
+                                         include_lm_head=include_lm_head)
+        return stats
+
+    together = run(None, True)
+    apart = {**run([0], False), **run([1], True)}
+    assert set(together) == set(apart) == EXPECTED_KEYS
+    for key in EXPECTED_KEYS:
+        assert together[key].seen > 64                          # replacement draws were taken
+        assert torch.equal(together[key].reservoir, apart[key].reservoir), key
+
+
+def test_build_artifact_is_the_same_at_any_layer_group_size(tmp_path, model_dir, corpus_file):
+    """Same seed, different group sizes: the same fitted artifact, tensor for tensor."""
+    def build(name, group):
+        out = tmp_path / name
+        build_artifact(str(model_dir), corpus_file, out, max_samples=1000, seq_len=128,
+                       reservoir_size=100, pca_variance=0.9, gmm_k=2, layer_group_size=group,
+                       quantize=False, device="cpu", seed=0)
+        return load_artifact(out)
+
+    one_pass, grouped = build("one_pass.pt", None), build("grouped.pt", 1)
+    for key in EXPECTED_KEYS:
+        assert one_pass[key]["n_samples"] > 100                 # the reservoir was resampled
+        assert set(one_pass[key]) == set(grouped[key]), key
+        for field_name, value in one_pass[key].items():
+            other = grouped[key][field_name]
+            if torch.is_tensor(value):
+                assert torch.equal(value, other), (key, field_name)
+            else:
+                assert value == other, (key, field_name)
+    assert torch.equal(one_pass["embedding_lookup"]["token_frequencies"],
+                       grouped["embedding_lookup"]["token_frequencies"])
+    assert one_pass["__meta__"]["n_samples_total"] == grouped["__meta__"]["n_samples_total"]
+
+
+def test_reservoir_seeds_are_per_site_and_apart_from_the_fit_seeds():
+    """Each site's reservoir stream is its own, and is not the stream its GMM fit starts from."""
+    from lfa.artifact.build import _site_seed as build_site_seed
+    from lfa.artifact.collect import _reservoir_seed, _site_seed
+
+    assert build_site_seed is _site_seed
+    assert _site_seed(0, 3, "pre_o") == 31 and _site_seed(7, 28, "pre_lm_head") == 292
+    sites = [(layer, site) for layer in range(28) for site in ("pre_qkv", "pre_o", "pre_mlp")]
+    sites.append((28, "pre_lm_head"))
+    reservoir = {_reservoir_seed(0, layer, site) for layer, site in sites}
+    fit = {_site_seed(0, layer, site) for layer, site in sites}
+    assert len(reservoir) == len(sites)
+    assert not reservoir & fit
+    assert _reservoir_seed(0, 1, "pre_o") != _reservoir_seed(1, 1, "pre_o")
+
+
+def test_reservoir_replacement_resolves_a_repeated_slot_to_the_later_vector():
+    """Two vectors of one batch drawing the same slot: the later one is kept, every run.
+
+    An indexed assignment with a repeated index leaves the winner unspecified, and on a
+    multi-threaded CPU it varied from run to run, so a seeded build was not reproducible even
+    on one machine. The reference here is the same draws applied one at a time. The old code
+    fails this only on a multi-threaded CPU (single-threaded index writes were already
+    last-wins), so a green run on one core is no evidence that the resolution is unneeded.
+    """
+    size, width, n = 1000, 32, 20_000
+    stats = SiteStats(reservoir_size=size, generator=torch.Generator().manual_seed(3))
+    stats.update(torch.zeros(size, width))                      # fill: no draw is taken
+    x = torch.randn(n, width, generator=torch.Generator().manual_seed(4))
+    stats.update(x)
+
+    slots = torch.randint(0, size + n, (n,), generator=torch.Generator().manual_seed(3))
+    expected = torch.zeros(size, width)
+    for i in range(n):
+        if slots[i] < size:
+            expected[slots[i]] = x[i]
+    assert torch.bincount(slots[slots < size]).max() > 1        # the case is exercised
+    assert torch.equal(stats.reservoir, expected)
