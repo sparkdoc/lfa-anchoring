@@ -462,6 +462,21 @@ class Workspace:
             if recipe is not None:
                 logger.info("Default recipe for this workspace: %r (it names %s)", recipe,
                             model_id)
+        if recipe is not None:
+            # Init records the spec without validating it, and a spec that does not load is
+            # refused where it is used (`train`), as before: here it only means no note. A
+            # local checkpoint path naming the same weights is a different id, so a mismatch is
+            # a warning, never a refusal.
+            try:
+                recipe_obj = Recipe.load(recipe)
+            except (OSError, ValueError, TypeError):
+                recipe_obj = None
+            if recipe_obj is not None and recipe_obj.model_id != model_id:
+                logger.warning(
+                    "Recipe %r is calibrated for %s, and this workspace's model is %s: lambda does "
+                    "not port between models, so use the recipe for this model or calibrate one "
+                    "(docs/model-integration-cookbook.md).", recipe_obj.name, recipe_obj.model_id,
+                    model_id)
 
         state = {
             "model_id": model_id,

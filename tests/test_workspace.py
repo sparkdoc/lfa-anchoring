@@ -1637,3 +1637,33 @@ def test_regenerate_warns_off_calibration_and_continues(tmp_path, base_dir, corp
     assert entry["stage"] == 2
     assert any("Regenerating the artifact" in r.getMessage() and "rank 4" in r.getMessage()
                for r in caplog.records)
+
+
+def test_init_warns_when_the_recipe_names_another_model(tmp_path, base_dir, caplog):
+    other = tiny_recipe(base_dir, model_id="someone/another-model", name="other")
+    recipe_file = tmp_path / "other.yaml"
+    recipe_file.write_text(yaml.safe_dump(dataclasses.asdict(other)))
+    with caplog.at_level("WARNING"):
+        Workspace.init(tmp_path / "ws", str(base_dir), artifact=TINY_ARTIFACT_PATH,
+                       recipe=str(recipe_file))
+    notes = [r.message for r in caplog.records if "is calibrated for" in r.message]
+    assert len(notes) == 1
+    assert "someone/another-model" in notes[0] and str(base_dir) in notes[0]
+
+
+def test_init_is_silent_when_the_recipe_names_this_model(tmp_path, base_dir, caplog):
+    recipe_file = tmp_path / "same.yaml"
+    recipe_file.write_text(yaml.safe_dump(dataclasses.asdict(tiny_recipe(base_dir))))
+    with caplog.at_level("WARNING"):
+        Workspace.init(tmp_path / "ws", str(base_dir), artifact=TINY_ARTIFACT_PATH,
+                       recipe=str(recipe_file))
+    assert not [r for r in caplog.records if "is calibrated for" in r.message]
+
+
+def test_init_keeps_a_recipe_it_cannot_load_without_a_note(tmp_path, base_dir, caplog):
+    # Init records the spec unvalidated; the calibration note is skipped, not turned into a refusal.
+    with caplog.at_level("WARNING"):
+        ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact=TINY_ARTIFACT_PATH,
+                            recipe="no-such-recipe")
+    assert ws.state["recipe"] == "no-such-recipe"
+    assert not [r for r in caplog.records if "is calibrated for" in r.message]
