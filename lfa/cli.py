@@ -2,7 +2,8 @@
 
 This module parses and dispatches. Every subcommand is one call into :class:`lfa.workspace.
 Workspace` or into a pipeline function (:func:`~lfa.artifact.build.build_artifact`,
-:func:`~lfa.seed_corpus.prepare_seed_corpus`, :func:`~lfa.prepare_domain.prepare_domain`), and
+:func:`~lfa.seed_corpus.prepare_seed_corpus`, :func:`~lfa.prepare_domain.prepare_domain`,
+:func:`~lfa.probe.probe_artifact`), and
 nothing is decided here that the library does not already decide the same way for a caller who
 imports it. That is deliberate: the stage
 ordering, the lambda multiplier, the loader frame and the device policy are the parts of
@@ -24,14 +25,26 @@ Run ``lfa --help``, or ``lfa <subcommand> --help``, for the flags.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
+from pathlib import Path
+
+import torch
 
 from .artifact.build import build_artifact, build_artifact_self_generated
 from .artifact.store import StoreLocked, list_store
 from .evaluate import DatasetUnavailable
-from .models import DEFAULT_DEVICE, TEACHER_MODES, NoTrainableParameters, ShardingRefused
+from .models import (
+    DEFAULT_DEVICE,
+    TEACHER_MODES,
+    NoTrainableParameters,
+    ShardingRefused,
+    load_teacher,
+    load_tokenizer,
+)
 from .prepare_domain import MissingExtra, prepare_domain
+from .probe import probe_artifact
 from .seed_corpus import SourceUnavailable, prepare_seed_corpus
 # CorpusFrameMismatch is a ValueError, so the tuple below already reports it; imported to name it.
 from .selfgen.artifact_corpus import (  # noqa: F401
@@ -88,6 +101,15 @@ def _windows(value: str) -> int | None:
         raise argparse.ArgumentTypeError(
             f"expected a number of windows, 0 for the whole split, or 'none' to skip the "
             f"general axis; got {value!r}")
+
+
+def _layer_list(value: str) -> list[int]:
+    """``--layers``: comma-separated layer indices."""
+    try:
+        return [int(part) for part in value.split(",") if part.strip()]
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"expected comma-separated layer indices such as 0,7,14; got {value!r}")
 
 
 # ==============================================================================================
@@ -213,6 +235,26 @@ def _build_artifact(args) -> int:
                          pca_variance=args.pca_variance, gmm_k=args.gmm_k,
                          layer_group_size=args.layer_group_size, quantize=args.quantize,
                          device=args.device, seed=args.seed))
+    return 0
+
+
+def _probe_artifact(args) -> int:
+    # A workspace directory stands for the artifact it currently anchors against.
+    artifact = args.artifact
+    if Path(artifact).is_dir():
+        artifact = Workspace.open(artifact).state["current_artifact"]
+    tokenizer = load_tokenizer(args.model)
+    model = load_teacher(args.model, device=args.device, dtype=torch.float32)
+    report = probe_artifact(model, tokenizer, artifact, args.adapter, layers=args.layers,
+                            n_real=args.n_real, n_model=args.n_model, n_random=args.n_random,
+                            device=args.device)
+    print(report.format_table())
+    if args.output:
+        output = Path(args.output)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(report.to_json(), indent=1) + "\n", encoding="utf-8")
+        print(f"Wrote {output}")
+    # A report, not a verdict: the exit status is 0 whether or not an alarm fired.
     return 0
 
 
@@ -472,6 +514,42 @@ def build_parser() -> argparse.ArgumentParser:
                             "(default: %(default)s)")
     _add_device(build)
     build.set_defaults(handler=_build_artifact)
+
+    # ------------------------------------------------------------------------- probe-artifact
+    probe = subcommands.add_parser(
+        "probe-artifact",
+        help="price real update directions under an artifact against real activations: a "
+             "minutes-long smoke alarm for a broken artifact, not a measure of what training "
+             "against it preserves",
+        description="Prices the update directions of trained LoRA adapters (and random ones "
+                    "matched to them) under the artifact's samples and under real WikiText-2 "
+                    "activations, per site. Reports LEVEL (uniform mis-scaling, which lambda "
+                    "absorbs) and SHAPE (direction-dependent mispricing, which it does not) for "
+                    "the artifact and for a diagonal reference (the real activations with "
+                    "every correlation removed), against a real-vs-real floor. The alarm fires "
+                    "for a site class whose median artifact SHAPE is at or above the diagonal "
+                    "reference's. Exit status 0 either way.")
+    probe.add_argument("--model", required=True, metavar="ID",
+                       help="the model the artifact describes: a Hub id or a local checkpoint "
+                            "path (loaded in float32)")
+    probe.add_argument("--artifact", required=True, metavar="PATH",
+                       help="an artifact file, or a workspace directory (its current artifact)")
+    probe.add_argument("--adapter", required=True, action="append", metavar="DIR",
+                       help="a saved PEFT adapter trained on --model, ideally from an unanchored "
+                            "run; its deltas are the update directions priced. Repeat for more")
+    probe.add_argument("--layers", type=_layer_list, metavar="0,7,...",
+                       help="layers to probe (default: five evenly spaced, first and last "
+                            "included)")
+    probe.add_argument("--n-real", dest="n_real", type=int, default=30_000, metavar="N",
+                       help="real activation vectors per site, split into truth and floor "
+                            "halves (default: %(default)s)")
+    probe.add_argument("--n-model", dest="n_model", type=int, default=30_000, metavar="N",
+                       help="artifact samples per site (default: %(default)s)")
+    probe.add_argument("--n-random", dest="n_random", type=int, default=4, metavar="N",
+                       help="random rank-32 directions per adapter delta (default: %(default)s)")
+    probe.add_argument("--output", metavar="FILE", help="also write the report as JSON")
+    _add_device(probe)
+    probe.set_defaults(handler=_probe_artifact)
 
     # -------------------------------------------------------------------- prepare-seed-corpus
     seed = subcommands.add_parser(

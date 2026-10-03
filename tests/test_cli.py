@@ -27,7 +27,7 @@ from lfa.workspace import Workspace
 SUBCOMMANDS = [
     "init", "train", "extend", "evaluate", "fuse", "chain",
     "build-artifact", "prepare-seed-corpus", "prepare-domain", "list-artifacts",
-    "prepare-supplement", "regenerate-artifact",
+    "prepare-supplement", "regenerate-artifact", "probe-artifact",
 ]
 
 
