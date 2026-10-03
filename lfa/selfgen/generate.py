@@ -184,12 +184,18 @@ def drop_burn_in(text: str, tokenizer, n_tokens: int) -> str:
 
 
 def passes_filters(text: str, *, min_chars: int, max_repeat_ratio: float) -> bool:
-    """Length floor plus a degeneracy filter: the repeated fraction of 8-grams, 1 - distinct/total."""
+    """Length floor plus a degeneracy filter: the repeated fraction of 8-grams, 1 - distinct/total.
+
+    The 8-grams are of whitespace-separated words. A text with fewer than eight of them has no
+    8-gram, so nothing in it repeats: its repeated fraction is 0 and only ``min_chars`` can reject
+    it. That matters for scripts written without spaces -- a CJK paragraph is one or two "words"
+    -- which a word floor would reject as degenerate however good the text, at any frame.
+    """
     if len(text) < min_chars:
         return False
     tokens = text.split()
     if len(tokens) < 8:
-        return False
+        return True
     grams = Counter(tuple(tokens[i:i + 8]) for i in range(len(tokens) - 7))
     total = sum(grams.values())
     return (1.0 - len(grams) / total) <= max_repeat_ratio

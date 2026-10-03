@@ -147,6 +147,15 @@ def test_passes_filters_rejects_short_and_looping_text():
     assert passes_filters(loop, min_chars=10, max_repeat_ratio=1.0)   # the unfiltered frame
 
 
+def test_passes_filters_keeps_text_written_without_spaces():
+    # One whitespace "word": no 8-grams, so nothing repeats. Qwen3-1.7B writes CJK in a large
+    # share of its self-generated documents, and a word floor rejected them as degenerate.
+    cjk = "这是一个关于灯塔看守人的故事，他每天记录潮汐和天气。"
+    assert passes_filters(cjk, min_chars=1, max_repeat_ratio=1.0)     # the unfiltered frame
+    assert passes_filters(cjk, min_chars=1, max_repeat_ratio=0.3)     # degeneracy check passes
+    assert not passes_filters(cjk, min_chars=200, max_repeat_ratio=1.0)   # the length floor holds
+
+
 def test_sha256_text_is_order_sensitive_and_stable():
     assert sha256_text(["a", "b"]) == sha256_text(["a", "b"])
     assert sha256_text(["a", "b"]) != sha256_text(["b", "a"])
