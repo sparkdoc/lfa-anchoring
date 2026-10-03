@@ -24,7 +24,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from .. import __version__
-from .generate import checkpoint_sha256, generate_texts, load_writer
+from .generate import chat_turn_end, checkpoint_sha256, generate_texts, load_writer
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +59,6 @@ Return ONLY a JSON array of objects: [{{"question": "...", "answer": "..."}}, ..
 _OBJ = re.compile(r'\{\s*"question"\s*:\s*"(.*?)"\s*,\s*"answer"\s*:\s*"(.*?)"\s*\}', re.S)
 _MARK = re.compile(r'(?:^|\n)\s*(?:Question|Q)\s*[:.\)]\s*(.+?)\n\s*(?:Answer|A)\s*[:.\)]\s*(.+?)'
                    r'(?=\n\s*(?:Question|Q)\s*[:.\)]|\Z)', re.S | re.I)
-_TURN_END = "<|im_end|>"
 
 
 class NoPairsWritten(ValueError):
@@ -109,9 +108,12 @@ def chunk_passages(text: str, size: int = 4000, min_size: int = 200) -> list[str
     return [c for c in chunk_document(text, size) if len(c) >= min_size]
 
 
-def parse_assistant_turn(decoded: str) -> str:
-    """The assistant's text up to the turn end; the whole string when there is no turn end."""
-    return decoded.split(_TURN_END, 1)[0] if _TURN_END in decoded else decoded
+def parse_assistant_turn(decoded: str, turn_end: str | None) -> str:
+    """The assistant's text up to ``turn_end``; the whole string when it is ``None`` or absent.
+
+    ``turn_end`` is :func:`lfa.selfgen.generate.chat_turn_end` of the writer's tokenizer.
+    """
+    return decoded.split(turn_end, 1)[0] if turn_end else decoded
 
 
 def _clean(s: str) -> str:
@@ -160,10 +162,14 @@ def write_supplement(model_id: str, documents: list[str], out_path, *, domain_de
     if not chat_template:
         logger.warning("%s has no chat template: supplement prompts are sent as plain text, "
                        "outside the recorded frame", model_id)
+    # The turn end comes from the writer's own template (<|im_end|> under ChatML, <|eot_id|>
+    # under Llama 3); no template, or one that names none, leaves EOS as the only stop.
+    turn_end = chat_turn_end(tokenizer)
     stop = [tokenizer.eos_token_id]
-    end_id = tokenizer.convert_tokens_to_ids(_TURN_END)
-    if isinstance(end_id, int) and end_id >= 0 and end_id not in stop:
-        stop.append(end_id)
+    if turn_end is not None:
+        end_id = tokenizer.convert_tokens_to_ids(turn_end)
+        if isinstance(end_id, int) and end_id >= 0 and end_id not in stop:
+            stop.append(end_id)
 
     rows, rejected, seen = [], {"short_answer": 0, "long_answer": 0, "duplicate": 0,
                                 "unparseable_passage": 0}, set()
@@ -176,7 +182,7 @@ def write_supplement(model_id: str, documents: list[str], out_path, *, domain_de
                            stop_token_ids=stop, seed=options.seed,
                            batch_index=batch_index // options.batch_size)
         for (source_index, _), output in zip(batch, outputs):
-            pairs = parse_qa_pairs(parse_assistant_turn(output))
+            pairs = parse_qa_pairs(parse_assistant_turn(output, turn_end))
             if not pairs:
                 rejected["unparseable_passage"] += 1
             for pair in pairs:

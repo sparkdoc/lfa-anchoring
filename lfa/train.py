@@ -103,7 +103,8 @@ EMBED_ANCHOR_DISABLED_NOTICE = (
 
 @dataclass
 class TrainConfig:
-    """Every knob of an LFA run. The defaults are the shipped Qwen3-0.6B operating point.
+    """Every knob of an LFA run. The defaults are the shipped Qwen3-0.6B operating point;
+    ``model_id`` has none, since no model is assumed.
 
     The recipe is a *joint* operating point, not a set of independent settings. In particular
     ``lambda_qkv``/``lambda_mlp`` are coupled to ``lora_rank``, to the artifact's sharpness, and
@@ -125,7 +126,7 @@ class TrainConfig:
     """
 
     # -- model
-    model_id: str = "Qwen/Qwen3-0.6B"
+    model_id: str
 
     # -- anchoring (lambda) and the weight backstop (mu)
     lambda_qkv: float = 100000.0

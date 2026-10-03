@@ -55,6 +55,71 @@ def test_a_tokenizer_without_a_chat_template_gives_no_header():
     assert chat_user_header(_Tok(template=False)) is None
 
 
+CHATML = ("{% for m in messages %}<|im_start|>{{ m['role'] }}\n{{ m['content'] }}<|im_end|>\n"
+          "{% endfor %}{% if add_generation_prompt %}<|im_start|>assistant\n{% endif %}")
+LLAMA3 = ("<|begin_of_text|>{% for m in messages %}<|start_header_id|>{{ m['role'] }}"
+          "<|end_header_id|>\n\n{{ m['content'] }}<|eot_id|>{% endfor %}{% if add_generation_prompt %}"
+          "<|start_header_id|>assistant<|end_header_id|>\n\n{% endif %}")
+WITH_DEFAULT_SYSTEM = ("{% if messages[0]['role'] != 'system' %}<|im_start|>system\nYou are a helpful "
+                       "assistant.<|im_end|>\n{% endif %}" + CHATML)
+
+
+def _with_template(tiny_model, template, specials):
+    """A private copy of the conftest char-level tokenizer, given a chat template and its tokens."""
+    import copy
+    _, tok = tiny_model
+    tok = copy.deepcopy(tok)
+    tok.add_special_tokens({"additional_special_tokens": specials})
+    tok.chat_template = template
+    return tok
+
+
+@pytest.mark.parametrize("template,specials,expected", [
+    (CHATML, ["<|im_start|>", "<|im_end|>"], "<|im_end|>"),
+    (WITH_DEFAULT_SYSTEM, ["<|im_start|>", "<|im_end|>"], "<|im_end|>"),
+    (LLAMA3, ["<|begin_of_text|>", "<|start_header_id|>", "<|end_header_id|>", "<|eot_id|>"],
+     "<|eot_id|>"),
+], ids=["chatml", "chatml-default-system", "llama3"])
+def test_chat_turn_end_is_read_off_the_template(tiny_model, template, specials, expected):
+    from lfa.selfgen.generate import chat_turn_end
+    assert chat_turn_end(_with_template(tiny_model, template, specials)) == expected
+
+
+def test_chat_turn_end_finds_a_special_token_outside_the_special_tokens_map(tiny_model):
+    """A turn end added as ``AddedToken(special=True)`` -- neither EOS nor an additional special
+    token, as in Llama-3.0-Instruct's original release -- is still found."""
+    import copy
+
+    from tokenizers import AddedToken
+
+    from lfa.selfgen.generate import chat_turn_end
+    _, tok = tiny_model
+    tok = copy.deepcopy(tok)
+    tok.add_tokens([AddedToken(t, special=True) for t in
+                    ("<|begin_of_text|>", "<|start_header_id|>", "<|end_header_id|>", "<|eot_id|>")])
+    tok.chat_template = LLAMA3
+    assert "<|eot_id|>" not in tok.all_special_tokens
+    assert chat_turn_end(tok) == "<|eot_id|>"
+
+
+def test_chat_turn_end_is_none_when_the_close_is_plain_text(tiny_model):
+    from lfa.selfgen.generate import chat_turn_end
+    plain = "{% for m in messages %}{{ m['role'] }}: {{ m['content'] }}\n\n{% endfor %}"
+    assert chat_turn_end(_with_template(tiny_model, plain, [])) is None
+
+
+def test_chat_turn_end_without_a_template_is_none(tiny_model):
+    from lfa.selfgen.generate import chat_turn_end
+    _, tok = tiny_model
+    assert chat_turn_end(tok) is None
+
+
+def test_the_user_opener_skips_a_default_system_turn(tiny_model):
+    tok = _with_template(tiny_model, WITH_DEFAULT_SYSTEM, ["<|im_start|>", "<|im_end|>"])
+    assert chat_user_header(tok) == "<|im_start|>user\n"
+    assert not any("You are" in m for m in boundary_markers(tok, tok.eos_token or ""))
+
+
 def test_clean_raw_cuts_at_the_first_boundary_marker():
     markers = boundary_markers(_Tok(), "<|endoftext|>")
     assert "<|endoftext|>" in markers and "<|im_start|>" in markers

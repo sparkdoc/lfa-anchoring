@@ -381,12 +381,13 @@ def test_adapter_disabled_is_refused_for_full_weight_training():
     with pytest.raises(TeacherModeRefused, match="full-weight"):
         resolve_teacher_mode("adapter_disabled", use_lora=False, full_weight=True)
     with pytest.raises(TeacherModeRefused, match="full-weight"):
-        TrainConfig(teacher_mode="adapter_disabled", use_lora=False, full_weight=True)
+        TrainConfig(model_id="tiny", teacher_mode="adapter_disabled", use_lora=False,
+                    full_weight=True)
 
 
 def test_an_unknown_teacher_mode_is_refused_by_the_config():
     with pytest.raises(ValueError, match="teacher_mode"):
-        TrainConfig(teacher_mode="borrowed")
+        TrainConfig(model_id="tiny", teacher_mode="borrowed")
 
 
 def test_the_view_refuses_a_student_with_no_adapter(tiny_model_fresh):
@@ -410,9 +411,10 @@ def test_frozen_reference_views_a_wrapped_student(pair):
 
 def test_the_config_carries_the_mode_into_config_json():
     """``teacher_mode`` is a recorded frame field, so a run says which teacher it trained against."""
-    assert "teacher_mode" in TrainConfig().to_dict()
-    assert TrainConfig().teacher_mode == "auto"
-    assert json.loads(json.dumps(TrainConfig().to_dict()))["teacher_mode"] == "auto"
+    config = TrainConfig(model_id="tiny")
+    assert "teacher_mode" in config.to_dict()
+    assert config.teacher_mode == "auto"
+    assert json.loads(json.dumps(config.to_dict()))["teacher_mode"] == "auto"
 
 
 # ==============================================================================================
@@ -435,6 +437,7 @@ def _training_setup(tiny_model, tiny_texts, tiny_artifact, tmp_path):
     student = apply_lora(student, adapter, rank=RANK, alpha=ALPHA)
 
     config = TrainConfig(
+        model_id="tiny",
         lambda_qkv=10.0, lambda_mlp=10.0, mu=0.05, n_anchor_samples=4, learning_rate=1e-2,
         warmup_steps=1, logging_steps=1, batch_size=2, gradient_accumulation_steps=1,
         num_epochs=1, sequence_length=64, use_lora=True, lora_rank=RANK, lora_alpha=ALPHA,

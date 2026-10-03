@@ -43,6 +43,7 @@ FULL_WEIGHT_NOTICE = (
 def make_config(**overrides) -> TrainConfig:
     """The small-and-stable run every test here starts from."""
     kwargs = dict(
+        model_id="tiny",
         lambda_qkv=10.0, lambda_mlp=10.0, mu=0.05,
         n_anchor_samples=4,
         learning_rate=1e-2, warmup_steps=1, logging_steps=1,
@@ -173,6 +174,13 @@ def _apply_repo_warning_filters() -> list[str]:
     for spec in specs:
         warnings.filterwarnings(*parse_warning_filter(spec, escape=False))
     return specs
+
+
+def test_a_config_names_its_model():
+    """No model is assumed: a run's config has to say which model it trains."""
+    with pytest.raises(TypeError, match="model_id"):
+        TrainConfig()
+    assert make_config().model_id == "tiny"
 
 
 def test_the_repo_turns_warnings_into_errors():

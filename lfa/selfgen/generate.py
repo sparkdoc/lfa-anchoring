@@ -27,8 +27,9 @@ import torch
 from ..models import load_tokenizer, resolve_model_path
 
 __all__ = [
-    "load_writer", "pick_seed_prefix", "chat_user_header", "boundary_markers", "clean_raw",
-    "drop_burn_in", "passes_filters", "generate_texts", "checkpoint_sha256", "sha256_text",
+    "load_writer", "pick_seed_prefix", "chat_user_header", "chat_turn_end", "boundary_markers",
+    "clean_raw", "drop_burn_in", "passes_filters", "generate_texts", "checkpoint_sha256",
+    "sha256_text",
 ]
 
 _HEADER_MARK = "␟"   # characters no template contains, to find where each turn's content goes
@@ -68,6 +69,31 @@ def pick_seed_prefix(tokenizer, model=None) -> str:
     return "\n"
 
 
+def _render(tokenizer, messages) -> str:
+    return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+
+
+def _exchange() -> list[dict]:
+    return [{"role": "user", "content": _USER_MARK},
+            {"role": "assistant", "content": _ASSISTANT_MARK}]
+
+
+def _assistant_close(tokenizer) -> str | None:
+    """What follows the assistant's content in a rendered ``[user, assistant]`` exchange.
+
+    ``None`` without a template, with one that rejects the exchange, or with one that does not
+    render the assistant's content. Shared by :func:`chat_user_header` and :func:`chat_turn_end`
+    so the two always isolate the same close.
+    """
+    try:
+        short = _render(tokenizer, _exchange())
+    except Exception:                                     # no template, or one that rejects it
+        return None
+    if _ASSISTANT_MARK not in short:
+        return None
+    return short[short.rfind(_ASSISTANT_MARK) + 1:]
+
+
 def chat_user_header(tokenizer) -> str | None:
     """What a user turn opens with under the tokenizer's chat template, or ``None`` without one.
 
@@ -80,25 +106,40 @@ def chat_user_header(tokenizer) -> str | None:
     Qwen3's template drops an earlier assistant turn's empty think block once a later user turn
     exists, so the prefix property fails there.
     """
-    def render(messages):
-        return tokenizer.apply_chat_template(messages, tokenize=False,
-                                             add_generation_prompt=False)
-
-    exchange = [{"role": "user", "content": _USER_MARK},
-                {"role": "assistant", "content": _ASSISTANT_MARK}]
+    close = _assistant_close(tokenizer)
+    if close is None:
+        return None
     try:
-        short = render(exchange)
-        full = render(exchange + [{"role": "user", "content": _HEADER_MARK}])
-    except Exception:                                     # no template, or one that rejects it
+        full = _render(tokenizer, _exchange() + [{"role": "user", "content": _HEADER_MARK}])
+    except Exception:                                     # a template that rejects a third turn
         return None
     before_mark, sep, _ = full.partition(_HEADER_MARK)
-    if not sep or _ASSISTANT_MARK not in short or _ASSISTANT_MARK not in before_mark:
+    if not sep or _ASSISTANT_MARK not in before_mark:
         return None
-    close = short[short.rfind(_ASSISTANT_MARK) + 1:]
     after_assistant = before_mark[before_mark.rfind(_ASSISTANT_MARK) + 1:]
     if not after_assistant.startswith(close):
         return None
     return after_assistant[len(close):] or None
+
+
+def chat_turn_end(tokenizer) -> str | None:
+    """The special token that closes an assistant turn under the chat template, or ``None``.
+
+    Read off the template rather than assumed: ChatML templates (Qwen) close a turn with
+    ``<|im_end|>``, Llama-3 templates with ``<|eot_id|>``. The assistant turn's close is isolated
+    as in :func:`chat_user_header`, and the earliest special token in it is the turn end. A
+    special token is one in the special-tokens map or any added token marked special: a turn end
+    added as ``AddedToken(..., special=True)`` is in the second only. ``None`` without a
+    template, or when the close holds no special token.
+    """
+    close = _assistant_close(tokenizer)
+    if close is None:
+        return None
+    specials = set(getattr(tokenizer, "all_special_tokens", ()))
+    specials |= {token.content for token in getattr(tokenizer, "added_tokens_decoder", {}).values()
+                 if getattr(token, "special", False)}
+    found = [t for t in specials if t and t in close]
+    return min(found, key=lambda t: (close.index(t), -len(t), t)) if found else None
 
 
 def boundary_markers(tokenizer, seed_prefix: str) -> tuple[str, ...]:

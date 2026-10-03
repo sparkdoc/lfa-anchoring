@@ -42,6 +42,13 @@ def test_salvages_complete_objects_from_a_truncated_array():
     assert [p["question"] for p in parse_qa_pairs(text)] == ["Q1?", "Q2?"]
 
 
+def test_an_assistant_turn_is_cut_at_the_templates_own_turn_end():
+    from lfa.selfgen.supplement import parse_assistant_turn
+    assert parse_assistant_turn("Q: a\nA: b<|eot_id|><|start_header_id|>", "<|eot_id|>") == "Q: a\nA: b"
+    assert parse_assistant_turn("Q: a\nA: b<|im_end|>\n", "<|im_end|>") == "Q: a\nA: b"
+    assert parse_assistant_turn("Q: a\nA: b", None) == "Q: a\nA: b"
+
+
 def test_chunk_document_splits_and_merges_on_paragraphs():
     split = chunk_document("A" * 100 + "\n\n" + "B" * 100 + "\n\n" + "C" * 100, 150)
     assert [c[0] for c in split] == ["A", "B", "C"]
@@ -84,6 +91,38 @@ class _PlainTok:
 
 class _Model:
     device = "cpu"
+
+
+class _PlainCloseTok:
+    """A template whose assistant turn closes with plain text: no special token to stop on."""
+    pad_token_id = 0
+    eos_token_id = 1
+    chat_template = "stub"
+    all_special_tokens = ["</s>"]
+
+    def apply_chat_template(self, messages, **_):
+        return "".join(f"{m['role']}: {m['content']}\n\n" for m in messages)
+
+    def convert_tokens_to_ids(self, token):
+        return 3
+
+
+class _Llama3Tok:
+    """A Llama-3-style writer: its assistant turn closes with <|eot_id|>, not <|im_end|>."""
+    pad_token_id = 0
+    eos_token_id = 1
+    chat_template = "stub"
+    all_special_tokens = ["<|begin_of_text|>", "<|start_header_id|>", "<|end_header_id|>",
+                          "<|eot_id|>"]
+
+    def apply_chat_template(self, messages, add_generation_prompt=False, **_):
+        turns = "".join(f"<|start_header_id|>{m['role']}<|end_header_id|>\n\n{m['content']}<|eot_id|>"
+                        for m in messages)
+        opener = "<|start_header_id|>assistant<|end_header_id|>\n\n" if add_generation_prompt else ""
+        return "<|begin_of_text|>" + turns + opener
+
+    def convert_tokens_to_ids(self, token):
+        return {"<|eot_id|>": 9}.get(token, 3)
 
 
 def test_write_supplement_records_pairs_and_a_manifest(tmp_path, monkeypatch):
@@ -171,3 +210,39 @@ def test_a_writer_without_a_chat_template_warns_and_says_so(tmp_path, monkeypatc
                 and r.levelname == "WARNING"]
     assert len(warnings) == 1 and "plain text" in warnings[0].getMessage()
     assert manifest["chat_template_applied"] is False
+
+
+def test_the_writer_stops_and_cuts_at_its_own_templates_turn_end(tmp_path, monkeypatch):
+    """A non-ChatML writer: the stop id and the cut both come from its template, not <|im_end|>."""
+    monkeypatch.setattr("lfa.selfgen.supplement.checkpoint_sha256", lambda m: "a" * 64)
+    stops = []
+
+    def generate(model, tokenizer, prompts, **kwargs):
+        stops.append(kwargs["stop_token_ids"])
+        return ['[{"question": "Why?", "answer": "' + "Because of the passage. " * 3 + '"}]'
+                '<|eot_id|>[{"question": "After the turn?", "answer": "'
+                + "Text past the turn end is not the answer. " * 2 + '"}]'] * len(prompts)
+
+    write_supplement("stub", ["text " * 100], tmp_path / "s.jsonl", domain_description="d",
+                     options=SupplementOptions(min_passage_chars=10), corpus_sha256="b" * 64,
+                     generate=generate, writer=(_Model(), _Llama3Tok()))
+    rows = [json.loads(l) for l in (tmp_path / "s.jsonl").read_text().splitlines()]
+    assert stops == [[1, 9]]                              # EOS, then the template's turn end
+    assert [r["prompt"] for r in rows] == ["Why?"]
+
+
+@pytest.mark.parametrize("tokenizer", [_Tok(), _PlainCloseTok()],
+                         ids=["renders-no-assistant-turn", "plain-text-close"])
+def test_a_template_with_no_turn_end_stops_at_eos_alone(tmp_path, monkeypatch, tokenizer):
+    monkeypatch.setattr("lfa.selfgen.supplement.checkpoint_sha256", lambda m: "a" * 64)
+    stops = []
+
+    def generate(model, tokenizer, prompts, **kwargs):
+        stops.append(kwargs["stop_token_ids"])
+        return ['[{"question": "Why?", "answer": "' + "Because of the passage. " * 3 + '"}]'
+                ] * len(prompts)
+
+    write_supplement("stub", ["text " * 100], tmp_path / "s.jsonl", domain_description="d",
+                     options=SupplementOptions(min_passage_chars=10), corpus_sha256="b" * 64,
+                     generate=generate, writer=(_Model(), tokenizer))
+    assert stops == [[1]]
