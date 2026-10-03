@@ -367,15 +367,15 @@ class Recipe:
                     "one this recipe's lambda was calibrated at: " + ", ".join(differ)
                     + ". A trial-sized build is fine for trying the pipeline; for a real "
                     "run, build at the recorded frame or calibrate lambda against held-out "
-                    "domain perplexity (docs/adding-a-model.md).")
+                    "domain perplexity (docs/model-integration-cookbook.md).")
         elif self.calibrated_artifact == SELF_GENERATED_REFERENCE:
             notes.append(
                 f"this recipe's lambda ({quoted}) is calibrated against an artifact fitted on the "
                 f"model's own text at {_describe(self.self_generated_frame)}, and you are "
                 f"anchoring against {artifact_id!r}, which is not one. A different artifact "
                 "prices the same function differently, so calibrate lambda against held-out "
-                "domain perplexity (docs/adding-a-model.md), reading the frontier rather than "
-                "a single point.")
+                "domain perplexity (docs/model-integration-cookbook.md), reading the frontier "
+                "rather than a single point.")
         elif artifact_id != self.calibrated_artifact:
             notes.append(
                 f"lambda is coupled to the p(h) artifact: this recipe's lambda was calibrated "

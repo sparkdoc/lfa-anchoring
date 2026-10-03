@@ -164,7 +164,7 @@ rather than its id, and is one of these:
 * *"this recipe's lambda (…) is calibrated against an artifact fitted on the model's own text at
   …, and you are anchoring against '…', which is not one."* — an artifact fitted on real text, or
   one whose provenance is unknown: calibrate λ against held-out domain perplexity
-  ([adding-a-model.md](adding-a-model.md), §3).
+  ([model-integration-cookbook.md](model-integration-cookbook.md), §5).
 
 One more is logged by `train` itself rather than by the recipe: *"Training on the raw corpus alone:
 this recipe's lambda was calibrated at supplement_fraction 0.13 and this run mixes none."* It fires

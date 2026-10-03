@@ -3,7 +3,7 @@
 The artifact is the only part of LFA that is not data-free: it is fitted once on text, and every
 adaptation afterwards samples hidden states from it instead of from text. This package builds it
 from text the model writes itself, so nothing is downloaded. You build one per **model**
-([adding-a-model.md](adding-a-model.md) for a model that is not Qwen3), not per domain — a new
+([model-integration-cookbook.md](model-integration-cookbook.md) for a model that is not Qwen3), not per domain — a new
 domain is what [`lfa extend`](multi-domain-chains.md) is for.
 
 ## The self-generated artifact
@@ -52,7 +52,7 @@ matched an artifact fitted on real text at every λ tried, and was at least as g
 tuned against ([below](#advanced-an-artifact-fitted-on-real-text)); the recipe is now calibrated
 against the self-generated one at this frame, and warns about nothing when a Qwen3-0.6B workspace
 uses it. On any other model nothing has been measured: the route gives a first artifact, and λ is
-calibrated against it ([adding-a-model.md](adding-a-model.md)).
+calibrated against it ([model-integration-cookbook.md](model-integration-cookbook.md)).
 
 ### What it writes
 
@@ -278,7 +278,7 @@ This step needs network. There is no offline path: the corpus is a download.
 **What the recipe says about it.** The bundled recipe is calibrated against the self-generated
 artifact at its frame, so a workspace over an artifact fitted here is told, at every stage, that
 it is not the artifact the recipe's λ is calibrated against and that λ should be calibrated
-against held-out domain perplexity ([adding-a-model.md](adding-a-model.md)). It is a note, never a
+against held-out domain perplexity ([model-integration-cookbook.md](model-integration-cookbook.md)). It is a note, never a
 refusal. Put the file in a workspace with `lfa init --artifact <path>`.
 
 ### The seed corpus

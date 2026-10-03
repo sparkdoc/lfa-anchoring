@@ -175,7 +175,7 @@ supplement); rank 4, one seed (the regenerate route).
 * Docs: README (the five-command pipeline), `docs/quickstart.md` (the full pipeline, step by
   step), `docs/preparing-your-data.md` (new: formats, corpus shapes, the supplement),
   `docs/the-artifact.md` (renamed and rewritten: the self-generated build, the store, a real-text
-  artifact), `docs/adding-a-model.md`, `docs/recipes.md`, `docs/concepts.md` (the building blocks;
+  artifact), `docs/model-integration-cookbook.md`, `docs/recipes.md`, `docs/concepts.md` (the building blocks;
   what the supplement does: reachability; what it does not: protect skills),
   `docs/multi-domain-chains.md` (the regenerate route), `docs/faq.md` (8 GB cards, bf16 on Turing,
   the toolchain warning, what self-generation costs). `docs/verification.md` gains only a dated

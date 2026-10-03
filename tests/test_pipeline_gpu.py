@@ -21,8 +21,9 @@ def _recipe_for(model: str, tmp_path) -> tuple[list[str], str]:
     Qwen3-0.6B runs on its bundled recipe, whose lambda is calibrated against a self-generated
     artifact at a recorded frame; the trial build is off that frame, so `train` says
     "different frame". No recipe is bundled for Qwen3-1.7B, so it runs on a copy of the 0.6B one
-    naming 1.7B and marked ``calibrated_artifact: uncalibrated`` (docs/adding-a-model.md), and
-    `train` says instead that lambda was calibrated against another artifact.
+    naming 1.7B and marked ``calibrated_artifact: uncalibrated``
+    (docs/model-integration-cookbook.md), and `train` says instead that lambda was calibrated
+    against another artifact.
     """
     if model == "Qwen/Qwen3-0.6B":
         return [], "different frame"

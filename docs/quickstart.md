@@ -92,7 +92,7 @@ an unfinished build got.
 matched an artifact fitted on real text at every λ tried, and was at least as good at the recipe's
 λ — one model, one seed, one domain. The bundled recipe is calibrated against it and says nothing.
 On any other model it is the way to a first artifact, and λ is then calibrated against it
-([adding-a-model.md](adding-a-model.md)).
+([model-integration-cookbook.md](model-integration-cookbook.md)).
 
 **While it runs** it logs one line per batch of documents, `self-generated corpus: n/2500
 documents (e empty)`. Each finished batch is on disk before the next starts, so:
@@ -277,5 +277,5 @@ and reports the general axis as unmeasured rather than losing the domain number 
 * [multi-domain-chains.md](multi-domain-chains.md) — a second and third domain.
 * [`examples/two_domain_walkthrough.ipynb`](../examples/two_domain_walkthrough.ipynb) — all of it end to end, with the unanchored control.
 * [`examples/what_the_anchor_does.ipynb`](../examples/what_the_anchor_does.ipynb) — optional: the controls at their own best dose, and what the models say.
-* [adding-a-model.md](adding-a-model.md) — a model that is not Qwen3.
+* [model-integration-cookbook.md](model-integration-cookbook.md) — a model that is not Qwen3.
 * [faq.md](faq.md) — memory, full weights, reading the general axis, what is not shipped.

@@ -175,7 +175,7 @@ Three steps, and only the third is real work: an **adapter** so LFA can find the
 **artifact** built for that model — `lfa init <workspace> --model <id> --artifact self-generated`
 has the model write the text it is fitted on, no download — and a **λ calibration** at your rank
 and corpus,
-against that artifact. Never port λ across models. [adding-a-model.md](adding-a-model.md) has
+against that artifact. Never port λ across models. [model-integration-cookbook.md](model-integration-cookbook.md) has
 the interface, the fallback orders, and
 the calibration procedure.
 
