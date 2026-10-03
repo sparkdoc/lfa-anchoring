@@ -7,7 +7,11 @@ anchoring site, for a family of witness directions:
 
 * **Witnesses** -- the LoRA deltas ``(lora_alpha / r) * B @ A`` of one or more trained adapters
   (:func:`lora_deltas`), plus ``n_random`` random rank-32 deltas per real one, each matched to the
-  real delta's Frobenius norm (:func:`random_like`).
+  real delta's Frobenius norm (:func:`random_like`). A random witness sees little more than the
+  overall scale of the distribution, so SHAPE is set by the real ones, and they must come from an
+  **unanchored** run (lambda 0). A run trained anchored against an artifact drifts into the
+  directions that artifact underprices, so its deltas are biased witnesses: the alarm is not
+  evaluated for them (:func:`adapter_training`), though the numbers are still reported.
 * **Prices** (:func:`site_price`) -- ``pre_qkv``: ``mean_h sum_{q,k,v} ||dW h||^2``; ``pre_o``:
   ``mean_h ||dW_o h||^2``; ``pre_mlp``: ``mean_h ||MLP'(h) - MLP(h)||^2`` for the whole SwiGLU
   block with the deltas on gate/up/down. ``pre_lm_head`` is not probed (LoRA does not touch the
@@ -31,9 +35,12 @@ anchoring site, for a family of witness directions:
 **The alarm** is threshold-free: a site class (linear = ``pre_qkv`` + ``pre_o``; MLP =
 ``pre_mlp``) whose median artifact SHAPE is at or above the diagonal reference's median SHAPE
 -- the artifact prices update directions no better than a perfect diagonal model of the real
-activations. It says what was measured on these witnesses and this text, and nothing about the
-behaviour a model trained against the artifact keeps: pricing fidelity and preserved behaviour
-have been seen to come apart. Silence from the alarm is not a mark of quality.
+activations. It detects gross failures only -- a collapsed or degenerate artifact -- and does not
+grade near-misses. A scale or layer error shows in LEVEL, which is printed beside SHAPE and which
+lambda absorbs, not in SHAPE. It says what was measured on these witnesses and this text, and
+nothing about the behaviour a model trained against the artifact keeps: pricing fidelity and
+preserved behaviour have been seen to come apart. Silence from the alarm is not a mark of
+quality.
 """
 
 from __future__ import annotations
@@ -64,6 +71,7 @@ __all__ = [
     "RANDOM_RANK",
     "ProbeReport",
     "lora_deltas",
+    "adapter_training",
     "random_like",
     "site_price",
     "level_shape",
@@ -149,6 +157,52 @@ def lora_deltas(adapter_dir, layers=None) -> dict[tuple[int, str], torch.Tensor]
         raise ValueError(f"The adapter at {path} holds no LoRA weights inside the transformer "
                          "layers, so it has no update directions to probe with.")
     return deltas
+
+
+def adapter_training(adapter_dir) -> dict:
+    """How the run that wrote ``adapter_dir`` was anchored, from its ``config.json``.
+
+    A training run writes ``config.json`` one level above its ``final_model`` /
+    ``latest_model`` / ``checkpoint_epoch_N`` adapter directories (:func:`lfa.train.train`). The
+    result is ``{"adapter", "config", "training", ...}`` where ``training`` is ``"unanchored"``
+    (``lambda_qkv`` and ``lambda_mlp`` both 0), ``"anchored"`` (either above 0; ``lambda_qkv``,
+    ``lambda_mlp``, ``mu`` and ``artifact_path`` are recorded) or ``"unknown"`` (no readable
+    config with both lambdas beside the adapter).
+    """
+    config_path = Path(adapter_dir).parent / "config.json"
+    record = {"adapter": str(adapter_dir), "config": None, "training": "unknown"}
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return record
+    if not isinstance(config, dict) or not all(
+            isinstance(config.get(key), (int, float)) for key in ("lambda_qkv", "lambda_mlp")):
+        return record
+    record["config"] = str(config_path)
+    record.update({key: config.get(key)
+                   for key in ("lambda_qkv", "lambda_mlp", "mu", "artifact_path")})
+    anchored = config["lambda_qkv"] > 0 or config["lambda_mlp"] > 0
+    record["training"] = "anchored" if anchored else "unanchored"
+    return record
+
+
+def _witness_notes(histories: list[dict]) -> tuple[bool, list[str]]:
+    """Whether the alarm may be evaluated with these adapters, and the lines that say why not."""
+    anchored = [h for h in histories if h["training"] == "anchored"]
+    if anchored:
+        return False, [
+            f"alarm not evaluated: adapter {h['adapter']} was trained anchored "
+            f"(lambda_qkv={h['lambda_qkv']:g}, lambda_mlp={h['lambda_mlp']:g}); anchored training "
+            "moves into directions its artifact underprices, so its deltas are biased witnesses "
+            "-- use an adapter from an unanchored run (lambda 0)"
+            for h in anchored]
+    unknown = [h["adapter"] for h in histories if h["training"] == "unknown"]
+    if unknown:
+        return True, [
+            "caveat: the witnesses must come from an unanchored run (lambda 0), and the training "
+            f"history of {', '.join(unknown)} could not be read (no config.json with its lambdas "
+            "beside the adapter)"]
+    return True, []
 
 
 def random_like(ref: torch.Tensor, rank: int, generator: torch.Generator) -> torch.Tensor:
@@ -363,19 +417,24 @@ class ProbeReport:
             of the floor's
             (``None`` when the floor is exactly 0).
         alarms: one sentence per class whose artifact median SHAPE is at or above the diagonal
-            reference's.
-        settings: how the measurement was taken.
+            reference's; ``None`` when the alarm was not evaluated (an adapter trained
+            anchored), so that an unevaluated alarm never reads as a quiet one.
+        settings: how the measurement was taken, including each adapter's training history
+            (``witness_training``, from :func:`adapter_training`).
+        notes: why the alarm was not evaluated, or the caveat it was evaluated under.
     """
 
     sites: dict[str, dict]
     summary: dict[str, dict]
-    alarms: list[str]
+    alarms: list[str] | None
     settings: dict = field(default_factory=dict)
+    notes: list[str] = field(default_factory=list)
 
     def to_json(self) -> dict:
         """The report as plain JSON-serialisable data."""
-        return {"sites": self.sites, "summary": self.summary, "alarms": list(self.alarms),
-                "settings": self.settings}
+        return {"sites": self.sites, "summary": self.summary,
+                "alarms": None if self.alarms is None else list(self.alarms),
+                "notes": list(self.notes), "settings": self.settings}
 
     def format_table(self) -> str:
         """The per-site table, the class medians against the floor, and the alarms."""
@@ -412,9 +471,10 @@ class ProbeReport:
         if skipped:
             lines += ["", "skipped sites:"] + [f"  {reason}" for reason in skipped]
         lines.append("")
+        lines += [f"NOTE: {note}" for note in self.notes]
         if self.alarms:
             lines += [f"ALARM: {alarm}" for alarm in self.alarms]
-        else:
+        elif self.alarms is not None:                  # None: not evaluated, said in the notes
             probed = " and ".join(self.summary)
             lines.append(f"No alarm at the probed classes ({probed}): the artifact's median SHAPE "
                          "is below the diagonal reference's. This measures pricing on these "
@@ -533,6 +593,7 @@ def probe_artifact(model, tokenizer, artifact, adapter_dirs, *, layers=None, n_r
     if not sites:
         raise ValueError(_nothing_priced(layers, skipped))
     adapters = [(str(path), lora_deltas(path, layers=layers)) for path in adapter_dirs]
+    histories = [adapter_training(path) for path in adapter_dirs]
 
     text = "WikiText-2 test split" if tokens is None else "caller-supplied tokens"
     if tokens is None:
@@ -604,10 +665,14 @@ def probe_artifact(model, tokenizer, artifact, adapter_dirs, *, layers=None, n_r
 
     settings = {
         "artifact": str(artifact) if not isinstance(artifact, dict) else "<in-memory artifact>",
-        "adapters": [path for path, _ in adapters], "layers": layers, "n_real": n_real,
+        "adapters": [path for path, _ in adapters], "witness_training": histories,
+        "layers": layers, "n_real": n_real,
         "n_model": n_model, "n_random": n_random, "random_rank": RANDOM_RANK,
         "seq_len": seq_len, "seed": seed,
         "text": text,
         "skipped": skipped,
     }
-    return ProbeReport(sites=rows, summary=summary, alarms=alarms_for(summary), settings=settings)
+    evaluate, notes = _witness_notes(histories)
+    return ProbeReport(sites=rows, summary=summary,
+                       alarms=alarms_for(summary) if evaluate else None, settings=settings,
+                       notes=notes)

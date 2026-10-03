@@ -373,6 +373,76 @@ def test_an_attention_only_adapter_leaves_the_mlp_class_named_as_not_probed(
     assert "No alarm at the probed classes (linear):" in quiet
 
 
+# --------------------------------------------------------------- witnesses' training history
+
+def _run_dir(adapter_dir, root, **lambdas):
+    """``adapter_dir`` copied to ``root/final_model``, with the run's ``config.json`` beside it
+    when ``lambdas`` are given -- written by the package's own TrainConfig, as a run writes it."""
+    import shutil
+    from lfa.train import TrainConfig
+    shutil.copytree(adapter_dir, root / "final_model")
+    if lambdas:
+        config = TrainConfig(model_id="tiny", artifact_path="a.pt", **lambdas).to_dict()
+        (root / "config.json").write_text(json.dumps(config), encoding="utf-8")
+    return root / "final_model"
+
+
+def test_an_anchored_adapter_reports_numbers_but_does_not_evaluate_the_alarm(
+        probe_model, tiny_artifact, adapter_dir, tokens, tmp_path):
+    model, tokenizer = probe_model
+    anchored = _run_dir(adapter_dir[0], tmp_path / "anchored", lambda_qkv=1e5, lambda_mlp=1e5)
+    report = _run(model, tokenizer, tiny_artifact[1], anchored, tokens, n_real=1024,
+                  n_model=1024)
+
+    assert report.alarms is None
+    assert report.summary and all(math.isfinite(row["artifact_shape"])
+                                  for row in report.sites.values())
+    data = report.to_json()
+    assert data["alarms"] is None
+    (history,) = data["settings"]["witness_training"]
+    assert history["training"] == "anchored"
+    assert (history["lambda_qkv"], history["lambda_mlp"]) == (1e5, 1e5)
+    assert history["config"].endswith("config.json")
+    (note,) = report.notes
+    assert note.startswith("alarm not evaluated: adapter")
+    assert "lambda_qkv=100000, lambda_mlp=100000" in note
+    table = report.format_table()
+    assert "alarm not evaluated" in table and "No alarm" not in table and "ALARM:" not in table
+
+
+def test_an_unanchored_adapter_evaluates_the_alarm_without_a_caveat(
+        probe_model, tiny_artifact, adapter_dir, tokens, tmp_path):
+    model, tokenizer = probe_model
+    unanchored = _run_dir(adapter_dir[0], tmp_path / "control", lambda_qkv=0.0, lambda_mlp=0.0)
+    report = _run(model, tokenizer, tiny_artifact[1], unanchored, tokens, n_real=1024,
+                  n_model=1024)
+
+    assert report.alarms is not None
+    assert report.notes == []
+    assert report.settings["witness_training"][0]["training"] == "unanchored"
+
+
+def test_an_adapter_with_no_history_evaluates_the_alarm_with_a_caveat(
+        probe_model, tiny_artifact, adapter_dir, tokens, tmp_path):
+    model, tokenizer = probe_model
+    bare = _run_dir(adapter_dir[0], tmp_path / "bare")
+    report = _run(model, tokenizer, tiny_artifact[1], bare, tokens, n_real=1024, n_model=1024)
+
+    assert report.alarms is not None
+    assert report.settings["witness_training"][0]["training"] == "unknown"
+    (note,) = report.notes
+    assert note.startswith("caveat: the witnesses must come from an unanchored run")
+    assert f"NOTE: {note}" in report.format_table()
+
+
+def test_one_anchored_adapter_among_unanchored_ones_stops_the_alarm(tmp_path, adapter_dir):
+    unanchored = _run_dir(adapter_dir[0], tmp_path / "a", lambda_qkv=0.0, lambda_mlp=0.0)
+    anchored = _run_dir(adapter_dir[0], tmp_path / "b", lambda_qkv=0.0, lambda_mlp=50.0)
+    histories = [probe.adapter_training(unanchored), probe.adapter_training(anchored)]
+    evaluate, notes = probe._witness_notes(histories)
+    assert not evaluate and len(notes) == 1 and str(anchored) in notes[0]
+
+
 # ------------------------------------------------------------------------------- 7. the alarm
 
 def _stub_sampler(monkeypatch, activations, transform):

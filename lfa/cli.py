@@ -528,15 +528,20 @@ def build_parser() -> argparse.ArgumentParser:
                     "the artifact and for a diagonal reference (the real activations with "
                     "every correlation removed), against a real-vs-real floor. The alarm fires "
                     "for a site class whose median artifact SHAPE is at or above the diagonal "
-                    "reference's. Exit status 0 either way.")
+                    "reference's. It detects gross failures only (a collapsed or degenerate "
+                    "artifact) and does not grade near-misses; a scale or layer error shows in "
+                    "LEVEL, not SHAPE. Exit status 0 either way.")
     probe.add_argument("--model", required=True, metavar="ID",
                        help="the model the artifact describes: a Hub id or a local checkpoint "
                             "path (loaded in float32)")
     probe.add_argument("--artifact", required=True, metavar="PATH",
                        help="an artifact file, or a workspace directory (its current artifact)")
     probe.add_argument("--adapter", required=True, action="append", metavar="DIR",
-                       help="a saved PEFT adapter trained on --model, ideally from an unanchored "
-                            "run; its deltas are the update directions priced. Repeat for more")
+                       help="a saved PEFT adapter trained on --model, from an unanchored run "
+                            "(lambda 0): an adapter trained anchored against an artifact is "
+                            "biased toward directions that artifact underprices, and the alarm "
+                            "is not evaluated for it. Its deltas are the update directions "
+                            "priced. Repeat for more")
     probe.add_argument("--layers", type=_layer_list, metavar="0,7,...",
                        help="layers to probe (default: five evenly spaced, first and last "
                             "included)")
