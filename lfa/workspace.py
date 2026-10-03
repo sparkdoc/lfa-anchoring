@@ -273,7 +273,8 @@ def _meta_of(path: Path) -> dict:
 
     Raises:
         ValueError: the file cannot be read as an artifact at all.
-        lfa.artifact.schema.ForeignArtifact: it can, but this package did not build it
+        lfa.artifact.schema.ForeignArtifact: it can, but this package did not build it, or wrote
+            it in a format this release does not read
             (:func:`~lfa.artifact.schema.require_own_artifact`).
     """
     try:
@@ -388,7 +389,8 @@ class Workspace:
                 a file that cannot be read as an artifact.
             lfa.artifact.schema.ForeignArtifact: ``artifact`` is a file this package did not
                 build (no meta block, one naming another builder, or a mixture head that is not
-                diagonal).
+                diagonal), or an artifact format this release does not read -- a file, or the
+                store's matching entry (``rebuild`` builds that afresh).
             lfa.artifact.store.StoreLocked: another process is already building the same
                 self-generated artifact.
         """

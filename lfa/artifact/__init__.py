@@ -13,10 +13,12 @@ from .collect import SiteStats, collect_hidden_states
 from .extend import extend_artifact, fit_domain_gmm
 from .fit import TorchGMM, fit_site
 from .schema import (
+    ARTIFACT_FORMAT,
     EMBEDDING_LOOKUP_KEY,
     LM_HEAD_SITE,
     META_KEY,
     SITES,
+    SUPPORTED_ARTIFACT_FORMATS,
     ArtifactModelMismatch,
     ForeignArtifact,
     load_artifact,
@@ -54,6 +56,8 @@ __all__ = [
     "LM_HEAD_SITE",
     "META_KEY",
     "EMBEDDING_LOOKUP_KEY",
+    "ARTIFACT_FORMAT",
+    "SUPPORTED_ARTIFACT_FORMATS",
     "site_key",
     "parse_site_key",
     "make_meta",

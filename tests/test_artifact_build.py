@@ -221,6 +221,24 @@ def test_build_artifact_round_trips(built, tiny_model):
     assert torch.allclose(lookup["token_frequencies"].sum(), torch.tensor(1.0), atol=1e-5)
 
 
+def test_a_built_artifact_records_its_format_and_one_without_the_field_still_loads(built, tmp_path,
+                                                                                  tiny_model):
+    """What `build_artifact` writes carries `format_version`; the same file with the key removed is
+    what every release before the field wrote, and it is format 1, so it loads as it is."""
+    from lfa.artifact import ARTIFACT_FORMAT
+
+    assert load_artifact(built)["__meta__"]["format_version"] == ARTIFACT_FORMAT
+
+    payload = torch.load(built, map_location="cpu", weights_only=False)
+    del payload["__meta__"]["format_version"]
+    earlier = tmp_path / "earlier.pt"
+    torch.save(payload, earlier)
+    params = load_artifact(earlier)
+    model, _ = tiny_model
+    validate_against_model(params, model, get_adapter(model))
+    assert Sampler(earlier, device="cpu", seed=0).sample_best(1, "pre_mlp", 4).shape == (4, 32)
+
+
 def test_build_artifact_samples(built):
     sampler = Sampler(built, device="cpu", seed=0)
     assert sampler.sample_best(1, "pre_mlp", 4).shape == (4, 32)

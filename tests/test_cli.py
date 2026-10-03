@@ -304,6 +304,24 @@ def test_an_artifact_this_package_did_not_build_exits_two_with_one_line(tmp_path
     assert not (tmp_path / "ws").exists()
 
 
+def test_an_artifact_in_a_later_format_exits_two_with_one_line(tmp_path, base_dir, tiny_artifact,
+                                                              capsys):
+    from lfa.artifact.schema import ARTIFACT_FORMAT
+
+    params, _ = tiny_artifact
+    later = tmp_path / "later.pt"
+    torch.save(dict(params, __meta__=dict(params["__meta__"], format_version=ARTIFACT_FORMAT + 1)),
+               later)
+    code = main(["init", str(tmp_path / "ws"), "--model", str(base_dir), "--artifact", str(later)])
+
+    assert code == 2
+    lines = error_lines(capsys)
+    assert len(lines) == 1
+    assert f"uses artifact format {ARTIFACT_FORMAT + 1}," in lines[0]
+    assert "lfa build-artifact" in lines[0]
+    assert not (tmp_path / "ws").exists()
+
+
 @pytest.mark.parametrize("subcommand", ["fuse", "evaluate"])
 def test_reading_a_workspace_with_no_trained_stage_exits_two_with_one_line(subcommand, tmp_path,
                                                                           base_dir, capsys):

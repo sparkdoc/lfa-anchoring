@@ -195,9 +195,10 @@ lfa init runs/second --model Qwen/Qwen3-0.6B --artifact runs/my_domain/artifacts
 ```
 
 `--artifact` takes an artifact this package built — another workspace's `artifacts/v1.pt`, or a
-file `lfa build-artifact` wrote — and copies it in as `artifacts/v1.pt`. A file built anywhere
-else is refused before the workspace is created: one with no `__meta__` block, one whose meta
-names another builder in `built_with`, or one whose mixture heads are not diagonal. What the
+file `lfa build-artifact` wrote — and copies it in as `artifacts/v1.pt`. A file built anywhere else
+is refused before the workspace is created: one with no `__meta__` block, one whose meta names
+another builder in `built_with`, or one whose mixture heads are not diagonal — and so is one in an
+artifact format this release does not read (see *Sharing and keeping artifacts* below). What the
 workspace records comes from the file's meta: a self-generated file keeps its provenance and its id
 (`self-generated:<corpus sha256[:12]>`), exactly as if it had been built at `init`, so the recipe
 judges it by its frame and `extend` works. Any other file is recorded by the path you passed, with
@@ -228,11 +229,12 @@ the corpus **token frequencies** are kept (~600 KB against ~300 MB) and
 sampled frequency-weighted.
 
 The build also writes a `__meta__` block — model id, hidden size, layer count, site list,
-`n_samples_total`, and `built_with: lfa-anchoring`, which is what a file is accepted on — and
-validates the finished artifact against the model before saving. Every training run validates it
-again. `n_samples_total` is a **per-site** count, not a sum across sites:
-every site sees the same token stream. Each site's block also carries its own `n_samples`, which is
-what an extension weights the new domain against; an artifact without them is refused.
+`n_samples_total`, `built_with: lfa-anchoring`, which is what a file is accepted on, and
+`format_version`, the layout it was written in — and validates the finished artifact against the
+model before saving. Every training run validates it again. `n_samples_total` is a **per-site**
+count, not a sum across sites: every site sees the same token stream. Each site's block also
+carries its own `n_samples`, which is what an extension weights the new domain against; an artifact
+without them is refused.
 
 `build-artifact` writes blockwise-int8 by default (`--no-quantize` for full precision, which
 doubles the file). Quantization is a storage format: it is applied to a shallow copy on save and
@@ -243,6 +245,19 @@ Qwen3-0.6B artifact the recipe's λ was tuned against is ~108 MB int8 against ~2
 and poison that site's fit. Nothing checks for it. If a model is suspected of large activations,
 build with `dtype=torch.float32` (via `lfa.artifact.build.build_artifact`, which takes it as an
 argument) and check the site statistics in the logs.
+
+### Sharing and keeping artifacts
+
+An artifact is portable across machines, people and releases of this package that share its format.
+The meta records two things about the file: `format_version`, the stored layout
+(`lfa.artifact.ARTIFACT_FORMAT`, 1 today), and `lfa_version`, which release wrote it — for the
+record only, never checked. So an artifact someone else built with lfa-anchoring loads with your
+copy, and so does one built with an earlier release, as long as the layout has not changed; a file
+from before `format_version` was recorded is format 1. A release that changes the layout bumps the
+format and says so in its changelog, and then refuses a file in a format it does not read with a
+sentence naming both formats and how to build the artifact again. The store is checked the same
+way: a matching entry in a format this release does not read is refused at `lfa init`, naming the
+entry, and `--rebuild` builds it afresh.
 
 ## Advanced: an artifact fitted on real text
 

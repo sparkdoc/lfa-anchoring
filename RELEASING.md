@@ -33,6 +33,11 @@ curl -sS https://www.apache.org/licenses/LICENSE-2.0.txt \
 Check `lfa/__init__.py::__version__` and `pyproject.toml::version` agree and are what you mean to
 release.
 
+Did this release change the artifact layout (a meta or site field renamed, added as required or
+removed, a head type, an encoding)? Then bump `ARTIFACT_FORMAT` (`lfa/artifact/schema.py`) and add
+a changelog line saying which artifacts it refuses. A release that keeps the layout leaves it
+alone, so every artifact built with an earlier release of the same format still loads.
+
 ## 1. Tag and build the package
 
 ```bash
@@ -158,6 +163,10 @@ supplement); rank 4, one seed (the regenerate route).
   `load_artifact`, `Sampler` and `validate_against_model` refuse a file with no `__meta__` block,
   one whose `built_with` is not `lfa-anchoring`, or one with a mixture head that is not diagonal.
   `extend` refuses a base artifact without per-site `n_samples`.
+* **Artifacts record their format.** The `__meta__` block carries `format_version` (1: the layout
+  every release has written, so a file without the field, from 0.1.x, is format 1 and loads), and
+  a file in a format this release does not read is refused with a sentence naming both formats.
+  `lfa_version` stays a record and is not checked.
 * **Removed since 0.1.x**: `extend_artifact(base_n=)`, `lfa.merge.annotate_count`,
   `lfa.models.MissingBuildToolchain`, `make_meta(built_with=)`, `TorchGMM(covariance_type=)`
   (it fits diagonal covariances only), and the reading of

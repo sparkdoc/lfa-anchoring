@@ -26,6 +26,8 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
+import torch
+
 try:  # POSIX; elsewhere the lock is the exclusive create alone
     import fcntl
 except ImportError:  # pragma: no cover - not reached on the supported platforms
@@ -35,6 +37,7 @@ from .. import __version__
 from ..selfgen.artifact_corpus import SelfGenOptions, frame_sha256, progress_path
 from ..selfgen.generate import checkpoint_sha256, generate_texts
 from .build import build_artifact_self_generated
+from .schema import require_own_artifact
 
 logger = logging.getLogger(__name__)
 
@@ -198,6 +201,11 @@ def _move_aside(entry: Path) -> None:
 
 
 def _reused(artifact: Path, corpus: Path) -> tuple[Path, dict]:
+    # Checked before it is handed out, so an entry this release cannot read (one written in
+    # another artifact format, by a later release or before a downgrade) is refused here, naming
+    # the entry, rather than first at `train`.
+    require_own_artifact(torch.load(artifact, map_location="cpu", weights_only=False),
+                         f"The stored artifact {artifact}")
     built = time.strftime("%Y-%m-%d", time.localtime(artifact.stat().st_mtime))
     logger.info("Reused the self-generated artifact built %s from %s", built, artifact.parent)
     return artifact, _manifest(corpus)
@@ -207,11 +215,13 @@ def obtain_self_generated(model_id: str, options: SelfGenOptions, *, rebuild: bo
                           generate=generate_texts, writer=None) -> tuple[Path, dict]:
     """The store's artifact for this checkpoint at this frame, built into the store if needed.
 
-    A finished entry is returned as it is. Otherwise the build runs in the entry under its lock:
-    a partial corpus resumes at its next batch, a complete corpus whose fit failed is fitted
-    without generating again (the durable writer, :func:`write_artifact_corpus`, does both), and
-    an empty entry is built from scratch. The artifact is written as ``artifact.partial.pt`` and
-    renamed only once complete, so ``artifact.pt`` in an entry always means a finished build.
+    A finished entry is returned as it is, once it is known to be one this release reads
+    (:func:`~lfa.artifact.schema.require_own_artifact`). Otherwise the build runs in the entry
+    under its lock: a partial corpus resumes at its next batch, a complete corpus whose fit failed
+    is fitted without generating again (the durable writer, :func:`write_artifact_corpus`, does
+    both), and an empty entry is built from scratch. The artifact is written as
+    ``artifact.partial.pt`` and renamed only once complete, so ``artifact.pt`` in an entry always
+    means a finished build.
 
     Args:
         rebuild: move any existing entry aside to ``<entry>.replaced-<timestamp>`` first and
@@ -223,6 +233,8 @@ def obtain_self_generated(model_id: str, options: SelfGenOptions, *, rebuild: bo
 
     Raises:
         StoreLocked: another live process is building this entry.
+        lfa.artifact.schema.ForeignArtifact: the finished entry is in an artifact format this
+            release does not read; ``rebuild`` builds it afresh.
     """
     writer_sha256 = checkpoint_sha256(model_id)
     entry = entry_dir(model_id, writer_sha256, options)

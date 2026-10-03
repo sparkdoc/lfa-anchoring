@@ -19,6 +19,11 @@ rule while leaving the per-layer sites at their own indices.
 Only artifacts this package built are accepted (:func:`require_own_artifact`): every file it
 writes carries a meta block with ``built_with`` set to :data:`BUILT_WITH` and diagonal mixture
 heads, so a file missing either was built somewhere else and is refused rather than read.
+
+The meta block also records the artifact's **format** (``format_version``, :data:`ARTIFACT_FORMAT`):
+the stored layout. An artifact is portable across machines, people and releases of this package
+that read its format, and a file in any other format is refused with a sentence saying so.
+``lfa_version`` records which release wrote the file, for the record only; it is never checked.
 """
 
 from __future__ import annotations
@@ -37,6 +42,8 @@ __all__ = [
     "EMBEDDING_LOOKUP_KEY",
     "SELF_GENERATED",
     "BUILT_WITH",
+    "ARTIFACT_FORMAT",
+    "SUPPORTED_ARTIFACT_FORMATS",
     "site_key",
     "parse_site_key",
     "make_meta",
@@ -61,6 +68,19 @@ SELF_GENERATED = "self-generated"
 
 #: ``__meta__["built_with"]`` of every artifact this package writes, and the only value accepted.
 BUILT_WITH = "lfa-anchoring"
+
+#: ``__meta__["format_version"]`` of every artifact this package writes: the stored layout.
+#:
+#: Bumped only when the stored structure changes -- a field renamed, added as required or removed,
+#: a head type, an encoding. A new package release, a different build machine or person, a
+#: different seed or a sampling change that keeps the layout does NOT bump it, so artifacts built
+#: by anyone with any release that writes this format are read by every release that reads it.
+#: Format 1 is the layout this package has written since its first release, before the field
+#: existed.
+ARTIFACT_FORMAT = 1
+
+#: The formats this release reads; any other ``format_version`` is refused.
+SUPPORTED_ARTIFACT_FORMATS = frozenset({ARTIFACT_FORMAT})
 
 #: What a refused artifact is told to do instead: the two routes that build one here.
 _BUILD_ONE_HERE = "pass --artifact self-generated, or build one with `lfa build-artifact`."
@@ -97,8 +117,9 @@ def make_meta(
     """The ``__meta__`` block: what the statistics describe, and what built them.
 
     ``built_with`` is always :data:`BUILT_WITH` -- it is what an artifact is accepted on
-    (:func:`require_own_artifact`), so it is not a parameter -- and ``lfa_version`` records which
-    version of this package wrote the block.
+    (:func:`require_own_artifact`), so it is not a parameter -- ``format_version`` is always
+    :data:`ARTIFACT_FORMAT`, the layout written, and ``lfa_version`` records which version of this
+    package wrote the block.
 
     Args:
         n_samples_total: hidden vectors collected **per site**, not summed across them. Every site
@@ -124,6 +145,7 @@ def make_meta(
         "sites": list(sites),
         "n_samples_total": None if n_samples_total is None else int(n_samples_total),
         "built_with": BUILT_WITH,
+        "format_version": ARTIFACT_FORMAT,
         "lfa_version": __version__,
         # What text the statistics were collected on. `None` is real text (the seed corpus, a
         # domain); SELF_GENERATED is text the model wrote, and `corpus_sha256` then names it.
@@ -137,7 +159,8 @@ def make_meta(
 
 
 class ForeignArtifact(ValueError):
-    """Raised for an artifact this package did not build, which it does not read."""
+    """Raised for an artifact this package did not build, or wrote in a format this release does
+    not read: either way it is refused rather than read."""
 
 
 def require_own_artifact(params, source="The artifact") -> dict:
@@ -145,7 +168,8 @@ def require_own_artifact(params, source="The artifact") -> dict:
 
     An artifact built here is a dict whose ``__meta__`` says ``built_with`` :data:`BUILT_WITH`
     and whose mixture heads are all diagonal (``gmm_covariance_type == "diag"``, the only kind
-    :func:`lfa.artifact.fit.fit_site` and :func:`lfa.artifact.extend.fit_domain_gmm` write).
+    :func:`lfa.artifact.fit.fit_site` and :func:`lfa.artifact.extend.fit_domain_gmm` write), in a
+    format this release reads (:data:`SUPPORTED_ARTIFACT_FORMATS`). ``lfa_version`` is not checked.
 
     Args:
         params: the loaded artifact.
@@ -153,7 +177,8 @@ def require_own_artifact(params, source="The artifact") -> dict:
 
     Raises:
         ForeignArtifact: ``params`` is not a dict, carries no meta block, names another builder,
-            or carries a mixture head that is not diagonal.
+            is in a format this release does not read, or carries a mixture head that is not
+            diagonal.
     """
     if not isinstance(params, dict):
         raise ForeignArtifact(
@@ -169,6 +194,15 @@ def require_own_artifact(params, source="The artifact") -> dict:
             f"{source} was not built by {BUILT_WITH} (its {META_KEY} says built_with "
             f"{meta.get('built_with')!r}), and only artifacts this package built are accepted: "
             + _BUILD_ONE_HERE)
+    # Format 1 predates the field: every artifact written before it was recorded has format 1's
+    # layout, so a meta without it is format 1. This is the only place the field is read.
+    found = meta.get("format_version", 1)
+    if type(found) is not int or found not in SUPPORTED_ARTIFACT_FORMATS:
+        raise ForeignArtifact(
+            f"{source} uses artifact format {found!r}, and this version of {BUILT_WITH} reads "
+            f"format {_formats_read()}: build it again with this version (`lfa init <workspace> "
+            "--model <id> --artifact self-generated --rebuild`, or `lfa build-artifact`), or use "
+            f"the {BUILT_WITH} release it was built with.")
     for key, entry in params.items():
         if (parse_site_key(key) is None or not isinstance(entry, dict)
                 or int(entry.get("gmm_n_components", 0)) == 0):
@@ -180,6 +214,11 @@ def require_own_artifact(params, source="The artifact") -> dict:
                 "'diag' only), and only artifacts this package built are accepted: "
                 + _BUILD_ONE_HERE)
     return meta
+
+
+def _formats_read() -> str:
+    """The formats this release reads, as the refusal names them (``1``, or ``1 or 2``)."""
+    return " or ".join(str(n) for n in sorted(SUPPORTED_ARTIFACT_FORMATS))
 
 
 def load_artifact(path) -> dict:

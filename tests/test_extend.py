@@ -95,6 +95,22 @@ def test_extend_records_its_provenance_in_the_meta(extended, tiny_artifact):
     assert all(params[k]["n_samples"] == meta["n_samples_total"] for k in SITE_KEYS)
 
 
+def test_an_extension_writes_the_current_format(extended, tmp_path, tiny_artifact, fused_dir,
+                                                corpus_file):
+    """An extension writes today's layout, so it says so -- also over a base written before the
+    field was recorded, which is format 1."""
+    from lfa.artifact import ARTIFACT_FORMAT
+
+    assert load_artifact(extended)["__meta__"]["format_version"] == ARTIFACT_FORMAT
+
+    params, _ = tiny_artifact
+    meta = {key: value for key, value in params["__meta__"].items() if key != "format_version"}
+    earlier = tmp_path / "earlier.pt"
+    torch.save(dict(params, __meta__=meta), earlier)
+    out = _extend(tmp_path / "extended.pt", earlier, fused_dir, corpus_file)
+    assert load_artifact(out)["__meta__"]["format_version"] == ARTIFACT_FORMAT
+
+
 def test_the_extended_artifact_still_samples(extended):
     sampler = Sampler(extended, device="cpu", seed=0)
     assert sampler.sample_gmm(1, "pre_mlp", 8).shape == (8, 32)

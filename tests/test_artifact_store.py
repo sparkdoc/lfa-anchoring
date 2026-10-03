@@ -3,8 +3,10 @@ import json
 import os
 
 import pytest
+import torch
 
 import lfa.artifact.store as store
+from lfa.artifact.schema import ARTIFACT_FORMAT, ForeignArtifact, make_meta
 from lfa.selfgen.artifact_corpus import SelfGenOptions
 
 
@@ -13,6 +15,12 @@ def isolated_store(tmp_path, monkeypatch):
     monkeypatch.setenv(store.STORE_ENV, str(tmp_path / "store"))
     monkeypatch.setattr(store, "checkpoint_sha256", lambda model_id: "a" * 64)
     return tmp_path / "store"
+
+
+def _artifact(format_version=ARTIFACT_FORMAT):
+    """The smallest file a store hit is checked against: a meta block this package wrote."""
+    return {"__meta__": dict(make_meta("m", 8, 1, ["pre_mlp"], 10, provenance="self-generated"),
+                             format_version=format_version)}
 
 
 def _fake_build(calls, *, fail=False):
@@ -24,7 +32,7 @@ def _fake_build(calls, *, fail=False):
         corpus_path.with_name(corpus_path.name + ".manifest.json").write_text(json.dumps(manifest))
         if fail:
             raise MemoryError("fit ran out of host memory")
-        out_path.write_bytes(b"artifact")
+        torch.save(_artifact(), out_path)
         return out_path
     return build
 
@@ -40,7 +48,7 @@ def test_a_first_build_lands_in_the_entry_and_a_second_reuses_it(isolated_store,
     options = SelfGenOptions(n_raw=60)
     first, manifest = store.obtain_self_generated("Qwen/Qwen3-0.6B", options)
     assert first == store.entry_dir("Qwen/Qwen3-0.6B", "a" * 64, options) / "artifact.pt"
-    assert first.read_bytes() == b"artifact" and manifest["corpus_sha256"] == "e" * 64
+    assert first.is_file() and manifest["corpus_sha256"] == "e" * 64
     assert json.loads((first.parent / "entry.json").read_text())["model_id"] == "Qwen/Qwen3-0.6B"
     with caplog.at_level("INFO"):
         second, _ = store.obtain_self_generated("Qwen/Qwen3-0.6B", SelfGenOptions(n_raw=60,
@@ -215,3 +223,23 @@ def test_the_guard_file_is_not_listed_as_an_entry(isolated_store, monkeypatch):
     path, _ = store.obtain_self_generated("m", SelfGenOptions(n_raw=60))
     assert (isolated_store / ".store.lock").is_file()
     assert [row["path"] for row in store.list_store()] == [path.parent]
+
+
+def test_a_stored_artifact_in_a_format_this_release_does_not_read_is_refused_on_reuse(
+        isolated_store, monkeypatch):
+    """A store hit is checked before it is handed out: an entry written in another format (by a
+    later release, or before a downgrade) is refused naming the entry and `--rebuild`, and a
+    rebuild moves it aside and builds afresh."""
+    calls = []
+    monkeypatch.setattr(store, "build_artifact_self_generated", _fake_build(calls))
+    path, _ = store.obtain_self_generated("m", SelfGenOptions(n_raw=60))
+    torch.save(_artifact(ARTIFACT_FORMAT + 1), path)
+
+    with pytest.raises(ForeignArtifact) as refusal:
+        store.obtain_self_generated("m", SelfGenOptions(n_raw=60))
+    assert str(path.parent) in str(refusal.value) and "--rebuild" in str(refusal.value)
+    assert f"uses artifact format {ARTIFACT_FORMAT + 1}," in str(refusal.value)
+
+    rebuilt, _ = store.obtain_self_generated("m", SelfGenOptions(n_raw=60), rebuild=True)
+    assert rebuilt == path and len(calls) == 2
+    assert torch.load(rebuilt, weights_only=False)["__meta__"]["format_version"] == ARTIFACT_FORMAT

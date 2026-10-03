@@ -39,7 +39,14 @@ from ..corpus import load_corpus
 from ..merge import merge_stats
 from ..models import load_teacher, load_tokenizer
 from .fit import TorchGMM
-from .schema import META_KEY, load_artifact, parse_site_key, save_artifact, validate_against_model
+from .schema import (
+    ARTIFACT_FORMAT,
+    META_KEY,
+    load_artifact,
+    parse_site_key,
+    save_artifact,
+    validate_against_model,
+)
 
 __all__ = ["fit_domain_gmm", "extend_artifact", "gmm_site_keys", "require_site_counts"]
 
@@ -321,6 +328,8 @@ def extend_artifact(
     merged = merge_stats(base, domain_stats)
 
     meta = dict(base[META_KEY])
+    # The merged file is written in this release's layout, whatever format the base was read in.
+    meta["format_version"] = ARTIFACT_FORMAT
     meta["version"] = int(meta.get("version", 1)) + 1
     meta["extended_with"] = list(meta.get("extended_with", [])) + [Path(corpus_path).name]
     # Recomputed rather than carried, and per-site (the base count plus this round's `need`), so

@@ -262,6 +262,64 @@ def test_init_refuses_an_artifact_this_package_did_not_build_before_creating_any
     assert not (tmp_path / "ws").exists()
 
 
+@pytest.mark.parametrize("value", ["later", "1"], ids=["later-format", "not-an-integer"])
+def test_init_refuses_an_artifact_in_a_format_it_does_not_read_before_creating_anything(
+        tmp_path, base_dir, value):
+    """A file in a layout this release does not read (a later one, or a `format_version` that is
+    not an integer) is refused at the file route before the workspace directory exists."""
+    from lfa.artifact.schema import ARTIFACT_FORMAT
+
+    params = torch.load(TINY_ARTIFACT_PATH, map_location="cpu", weights_only=False)
+    params["__meta__"]["format_version"] = ARTIFACT_FORMAT + 1 if value == "later" else value
+    later = tmp_path / "later.pt"
+    torch.save(params, later)
+
+    with pytest.raises(ValueError, match=r"uses artifact format .*reads format "
+                                         rf"{ARTIFACT_FORMAT}:.*built with\.$"):
+        Workspace.init(tmp_path / "ws", str(base_dir), artifact=str(later))
+    assert not (tmp_path / "ws").exists()
+
+
+def test_init_accepts_an_artifact_written_before_the_format_was_recorded(tmp_path, base_dir):
+    """A meta with no `format_version` is format 1, the layout every release has written."""
+    params = torch.load(TINY_ARTIFACT_PATH, map_location="cpu", weights_only=False)
+    del params["__meta__"]["format_version"]
+    earlier = tmp_path / "earlier.pt"
+    torch.save(params, earlier)
+
+    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact=str(earlier))
+    assert (ws.path / "artifacts" / "v1.pt").is_file()
+
+
+def test_init_refuses_a_stored_artifact_in_a_format_it_does_not_read_and_leaves_no_workspace(
+        tmp_path, base_dir, monkeypatch):
+    """A store hit is checked at `init`, not first at `train`: an entry in a format this release
+    does not read is refused naming `--rebuild`, and no workspace is left behind."""
+    import lfa.artifact.store as store_module
+    from lfa.artifact.schema import ARTIFACT_FORMAT, ForeignArtifact
+    from lfa.selfgen.artifact_corpus import SelfGenOptions
+
+    monkeypatch.setenv("LFA_ARTIFACT_STORE", str(tmp_path / "store"))
+    monkeypatch.setattr(store_module, "checkpoint_sha256", lambda m: "a" * 64)
+
+    def never(*_, **__):
+        raise AssertionError("a store hit must not build")
+    monkeypatch.setattr(store_module, "build_artifact_self_generated", never)
+
+    entry = store_module.entry_dir(str(base_dir), "a" * 64, SelfGenOptions())
+    entry.mkdir(parents=True)
+    params = torch.load(TINY_ARTIFACT_PATH, map_location="cpu", weights_only=False)
+    params["__meta__"]["format_version"] = ARTIFACT_FORMAT + 1
+    torch.save(params, entry / "artifact.pt")
+    (entry / "corpus.jsonl").write_text('{"text": "x"}\n')
+    (entry / "corpus.jsonl.manifest.json").write_text(json.dumps({"corpus_sha256": "e" * 64}))
+
+    with pytest.raises(ForeignArtifact, match=r"uses artifact format .*--rebuild"):
+        Workspace.init(tmp_path / "ws", str(base_dir), artifact="self-generated")
+    assert not (tmp_path / "ws").exists()
+    assert (entry / "artifact.pt").is_file()                  # the store entry is left as it was
+
+
 def test_re_initialising_a_workspace_names_a_command_a_cli_user_can_run(tmp_path, base_dir):
     """The refusal used to offer `Workspace.open(path)` -- a Python call -- to a CLI user."""
     new_workspace(tmp_path, base_dir)

@@ -185,12 +185,18 @@ the existing adapter, and both are small enough that the artifact build and a λ
 
 ## Can I bring an artifact built somewhere else?
 
-No. The package reads only p(h) artifacts it built itself: `lfa init --artifact self-generated`,
-`lfa build-artifact` (`--self-generated`, or `--corpus` for real text), and what `extend` and
-`regenerate-artifact` write from those — so another workspace's `artifacts/v1.pt` is fine. Every
-one of them carries a `__meta__` block saying `built_with: lfa-anchoring`, with diagonal mixture
-heads; a file without that block, naming another builder, or carrying another kind of head is
-refused before anything is created or loaded.
+Only if lfa-anchoring built it. The package reads only p(h) artifacts it built itself: `lfa init
+--artifact self-generated`, `lfa build-artifact` (`--self-generated`, or `--corpus` for real text),
+and what `extend` and `regenerate-artifact` write from those — so another workspace's
+`artifacts/v1.pt` is fine, and so is one someone else built with their own copy of the package.
+Every one of them carries a `__meta__` block saying `built_with: lfa-anchoring`, with diagonal
+mixture heads; a file without that block, naming another builder, or carrying another kind of head
+is refused before anything is created or loaded.
+
+One built with an earlier release works too, as long as it has the same format: the stored layout,
+recorded as `format_version` (a file without `format_version` is format 1; see
+[the artifact](the-artifact.md#sharing-and-keeping-artifacts)). A release that changes the layout
+refuses older files with a sentence saying so; build the artifact again with the release you have.
 
 ## Where is the corpus the paper used?
 

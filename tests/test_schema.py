@@ -107,3 +107,63 @@ def test_the_refusal_names_who_built_a_foreign_file(tiny_artifact, tmp_path):
     torch.save(_built_with(params, "research code"), path)
     with pytest.raises(ValueError, match="'research code'"):
         load_artifact(path)
+
+
+# ------------------------------------------------------------------ the artifact format version
+# `format_version` names the stored layout. An artifact is read by every copy and every release of
+# this package that reads its format; a file with no `format_version` predates the field and is
+# format 1, which is the layout every release has written.
+
+def test_make_meta_records_the_artifact_format():
+    from lfa.artifact import ARTIFACT_FORMAT as exported
+    from lfa.artifact.schema import ARTIFACT_FORMAT, SUPPORTED_ARTIFACT_FORMATS
+
+    assert exported == ARTIFACT_FORMAT == 1
+    assert ARTIFACT_FORMAT in SUPPORTED_ARTIFACT_FORMATS
+    assert make_meta("m", 8, 2, ["pre_mlp"], 100)["format_version"] == ARTIFACT_FORMAT
+
+
+def _with_format(params, value):
+    return dict(params, __meta__=dict(params["__meta__"], format_version=value))
+
+
+def test_a_meta_with_no_format_version_is_format_1_and_loads(tiny_artifact, tmp_path):
+    params, _ = tiny_artifact
+    meta = {key: value for key, value in params["__meta__"].items() if key != "format_version"}
+    path = tmp_path / "earlier.pt"
+    torch.save(dict(params, __meta__=meta), path)
+    assert "format_version" not in load_artifact(path)["__meta__"]    # read as is, not rewritten
+
+
+_NEXT_FORMAT = object()     # ARTIFACT_FORMAT + 1, resolved inside the test
+
+
+@pytest.mark.parametrize("value, shown", [(_NEXT_FORMAT, None), ("1", "'1'"), (1.0, "1.0"),
+                                          (True, "True"), (None, "None")],
+                         ids=["next-integer", "string", "float", "bool", "none"])
+def test_an_unknown_format_is_refused_naming_both_formats(tiny_artifact, tmp_path, value, shown):
+    """A later layout, or a value that is not an integer at all, is refused rather than misread:
+    one sentence naming both formats and ending in what to do."""
+    from lfa.artifact.schema import ARTIFACT_FORMAT, ForeignArtifact
+
+    params, _ = tiny_artifact
+    if value is _NEXT_FORMAT:
+        value = ARTIFACT_FORMAT + 1
+        shown = str(value)
+    path = tmp_path / "later.pt"
+    torch.save(_with_format(params, value), path)
+    with pytest.raises(ForeignArtifact) as refusal:
+        load_artifact(path)
+    message = str(refusal.value)
+    assert f"uses artifact format {shown}," in message
+    assert f"reads format {ARTIFACT_FORMAT}:" in message
+    assert "--artifact self-generated --rebuild" in message and "lfa build-artifact" in message
+    assert message.endswith("or use the lfa-anchoring release it was built with.")
+    assert "\n" not in message
+
+
+def test_lfa_version_is_a_record_and_never_checked(tiny_artifact, tmp_path):
+    params, _ = tiny_artifact
+    path = tmp_path / "other_release.pt"
+    torch.save(dict(params, __meta__=dict(params["__meta__"], lfa_version="0.0.1")), path)
+    assert load_artifact(path)["__meta__"]["lfa_version"] == "0.0.1"
