@@ -254,7 +254,7 @@ def _probe_artifact(args) -> int:
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(json.dumps(report.to_json(), indent=1) + "\n", encoding="utf-8")
         print(f"Wrote {output}")
-    # A report, not a verdict: the exit status is 0 whether or not an alarm fired.
+    # A report, not a verdict: the exit status says only that the measurement ran.
     return 0
 
 
@@ -518,19 +518,17 @@ def build_parser() -> argparse.ArgumentParser:
     # ------------------------------------------------------------------------- probe-artifact
     probe = subcommands.add_parser(
         "probe-artifact",
-        help="price real update directions under an artifact against real activations: a "
-             "minutes-long smoke alarm for a broken artifact, not a measure of what training "
-             "against it preserves",
+        help="report how an artifact prices real update directions against real activations "
+             "(numbers, no verdict)",
         description="Prices the update directions of trained LoRA adapters (and random ones "
                     "matched to them) under the artifact's samples and under real WikiText-2 "
-                    "activations, per site. Reports LEVEL (uniform mis-scaling, which lambda "
-                    "absorbs) and SHAPE (direction-dependent mispricing, which it does not) for "
-                    "the artifact and for a diagonal reference (the real activations with "
-                    "every correlation removed), against a real-vs-real floor. The alarm fires "
-                    "for a site class whose median artifact SHAPE is at or above the diagonal "
-                    "reference's. It detects gross failures only (a collapsed or degenerate "
-                    "artifact) and does not grade near-misses; a scale or layer error shows in "
-                    "LEVEL, not SHAPE. Exit status 0 either way.")
+                    "activations, per site, beside a real-vs-real floor and a diagonal "
+                    "reference (the real activations with every correlation removed). Reports "
+                    "LEVEL (uniform mis-scaling, which lambda absorbs) and SHAPE "
+                    "(direction-dependent mispricing, which it does not). It gives no verdict: "
+                    "read a new model's numbers against those recorded for a model known to "
+                    "work. A collapsed artifact shows as SHAPE many times those; a scale or "
+                    "layer error shows in LEVEL. The numbers depend on the adapters used.")
     probe.add_argument("--model", required=True, metavar="ID",
                        help="the model the artifact describes: a Hub id or a local checkpoint "
                             "path (loaded in float32)")
@@ -538,10 +536,10 @@ def build_parser() -> argparse.ArgumentParser:
                        help="an artifact file, or a workspace directory (its current artifact)")
     probe.add_argument("--adapter", required=True, action="append", metavar="DIR",
                        help="a saved PEFT adapter trained on --model, from an unanchored run "
-                            "(lambda 0): an adapter trained anchored against an artifact is "
-                            "biased toward directions that artifact underprices, and the alarm "
-                            "is not evaluated for it. Its deltas are the update directions "
-                            "priced. Repeat for more")
+                            "(lambda 0): an adapter trained anchored against an artifact moves "
+                            "into directions that artifact underprices and makes it look worse "
+                            "than it is. Its deltas are the update directions priced. Repeat "
+                            "for more; more adapters steady the medians")
     probe.add_argument("--layers", type=_layer_list, metavar="0,7,...",
                        help="layers to probe (default: five evenly spaced, first and last "
                             "included)")

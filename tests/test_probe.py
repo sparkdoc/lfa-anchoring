@@ -101,7 +101,7 @@ def adapter_dir(probe_model, base_dir, tmp_path_factory):
 def adapter_dirs(probe_model, base_dir, adapter_dir, tmp_path_factory):
     """Four adapters. On a 32-wide model a random rank-32 witness is close to isotropic, so every
     random witness prices alike under any distribution; the low-rank real deltas are the
-    witnesses that tell distributions apart, and the alarm tests want several of them."""
+    witnesses that tell distributions apart, and the floor-versus-diagonal test wants several."""
     root = tmp_path_factory.mktemp("adapters")
     return [adapter_dir[0]] + [_save_adapter(probe_model[0], base_dir, root / f"run{seed}", seed)[0]
                                for seed in (4, 5, 6)]
@@ -369,8 +369,6 @@ def test_an_attention_only_adapter_leaves_the_mlp_class_named_as_not_probed(
     table = report.format_table()
     assert "mlp     not probed" in table
     assert "1_pre_mlp: no adapter trains its projections" in table
-    quiet = ProbeReport(report.sites, report.summary, [], report.settings).format_table()
-    assert "No alarm at the probed classes (linear):" in quiet
 
 
 # --------------------------------------------------------------- witnesses' training history
@@ -387,63 +385,69 @@ def _run_dir(adapter_dir, root, **lambdas):
     return root / "final_model"
 
 
-def test_an_anchored_adapter_reports_numbers_but_does_not_evaluate_the_alarm(
+def test_an_anchored_adapter_is_reported_with_a_note_that_its_numbers_are_biased(
         probe_model, tiny_artifact, adapter_dir, tokens, tmp_path):
     model, tokenizer = probe_model
     anchored = _run_dir(adapter_dir[0], tmp_path / "anchored", lambda_qkv=1e5, lambda_mlp=1e5)
     report = _run(model, tokenizer, tiny_artifact[1], anchored, tokens, n_real=1024,
                   n_model=1024)
 
-    assert report.alarms is None
     assert report.summary and all(math.isfinite(row["artifact_shape"])
                                   for row in report.sites.values())
     data = report.to_json()
-    assert data["alarms"] is None
     (history,) = data["settings"]["witness_training"]
     assert history["training"] == "anchored"
     assert (history["lambda_qkv"], history["lambda_mlp"]) == (1e5, 1e5)
     assert history["config"].endswith("config.json")
-    (note,) = report.notes
-    assert note.startswith("alarm not evaluated: adapter")
-    assert "lambda_qkv=100000, lambda_mlp=100000" in note
-    table = report.format_table()
-    assert "alarm not evaluated" in table and "No alarm" not in table and "ALARM:" not in table
+    (note,) = data["notes"]
+    assert "was trained anchored (lambda_qkv=100000, lambda_mlp=100000)" in note
+    assert "biased" in note and "unanchored run (lambda 0)" in note
+    assert f"NOTE: {note}" in report.format_table()
 
 
-def test_an_unanchored_adapter_evaluates_the_alarm_without_a_caveat(
-        probe_model, tiny_artifact, adapter_dir, tokens, tmp_path):
+def test_an_unanchored_adapter_carries_no_note(probe_model, tiny_artifact, adapter_dir, tokens,
+                                               tmp_path):
     model, tokenizer = probe_model
     unanchored = _run_dir(adapter_dir[0], tmp_path / "control", lambda_qkv=0.0, lambda_mlp=0.0)
     report = _run(model, tokenizer, tiny_artifact[1], unanchored, tokens, n_real=1024,
                   n_model=1024)
 
-    assert report.alarms is not None
     assert report.notes == []
     assert report.settings["witness_training"][0]["training"] == "unanchored"
+    assert "NOTE:" not in report.format_table()
 
 
-def test_an_adapter_with_no_history_evaluates_the_alarm_with_a_caveat(
-        probe_model, tiny_artifact, adapter_dir, tokens, tmp_path):
+def test_an_adapter_with_no_history_carries_a_caveat(probe_model, tiny_artifact, adapter_dir,
+                                                     tokens, tmp_path):
     model, tokenizer = probe_model
     bare = _run_dir(adapter_dir[0], tmp_path / "bare")
     report = _run(model, tokenizer, tiny_artifact[1], bare, tokens, n_real=1024, n_model=1024)
 
-    assert report.alarms is not None
     assert report.settings["witness_training"][0]["training"] == "unknown"
     (note,) = report.notes
-    assert note.startswith("caveat: the witnesses must come from an unanchored run")
+    assert note.startswith("caveat: the witnesses should come from an unanchored run")
     assert f"NOTE: {note}" in report.format_table()
 
 
-def test_one_anchored_adapter_among_unanchored_ones_stops_the_alarm(tmp_path, adapter_dir):
+def test_mixed_adapters_get_one_note_per_anchored_one_and_one_caveat(tmp_path, adapter_dir):
     unanchored = _run_dir(adapter_dir[0], tmp_path / "a", lambda_qkv=0.0, lambda_mlp=0.0)
     anchored = _run_dir(adapter_dir[0], tmp_path / "b", lambda_qkv=0.0, lambda_mlp=50.0)
-    histories = [probe.adapter_training(unanchored), probe.adapter_training(anchored)]
-    evaluate, notes = probe._witness_notes(histories)
-    assert not evaluate and len(notes) == 1 and str(anchored) in notes[0]
+    bare = _run_dir(adapter_dir[0], tmp_path / "c")
+    notes = probe.witness_notes([probe.adapter_training(path)
+                                 for path in (unanchored, anchored, bare)])
+    assert len(notes) == 2
+    assert str(anchored) in notes[0] and "lambda_mlp=50" in notes[0]
+    assert notes[1].startswith("caveat:") and str(bare) in notes[1]
+    assert str(unanchored) not in "".join(notes)
 
 
-# ------------------------------------------------------------------------------- 7. the alarm
+def test_an_adapter_given_as_dot_still_finds_its_runs_config(tmp_path, adapter_dir, monkeypatch):
+    final = _run_dir(adapter_dir[0], tmp_path / "run", lambda_qkv=1e5, lambda_mlp=1e5)
+    monkeypatch.chdir(final)
+    assert probe.adapter_training(".")["training"] == "anchored"
+
+
+# ---------------------------------------------------------- 7. floor and diagonal reference
 
 def _stub_sampler(monkeypatch, activations, transform):
     """Replace the probe's Sampler by one serving ``transform(real floor half)`` for each site."""
@@ -463,45 +467,21 @@ def _real_activations(model, tokens):
     return probe.collect_activations(model, adapter, tokens, sites, N_REAL, SEQ_LEN)
 
 
-def test_the_alarm_does_not_fire_on_real_activations(monkeypatch, probe_model, tiny_artifact,
-                                                     adapter_dirs, tokens):
+def test_real_activations_price_at_the_floor_below_the_diagonal_reference(
+        monkeypatch, probe_model, tiny_artifact, adapter_dirs, tokens):
     model, tokenizer = probe_model
     _stub_sampler(monkeypatch, _real_activations(model, tokens), lambda floor: floor)
     report = _run(model, tokenizer, tiny_artifact[1], adapter_dirs, tokens)
-    assert report.alarms == []
     for row in report.sites.values():                      # the artifact IS the floor half
         assert row["artifact_shape"] == pytest.approx(row["floor_shape"], rel=1e-6, abs=1e-9)
     for row in report.summary.values():
-        assert row["artifact_shape"] < row["diagonal_shape"]
-
-
-def _inflated_diagonal(floor):
-    """Real activations decorrelated, each column's spread about its mean inflated 1x to 100x.
-
-    A uniform inflation would be mostly LEVEL, which lambda absorbs; inflating the columns by
-    different factors makes the mispricing depend on which features a direction reads.
-    """
-    g = torch.Generator().manual_seed(11)
-    shuffled = decorrelate(floor, g)
-    mean = floor.mean(dim=0, keepdim=True)
-    spread = 10.0 ** (2.0 * torch.rand(floor.shape[1], generator=g))
-    return mean + spread * (shuffled - mean)
+        assert row["floor_shape"] < row["diagonal_shape"]
+    assert "diagonal reference" in report.format_table()
 
 
 def _point_mass(floor):
-    """Every row the real mean: no spread at all (mostly a LEVEL error on these witnesses)."""
+    """Every row the real mean: no spread at all."""
     return floor.mean(dim=0, keepdim=True).expand(N_MODEL, -1).clone()
-
-
-def test_the_alarm_fires_on_an_artifact_worse_than_the_diagonal_reference(
-        monkeypatch, probe_model, tiny_artifact, adapter_dirs, tokens):
-    model, tokenizer = probe_model
-    _stub_sampler(monkeypatch, _real_activations(model, tokens), _inflated_diagonal)
-    report = _run(model, tokenizer, tiny_artifact[1], adapter_dirs, tokens)
-    assert len(report.alarms) == 2
-    assert any(alarm.startswith("linear") for alarm in report.alarms)
-    assert any(alarm.startswith("mlp") for alarm in report.alarms)
-    assert "diagonal reference" in report.format_table()
 
 
 def test_the_diagonal_reference_does_not_depend_on_the_artifact(
@@ -515,13 +495,6 @@ def test_the_diagonal_reference_does_not_depend_on_the_artifact(
             assert broken.sites[key][field] == row[field]
 
 
-def test_the_alarm_compares_class_medians_with_greater_or_equal():
-    summary = {"linear": {"artifact_shape": 0.5, "diagonal_shape": 0.5},
-               "mlp": {"artifact_shape": 0.2, "diagonal_shape": 0.6}}
-    alarms = probe.alarms_for(summary)
-    assert len(alarms) == 1 and alarms[0].startswith("linear")
-
-
 def test_nothing_the_probe_prints_calls_an_artifact_valid_supported_or_passing(
         probe_model, tiny_artifact, adapter_dir, tokens, capsys):
     model, tokenizer = probe_model
@@ -529,7 +502,7 @@ def test_nothing_the_probe_prints_calls_an_artifact_valid_supported_or_passing(
                   n_model=1024)
     with pytest.raises(SystemExit):
         main(["probe-artifact", "--help"])
-    printed = (report.format_table() + "\n".join(report.alarms) + capsys.readouterr().out).lower()
+    printed = (report.format_table() + capsys.readouterr().out).lower()
     for word in ("valid", "supported", "passing", "passed"):
         assert word not in printed
 
@@ -557,7 +530,7 @@ def test_the_cli_writes_the_json_report(monkeypatch, base_dir, tiny_artifact, ad
                    "--device", "cpu", "--output", str(out)])
     assert status == 0
     report = json.loads(out.read_text())
-    assert set(report) >= {"sites", "summary", "alarms"}
+    assert set(report) == {"sites", "summary", "notes", "settings"}
     assert set(report["sites"]) == {"1_pre_qkv", "1_pre_o", "1_pre_mlp"}
     assert report["sites"]["1_pre_o"]["n_witnesses"] == 6     # 2 adapters x (1 real + 2 random)
     assert "pre_qkv" in capsys.readouterr().out
