@@ -27,3 +27,21 @@ def test_every_package_under_lfa_is_listed_for_the_wheel():
 
 def test_the_examples_are_still_installed_inside_the_package():
     assert "lfa.examples" in _packages()
+
+
+def test_the_published_artifact_list_ships_in_the_wheel_and_the_sdist():
+    """`lfa init` reads `lfa/artifact/published.json` on a store miss; a wheel without it would
+    fail every self-generated init."""
+    import fnmatch
+    config = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    package_data = config["tool"]["setuptools"]["package-data"]
+    target = REPO_ROOT / "lfa" / "artifact" / "published.json"
+    assert target.is_file()
+    covered = []
+    for package, globs in package_data.items():
+        package_dir = REPO_ROOT / package.replace(".", "/")
+        if target.is_relative_to(package_dir):
+            relative = target.relative_to(package_dir).as_posix()
+            covered += [pattern for pattern in globs if fnmatch.fnmatch(relative, pattern)]
+    assert covered, "pyproject.toml [tool.setuptools.package-data] leaves out published.json"
+    assert "lfa/artifact/published.json" in (REPO_ROOT / "MANIFEST.in").read_text()

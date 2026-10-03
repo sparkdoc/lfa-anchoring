@@ -363,17 +363,19 @@ class Workspace:
             artifact: ``"self-generated"`` or the path to an artifact file. ``"self-generated"``
                 has the model write its own corpus and fits p(h) on it
                 (:func:`lfa.artifact.build.build_artifact_self_generated`) -- a GPU job of about
-                3 h 40 min on an RTX 3090, not a cheap init. The build happens in the local store
-                (:mod:`lfa.artifact.store`), keyed on the checkpoint and the frame, so it is done
+                3 h 40 min on an RTX 3090, not a cheap init. The artifact lives in the local store
+                (:mod:`lfa.artifact.store`), keyed on the checkpoint and the frame, so it is made
                 once per model: a later init over the same model at the same frame copies the
                 finished artifact in, and a build that stopped part-way resumes where it
-                stopped. The corpus and its manifest are copied in beside it
-                (``artifacts/v1.corpus.jsonl``). A path must name an artifact this package built
-                -- another workspace's ``artifacts/v1.pt``, or the output of ``lfa
-                build-artifact`` -- and is copied as it is; a file whose meta says it was fitted
-                on the model's own text keeps that provenance. Either way the artifact ends up
-                at ``artifacts/v1.pt``, so the workspace carries its own p(h) and later versions
-                sit beside it.
+                stopped. On a store miss, an artifact published for exactly this model,
+                checkpoint and frame (pinned in the package, :mod:`lfa.artifact.published`) is
+                downloaded with its corpus and verified instead of built. The corpus and its
+                manifest are copied in beside it (``artifacts/v1.corpus.jsonl``). A path must
+                name an artifact this package built -- another workspace's ``artifacts/v1.pt``,
+                or the output of ``lfa build-artifact`` -- and is copied as it is; a file whose
+                meta says it was fitted on the model's own text keeps that provenance. Either
+                way the artifact ends up at ``artifacts/v1.pt``, so the workspace carries its
+                own p(h) and later versions sit beside it.
             recipe: the default recipe for this workspace -- a bundled name or a path. When
                 omitted, a bundled recipe whose own ``model_id`` is this model is adopted; if
                 none is, every training call has to name one.
@@ -381,7 +383,7 @@ class Workspace:
                 :class:`~lfa.selfgen.artifact_corpus.SelfGenOptions`, the recorded frame);
                 ignored for a file.
             rebuild: with ``artifact="self-generated"``, move the store's matching entry aside
-                and build afresh (the old entry is kept, not deleted).
+                and build afresh, here (the old entry is kept, not deleted); never downloads.
 
         Raises:
             FileExistsError: ``path`` already holds a workspace.
@@ -391,8 +393,11 @@ class Workspace:
                 build (no meta block, one naming another builder, or a mixture head that is not
                 diagonal), or an artifact format this release does not read -- a file, or the
                 store's matching entry (``rebuild`` builds that afresh).
-            lfa.artifact.store.StoreLocked: another process is already building the same
-                self-generated artifact.
+            lfa.artifact.store.StoreLocked: another process is already building or
+                downloading the same self-generated artifact.
+            lfa.artifact.published.PublishedArtifactUnavailable: the published artifact for this
+                model and frame could not be downloaded or failed verification (``rebuild``
+                builds it here instead).
         """
         path = Path(path)
         if (path / WORKSPACE_FILE).exists():

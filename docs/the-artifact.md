@@ -1,10 +1,12 @@
 # The p(h) artifact
 
 The artifact is the only part of LFA that is not data-free: it is fitted once on text, and every
-adaptation afterwards samples hidden states from it instead of from text. This package builds it
-from text the model writes itself, so nothing is downloaded. You build one per **model**
+adaptation afterwards samples hidden states from it instead of from text. This package fits it on
+text the model writes itself, so no dataset is downloaded. It is made once per **model**
 ([model-integration-cookbook.md](model-integration-cookbook.md) for a model that is not Qwen3), not per domain — a new
-domain is what [`lfa extend`](multi-domain-chains.md) is for.
+domain is what [`lfa extend`](multi-domain-chains.md) is for — and once made it can be published:
+when this package pins a published artifact for your model and frame, `lfa init` downloads and
+verifies it instead of building ([below](#published-artifacts)).
 
 ## The self-generated artifact
 
@@ -13,9 +15,10 @@ lfa init runs/my_domain --model Qwen/Qwen3-0.6B --artifact self-generated
 lfa build-artifact --model Qwen/Qwen3-0.6B --self-generated --out artifacts/selfgen.pt
 ```
 
-The first builds into the local store and copies the result into a new workspace; the second
-builds a file at a path of your choosing, outside the store ([below](#a-file-outside-the-store)).
-Both write the same artifact at the same frame.
+The first puts the artifact in the local store — downloading a [published](#published-artifacts)
+one when the package pins one for this model and frame, building it otherwise — and copies it into
+a new workspace; the second always builds, to a path of your choosing, outside the store
+([below](#a-file-outside-the-store)). Both give the same artifact at the same frame.
 
 ### The frame
 
@@ -78,7 +81,8 @@ About 3 h 40 min for the full frame from a cold store, on one RTX 3090 (24 GB, 2
 110.3 MB, and the store entry, with its corpus, 126 MB. An 8 GB card has not been measured at this
 frame; [faq.md](faq.md#how-long-does-self-generation-take) has the smaller pieces timed on one.
 The generation survives an interruption ([below](#durability-and-resume)), so hours already spent
-are not lost.
+are not lost. A [published artifact](#published-artifacts) costs only its download: the artifact
+file, its corpus and the manifest.
 
 The GPU side is otherwise undemanding — the model is loaded in **float32** for the fit,
 deliberately: the artifact is a second-moment estimate and bf16's 8-bit mantissa is a large error
@@ -147,16 +151,17 @@ self-generated corpus: <n>/2500 documents (<e> empty)
 
 ### The store
 
-`lfa init --artifact self-generated` builds in the local store: `~/.cache/lfa/artifacts`, or
-`$LFA_ARTIFACT_STORE` when it is set. An entry is a directory named for the model, its checkpoint
-and the frame,
+`lfa init --artifact self-generated` keeps its artifacts in the local store:
+`~/.cache/lfa/artifacts`, or `$LFA_ARTIFACT_STORE` when it is set. An entry is a directory named
+for the model, its checkpoint and the frame,
 
 ```
 <model-slug>-<writer_sha256[:12]>-<frame_sha256[:12]>/
     artifact.pt
     corpus.jsonl  corpus.jsonl.manifest.json
-    entry.json                                     # model id, frame, documents asked for
+    entry.json            # model id, frame, documents asked for, provenance (built or published)
     corpus.jsonl.partial  corpus.jsonl.progress.json  .lock    # only while a build runs
+    artifact.partial.pt  *.download  .lock                     # only while a download runs
 ```
 
 `writer_sha256` hashes the checkpoint's weights, so an entry follows the model's weights rather
@@ -168,14 +173,18 @@ the layer group). A trial build is therefore its own entry and never stands in f
 What `init` does with the entry:
 
 * **finished**: copies `artifact.pt` in as `artifacts/v1.pt`, with the corpus and manifest beside
-  it, and logs `Reused the self-generated artifact built <date> from <entry>`;
+  it, and logs `Reused the self-generated artifact built <date> from <entry>` (`downloaded <date>
+  into <entry>` for a published one);
+* **not finished, and the package pins a published artifact for this model, checkpoint and
+  frame**: downloads and verifies it ([below](#published-artifacts)), then copies it in;
 * **a complete corpus but no artifact** (an earlier fit failed): fits, then copies in;
 * **a partial corpus**: resumes generation, fits, copies in;
 * **nothing**: builds into the store, then copies in.
 
 `lfa list-artifacts` prints one line per entry: the model, the frame (documents × tokens, K), its
-state — `built <date>` for a finished entry, otherwise `corpus complete, not fitted` or
-`in progress: n/N documents` — its size on disk and its path.
+state — `built <date>` for an entry built here, `published, downloaded <date>` for a downloaded
+one, otherwise `corpus complete, not fitted` or `in progress: n/N documents` — its size on disk
+and its path.
 
 **Locking.** A build holds `<entry>/.lock`, which records its process id. A second build of the
 same entry — the same `lfa init` in another terminal — is refused with a message naming the lock
@@ -183,10 +192,66 @@ and that process, and saying to run the same command again once it has finished.
 process is no longer running is taken over with a warning, and that build resumes. The store root
 also holds `.store.lock`, which only serialises taking a lock.
 
-**`--rebuild`** builds afresh even when the store has a match. The existing entry is moved aside to
-`<entry>.replaced-<timestamp>/` — never deleted — and `lfa list-artifacts` leaves moved-aside
-entries out. It is refused while a live build holds the entry. Delete a moved-aside directory
-yourself when you no longer want it.
+**`--rebuild`** builds afresh, here, even when the store has a match, and never downloads. The
+existing entry is moved aside to `<entry>.replaced-<timestamp>/` — never deleted — and
+`lfa list-artifacts` leaves moved-aside entries out. It is refused while a live build holds the
+entry. Delete a moved-aside directory yourself when you no longer want it.
+
+### Published artifacts
+
+An artifact is made once per model and frame, so one that has been made can be published and
+fetched instead of built again. On a store miss, `lfa init --artifact self-generated` looks the
+model up in the list of published artifacts pinned in the package, `lfa/artifact/published.json`.
+A pin names exactly what the store keys an entry on — `model_id` (the Hub id, as you pass it to
+`--model`), the checkpoint's `writer_sha256` and the `frame_sha256` — and the entry's three files,
+each by URL, sha256 of the file and size in bytes:
+
+| file | URL | sha256 of the file | size |
+|---|---|---|---|
+| `artifact.pt` | `artifact_url` | `artifact_file_sha256` | `artifact_size_bytes` |
+| `corpus.jsonl` | `corpus_url` | `corpus_file_sha256` | `corpus_size_bytes` |
+| `corpus.jsonl.manifest.json` | `manifest_url` | `manifest_file_sha256` | `manifest_size_bytes` |
+
+A `*_file_sha256` hashes the file's bytes. It is not the `corpus_sha256` that the artifact's meta
+and the manifest record, which hashes the corpus rows' text (what the build computes, and what the
+workspace's artifact id is made from). Which models have a pin is that file in the release you
+have installed; a model with no pin there is built.
+
+On a match, `init` downloads the three files into the store entry under temporary names
+(`artifact.partial.pt`, `corpus.jsonl.download`, `corpus.jsonl.manifest.json.download`), holding
+the entry's lock as a build does and logging the artifact's progress every 10 %. It accepts them
+only when
+
+* each file's size and sha256 are the pinned ones;
+* the artifact loads as one this release reads — the same check a stored entry passes
+  (`built_with: lfa-anchoring`, a `format_version` this release reads, diagonal mixture heads);
+* its meta says `provenance: "self-generated"`, names the model, carries the frame asked for as
+  `selfgen_frame`, and names a corpus as `corpus_sha256`;
+* the corpus rows hash, as the build hashes them, to that `corpus_sha256`;
+* the manifest records the same `corpus_sha256`, the pinned `writer_sha256` and model, and the
+  frame asked for.
+
+Then the corpus and its manifest are renamed into place, and `artifact.pt` last, so an
+`artifact.pt` in an entry always means a complete one. `entry.json` records
+`provenance: "published"` with each file's URL and file sha256. The entry now has exactly a built
+entry's layout and is reused exactly as one: the workspace gets `artifacts/v1.pt` with
+`v1.corpus.jsonl` and its manifest beside it, and records the artifact as
+`self-generated:<corpus sha256[:12]>`.
+
+Nothing is fetched for a different model id (a local path to the same weights included), a
+different snapshot of the weights (another `writer_sha256`), or a different frame (a trial build's
+`--n-raw 60`, say): those are built. An unfinished local build in the entry is moved aside to
+`<entry>.replaced-<timestamp>/` before the download; a build or download of the same entry still
+running in another process is refused, as a second build is.
+
+A download that fails — the network, an HTTP error, a timeout (60 s without data), a file cut
+short, a size or sha256 that is not the pinned one, a file that fails any check above — is
+refused in one line naming the URL and what failed. Nothing is kept: the temporary files are
+removed, and so is the entry directory when nothing else is in it. `init` never falls back to an
+hours-long build on its own: run the same command again to retry, or pass `--rebuild` to build
+the artifact here instead (hours on one GPU). An interrupted download is discarded the same way,
+and the same command starts it again. The download honours `HTTPS_PROXY` and `NO_PROXY` from the
+environment.
 
 ### Reusing a file
 
@@ -257,7 +322,8 @@ from before `format_version` was recorded is format 1. A release that changes th
 format and says so in its changelog, and then refuses a file in a format it does not read with a
 sentence naming both formats and how to build the artifact again. The store is checked the same
 way: a matching entry in a format this release does not read is refused at `lfa init`, naming the
-entry, and `--rebuild` builds it afresh.
+entry, and `--rebuild` builds it afresh. A [published artifact](#published-artifacts) is checked
+the same way again after its download.
 
 ## Advanced: an artifact fitted on real text
 

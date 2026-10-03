@@ -63,7 +63,7 @@ On an 8 GB card, set the recipe's batch geometry before the first `train`:
 ## 1. Build (or reuse) the artifact
 
 The anchor samples hidden states from a fitted p(h) artifact, so a workspace needs one before its
-first stage. The model writes it:
+first stage. The model writes it, or, when one has been published for it, `init` downloads it:
 
 ```bash
 lfa init runs/my_domain --model Qwen/Qwen3-0.6B --artifact self-generated
@@ -88,6 +88,17 @@ artifact built <date> from <store path>`. `lfa list-artifacts` shows what the st
 model, the frame (documents × tokens, K), the date it was built, its size and its path, or how far
 an unfinished build got.
 
+**When one has been published.** On a store miss, `init` first looks the model up in the list of
+published artifacts pinned in the package. If there is one for exactly this model id, checkpoint
+and frame, it is downloaded into the store with its corpus and manifest instead of built,
+verified (each file's size and sha256; that the artifact is one this release reads, for this model
+and frame; that the corpus is the one it was fitted on) and then used exactly as a built one. A
+download
+that fails or does not verify is refused in one line naming the URL; nothing is kept, and
+`--rebuild` builds the artifact here instead (hours on one GPU). Anything with no pin — another
+model, another snapshot of the weights, another frame — is built
+([the-artifact.md](the-artifact.md#published-artifacts)).
+
 **What it is worth.** On Qwen3-0.6B an artifact fitted on the model's own text at this frame
 matched an artifact fitted on real text at every λ tried, and was at least as good at the recipe's
 λ — one model, one seed, one domain. The bundled recipe is calibrated against it and says nothing.
@@ -104,8 +115,8 @@ documents (e empty)`. Each finished batch is on disk before the next starts, so:
   fitted`).
 * **The same build in two terminals**: the second refuses, naming the lock file and the process
   that holds it. A lock left by a process that is no longer running is taken over with a warning.
-* **`--rebuild`** builds afresh even when the store has a match. The old entry is moved aside to
-  `<entry>.replaced-<timestamp>/`, never deleted.
+* **`--rebuild`** builds afresh, here, even when the store has a match, and never downloads. The
+  old entry is moved aside to `<entry>.replaced-<timestamp>/`, never deleted.
 
 **Reusing a file.** `--artifact path/to/v1.pt` copies in an artifact this package built instead —
 another workspace's `artifacts/v1.pt`, or a file `lfa build-artifact` wrote (`--self-generated`, or

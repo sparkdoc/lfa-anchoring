@@ -49,7 +49,7 @@ and `Sampler.build_embedding_lookup_from_model` rebuilds the table at load time 
 stored).
 
 **Data-free at adaptation time, not at artifact-build time.** The artifact is built from a corpus
-(one the model wrote, so nothing is downloaded — but it is still text); what is data-free is every adaptation afterwards, and — in a chain — every *earlier
+(one the model wrote, so no dataset is downloaded — but it is still text); what is data-free is every adaptation afterwards, and — in a chain — every *earlier
 domain*, none of which is ever stored or replayed. Say it that way; the unqualified claim is not
 the one this method supports.
 

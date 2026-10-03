@@ -33,6 +33,7 @@ from pathlib import Path
 import torch
 
 from .artifact.build import build_artifact, build_artifact_self_generated
+from .artifact.published import PublishedArtifactUnavailable
 from .artifact.store import StoreLocked, list_store
 from .evaluate import DatasetUnavailable
 from .models import (
@@ -69,8 +70,9 @@ def _lfa_version() -> str:
 #: Every exception the library raises **at the user** rather than at a caller: a chain out of
 #: order, a workspace that is not there or is already there or is not ready for what was asked, a
 #: device map that would shard the model, an artifact build already running for the same model
-#: and frame, a dataset that cannot be reached (the seed corpus, or WikiText-2 for the general
-#: axis), a resume with no adapter to continue, a student with nothing trainable, and any value a
+#: and frame, a published artifact that could not be downloaded or verified, a dataset that
+#: cannot be reached (the seed corpus, or WikiText-2 for the general axis), a resume with no
+#: adapter to continue, a student with nothing trainable, and any value a
 #: recipe, a chain spec or a flag fails validation on -- a self-generated corpus written at
 #: another frame (:class:`~lfa.selfgen.artifact_corpus.CorpusFrameMismatch`) is one, and reaches
 #: the user as the ``ValueError`` it is. Each carries a message written to be read, so each is
@@ -81,9 +83,10 @@ def _lfa_version() -> str:
 #: raises ``RuntimeError`` for real faults -- a CUDA OOM, a shape mismatch -- and those must keep
 #: their traceback rather than be collapsed to a line.
 USER_FACING_ERRORS = (
-    StageOrderError, WorkspaceNotReady, ShardingRefused, StoreLocked, SourceUnavailable,
-    DatasetUnavailable, ResumeSourceHasNoAdapter, NoTrainableParameters, MissingExtra,
-    NoPairsWritten, DegenerateCorpus, FileNotFoundError, FileExistsError, ValueError,
+    StageOrderError, WorkspaceNotReady, ShardingRefused, StoreLocked,
+    PublishedArtifactUnavailable, SourceUnavailable, DatasetUnavailable, ResumeSourceHasNoAdapter,
+    NoTrainableParameters, MissingExtra, NoPairsWritten, DegenerateCorpus, FileNotFoundError,
+    FileExistsError, ValueError,
 )
 
 
@@ -138,17 +141,21 @@ def _list_artifacts(args) -> int:
     entries = list_store()
     if not entries:
         print("No self-generated artifacts in the store yet. `lfa init <workspace> --model <id> "
-              "--artifact self-generated` builds one and keeps it here for reuse.")
+              "--artifact self-generated` downloads the published one for that model and frame, "
+              "or builds one, and keeps it here for reuse.")
         return 0
     for entry in entries:
         frame = entry["frame"] or {}
         shape = (f"{frame.get('n_raw')} documents x {frame.get('max_new_tokens')} tokens, "
                  f"K={frame.get('gmm_k')}")
-        # A finished entry's state is "built", so it reads "built <date>"; an unfinished one has no
-        # date yet and shows its state alone ("in progress: n/N documents", ...).
+        # A finished entry's state is "built" or "published", so it reads "built <date>" or
+        # "published, downloaded <date>"; an unfinished one has no date yet and shows its state
+        # alone ("in progress: n/N documents", ...).
         state = entry["state"]
         if state == "built":
             state = f"built {entry['built_at'] or '-'}"
+        elif state == "published":
+            state = f"published, downloaded {entry['built_at'] or '-'}"
         print(f"{entry['model_id']}  {shape}  {state}  {entry['size_mb']} MB  {entry['path']}")
     return 0
 
@@ -325,12 +332,15 @@ def build_parser() -> argparse.ArgumentParser:
                       help="`self-generated` to have the model write its own corpus and fit "
                            "p(h) on it (about 3 h 40 min for Qwen3-0.6B on an RTX 3090, once per "
                            "model: it is kept in the local store, ~/.cache/lfa/artifacts or "
-                           "$LFA_ARTIFACT_STORE, and reused), or the path to an artifact this "
-                           "package built: another workspace's artifacts/v1.pt, or what "
-                           "`lfa build-artifact` wrote")
+                           "$LFA_ARTIFACT_STORE, and reused; when the store has none, a "
+                           "published artifact for this exact model and frame, pinned in the "
+                           "package, is downloaded and verified instead, and anything else is "
+                           "built), or the path to an artifact this package built: another "
+                           "workspace's artifacts/v1.pt, or what `lfa build-artifact` wrote")
     init.add_argument("--rebuild", action="store_true",
-                      help="with --artifact self-generated: build afresh even when the store "
-                           "has a matching artifact (the old entry is moved aside, not deleted)")
+                      help="with --artifact self-generated: build afresh here even when the "
+                           "store has a matching artifact (the old entry is moved aside, not "
+                           "deleted); never downloads a published one")
     init.add_argument("--recipe", metavar="NAME",
                       help="the workspace's default recipe: a bundled name or a path (default: "
                            "the bundled recipe that names this model, if there is one)")
@@ -349,7 +359,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     # -------------------------------------------------------------------------- list-artifacts
     listing = subcommands.add_parser(
-        "list-artifacts", help="show the self-generated artifacts in the local store")
+        "list-artifacts",
+        help="show the self-generated artifacts in the local store, built here or downloaded")
     listing.set_defaults(handler=_list_artifacts)
 
     # --------------------------------------------------------------------------------- train
@@ -629,7 +640,8 @@ def main(argv: list[str] | None = None) -> int:
               "same command plus --resume; one interrupted before its first checkpoint has "
               "nothing saved and can simply be started again. A self-generated artifact build "
               "resumes where it stopped when the same `lfa init` or `lfa build-artifact` "
-              "command is run again.", file=sys.stderr)
+              "command is run again, and an interrupted download of a published artifact "
+              "starts again.", file=sys.stderr)
         return 130
 
 

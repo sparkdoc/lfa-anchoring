@@ -49,7 +49,7 @@ packages = ["lfa", "lfa.adapters", "lfa.artifact", "lfa.selfgen", "lfa.examples"
 "lfa.examples" = "examples"
 
 [tool.setuptools.package-data]
-lfa = ["recipes/*.yaml"]
+lfa = ["recipes/*.yaml", "artifact/published.json"]
 "lfa.examples" = ["*.yaml", "*.ipynb"]
 
 [tool.pytest.ini_options]

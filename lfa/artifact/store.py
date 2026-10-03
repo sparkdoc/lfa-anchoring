@@ -7,12 +7,20 @@ the same frame copies the finished file in rather than building it again, and a 
 stopped part-way resumes in the same entry. ``$LFA_ARTIFACT_STORE`` moves it; the default is
 ``~/.cache/lfa/artifacts``.
 
+On a miss, an entry published for exactly this model id, checkpoint and frame -- pinned in the
+package (:mod:`lfa.artifact.published`) -- is downloaded and verified instead of built;
+``rebuild`` always builds here.
+
 An entry is a directory ``<model-slug>-<writer_sha256[:12]>-<frame_sha256[:12]>/`` holding
 ``artifact.pt``, ``corpus.jsonl`` and its manifest, and ``entry.json`` (model id, frame, documents
-asked for). While a build runs it also holds the durable writer's ``corpus.jsonl.partial`` and
-``corpus.jsonl.progress.json``, and ``.lock`` with the building process's pid: a second build of
-the same entry refuses rather than interleave its batches into the same corpus, and a lock whose
-process is gone is taken over with a warning.
+asked for, and ``provenance``: ``"built"`` here, or ``"published"`` with the URL and file sha256
+of each file it was downloaded from). While a build runs it also holds the durable writer's
+``corpus.jsonl.partial`` and ``corpus.jsonl.progress.json``, and ``.lock`` with the building
+process's pid: a second build of the same entry refuses rather than interleave its batches into
+the same corpus, and a lock whose process is gone is taken over with a warning. A download holds
+the same lock and writes ``artifact.partial.pt``, ``corpus.jsonl.download`` and
+``corpus.jsonl.manifest.json.download`` until all three are verified; ``artifact.pt`` is renamed
+into place last, so in an entry it always means a complete one.
 """
 
 from __future__ import annotations
@@ -37,6 +45,7 @@ from .. import __version__
 from ..selfgen.artifact_corpus import SelfGenOptions, frame_sha256, progress_path
 from ..selfgen.generate import checkpoint_sha256, generate_texts
 from .build import build_artifact_self_generated
+from .published import fetch_published, find_published, published_artifacts
 from .schema import require_own_artifact
 
 logger = logging.getLogger(__name__)
@@ -49,6 +58,8 @@ STORE_ENV = "LFA_ARTIFACT_STORE"
 _ARTIFACT = "artifact.pt"
 _PARTIAL_ARTIFACT = "artifact.partial.pt"
 _CORPUS = "corpus.jsonl"
+_MANIFEST = "corpus.jsonl.manifest.json"
+_DOWNLOAD = ".download"
 _ENTRY_JSON = "entry.json"
 _LOCK = ".lock"
 _REPLACED = ".replaced-"
@@ -93,10 +104,12 @@ def _manifest(corpus: Path) -> dict:
 
 
 def _write_entry_json(entry: Path, model_id: str, writer_sha256: str,
-                      options: SelfGenOptions) -> None:
+                      options: SelfGenOptions, published: dict | None = None) -> None:
+    """``published``: the download's record (URLs and file sha256s); ``None`` for a build."""
     record = {"model_id": model_id, "writer_sha256": writer_sha256,
               "frame": options.artifact_frame(), "asked": options.n_raw + options.n_chat,
-              "lfa_version": __version__}
+              "lfa_version": __version__,
+              "provenance": "published" if published else "built", **(published or {})}
     tmp = entry / f"{_ENTRY_JSON}.{os.getpid()}.tmp"
     tmp.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
     os.replace(tmp, entry / _ENTRY_JSON)
@@ -123,7 +136,13 @@ def _holder(lock: Path) -> int | None:
 
 
 def _locked(entry: Path, pid: int, then: str) -> StoreLocked:
-    return StoreLocked(f"{entry} is being built by process {pid} (lock {entry / _LOCK}). {then}")
+    return StoreLocked(f"{entry} is being built or downloaded by process {pid} (lock "
+                       f"{entry / _LOCK}). {then}")
+
+
+#: What a refused second build or download of an entry is told to do.
+_WAIT = ("Wait for it to finish, then run the same command again: it will reuse the finished "
+         "artifact.")
 
 
 @contextmanager
@@ -171,10 +190,10 @@ def _lock(entry: Path):
         except FileExistsError:
             pid = _holder(lock)
             if pid is not None and _alive(pid):
-                raise _locked(entry, pid, "Wait for it to finish, then run the same command "
-                              "again: it will reuse the finished artifact.") from None
+                raise _locked(entry, pid, _WAIT) from None
             logger.warning("Took over the stale lock %s: process %s, which held it, is no "
-                           "longer running. Its build resumes here.", lock, pid)
+                           "longer running. A build it left resumes here; a download starts "
+                           "again.", lock, pid)
             fd = os.open(lock, os.O_WRONLY | os.O_TRUNC)
         with os.fdopen(fd, "w") as handle:
             handle.write(str(os.getpid()))
@@ -184,12 +203,12 @@ def _lock(entry: Path):
         lock.unlink(missing_ok=True)
 
 
-def _move_aside(entry: Path) -> None:
+def _move_aside(entry: Path, then: str = "Wait for it to finish before rebuilding; nothing "
+                                          "was moved.") -> None:
     with _guard(entry.parent):
         pid = _holder(entry / _LOCK)
         if pid is not None and _alive(pid):
-            raise _locked(entry, pid, "Wait for it to finish before rebuilding; nothing was "
-                          "moved.")
+            raise _locked(entry, pid, then)
         stamp = time.strftime("%Y%m%d-%H%M%S")
         aside = entry.with_name(f"{entry.name}{_REPLACED}{stamp}")
         n = 1
@@ -200,41 +219,107 @@ def _move_aside(entry: Path) -> None:
     logger.info("Moved the previous store entry aside to %s", aside)
 
 
+def _record(entry: Path) -> dict:
+    try:
+        return json.loads((entry / _ENTRY_JSON).read_text())
+    except (FileNotFoundError, ValueError):
+        return {}
+
+
 def _reused(artifact: Path, corpus: Path) -> tuple[Path, dict]:
     # Checked before it is handed out, so an entry this release cannot read (one written in
     # another artifact format, by a later release or before a downgrade) is refused here, naming
     # the entry, rather than first at `train`.
     require_own_artifact(torch.load(artifact, map_location="cpu", weights_only=False),
                          f"The stored artifact {artifact}")
-    built = time.strftime("%Y-%m-%d", time.localtime(artifact.stat().st_mtime))
-    logger.info("Reused the self-generated artifact built %s from %s", built, artifact.parent)
+    when = time.strftime("%Y-%m-%d", time.localtime(artifact.stat().st_mtime))
+    if _record(artifact.parent).get("provenance") == "published":
+        logger.info("Reused the self-generated artifact downloaded %s into %s", when,
+                    artifact.parent)
+    else:
+        logger.info("Reused the self-generated artifact built %s from %s", when, artifact.parent)
     return artifact, _manifest(corpus)
 
 
+def _holds_a_build(entry: Path) -> bool:
+    """Whether ``entry`` holds anything of a local build (an empty directory does not)."""
+    return entry.is_dir() and any(path.name != _LOCK for path in entry.iterdir())
+
+
+def _fetch(entry: Path, pin: dict, model_id: str, writer_sha256: str,
+           options: SelfGenOptions) -> Path:
+    """Download ``pin``'s three files into ``entry`` (held under its lock), verify them, and
+    record the entry as published. ``artifact.pt`` is renamed into place last."""
+    final = {"manifest": entry / _MANIFEST, "corpus": entry / _CORPUS,
+             "artifact": entry / _ARTIFACT}
+    staged = {"manifest": entry / (_MANIFEST + _DOWNLOAD), "corpus": entry / (_CORPUS + _DOWNLOAD),
+              "artifact": entry / _PARTIAL_ARTIFACT}
+    try:
+        fetch_published(pin, staged, model_id, options)
+        published = {f"{name}_{field}": pin[f"{name}_{field}"] for name in final
+                     for field in ("url", "file_sha256")}
+        # Provenance first and the artifact last, so `artifact.pt` is never there without its
+        # corpus, its manifest and its provenance.
+        _write_entry_json(entry, model_id, writer_sha256, options, published)
+        for name in ("corpus", "manifest", "artifact"):
+            os.replace(staged[name], final[name])
+    except BaseException as error:
+        for path in (*staged.values(), final["corpus"], final["manifest"], entry / _ENTRY_JSON):
+            path.unlink(missing_ok=True)
+        if isinstance(error, KeyboardInterrupt):
+            logger.info("Interrupted: the download into %s was discarded, and running the same "
+                        "`lfa init` command again starts it again.", entry)
+        raise
+    logger.info("Published self-generated artifact stored at %s", final["artifact"])
+    return final["artifact"]
+
+
+def _remove_if_empty(entry: Path) -> None:
+    """Remove ``entry`` when nothing is in it: what a refused download leaves behind."""
+    with _guard(entry.parent):       # an empty entry under the guard is held by no one
+        try:
+            entry.rmdir()
+        except OSError:              # not empty (another process took it), or already gone
+            pass
+
+
 def obtain_self_generated(model_id: str, options: SelfGenOptions, *, rebuild: bool = False,
-                          generate=generate_texts, writer=None) -> tuple[Path, dict]:
-    """The store's artifact for this checkpoint at this frame, built into the store if needed.
+                          generate=generate_texts, writer=None,
+                          published: list[dict] | None = None) -> tuple[Path, dict]:
+    """The store's artifact for this checkpoint at this frame, fetched or built if needed.
 
     A finished entry is returned as it is, once it is known to be one this release reads
-    (:func:`~lfa.artifact.schema.require_own_artifact`). Otherwise the build runs in the entry
-    under its lock: a partial corpus resumes at its next batch, a complete corpus whose fit failed
-    is fitted without generating again (the durable writer, :func:`write_artifact_corpus`, does
-    both), and an empty entry is built from scratch. The artifact is written as
-    ``artifact.partial.pt`` and renamed only once complete, so ``artifact.pt`` in an entry always
-    means a finished build.
+    (:func:`~lfa.artifact.schema.require_own_artifact`). On a miss, an artifact published for
+    exactly this model id, checkpoint sha256 and frame (:mod:`lfa.artifact.published`) is
+    downloaded into the entry under its lock -- the artifact, its corpus and the manifest -- and
+    verified (each file's size and sha256, the format contract, a meta block naming this model and
+    frame, the corpus hashing to the meta's ``corpus_sha256``, a manifest that agrees) before
+    ``artifact.pt`` is renamed into place; a download that fails
+    any of that is refused, and nothing is left in the store. An unfinished local build in the
+    entry is first moved aside, as ``rebuild`` moves an entry.
+
+    With no published artifact for it, the build runs in the entry under its lock: a partial
+    corpus resumes at its next batch, a complete corpus whose fit failed is fitted without
+    generating again (the durable writer, :func:`write_artifact_corpus`, does both), and an empty
+    entry is built from scratch. The artifact is written as ``artifact.partial.pt`` and renamed
+    only once complete, so ``artifact.pt`` in an entry always means a finished artifact.
 
     Args:
         rebuild: move any existing entry aside to ``<entry>.replaced-<timestamp>`` first and
-            build afresh; a finished artifact is never deleted.
+            build afresh, here; never downloads. A finished artifact is never deleted.
         generate, writer: passed to :func:`build_artifact_self_generated`.
+        published: the pins to look the entry up in; ``None`` reads the list this package ships
+            (:func:`~lfa.artifact.published.published_artifacts`).
 
     Returns:
-        ``(entry / "artifact.pt", the corpus manifest)``.
+        ``(entry / "artifact.pt", the corpus manifest)``, built or published alike.
 
     Raises:
-        StoreLocked: another live process is building this entry.
+        StoreLocked: another live process is building or downloading this entry.
         lfa.artifact.schema.ForeignArtifact: the finished entry is in an artifact format this
             release does not read; ``rebuild`` builds it afresh.
+        lfa.artifact.published.PublishedArtifactUnavailable: a published artifact for this entry
+            could not be downloaded or failed verification; ``rebuild`` builds it here instead.
     """
     writer_sha256 = checkpoint_sha256(model_id)
     entry = entry_dir(model_id, writer_sha256, options)
@@ -244,6 +329,23 @@ def obtain_self_generated(model_id: str, options: SelfGenOptions, *, rebuild: bo
     corpus = entry / _CORPUS
     if artifact.is_file():
         return _reused(artifact, corpus)
+    pin = None
+    if not rebuild:
+        pins = published_artifacts() if published is None else published
+        pin = find_published(model_id, writer_sha256, frame_sha256(options), pins)
+    if pin is not None:
+        if _holds_a_build(entry):
+            # The published artifact replaces an unfinished local build, which is kept aside;
+            # a live build or download of the entry refuses here.
+            _move_aside(entry, then=_WAIT)
+        try:
+            with _lock(entry):
+                if artifact.is_file():   # another process finished between the check and lock
+                    return _reused(artifact, corpus)
+                return _fetch(entry, pin, model_id, writer_sha256, options), _manifest(corpus)
+        except BaseException:
+            _remove_if_empty(entry)
+            raise
     with _lock(entry):
         if artifact.is_file():       # another process finished between the check and the lock
             return _reused(artifact, corpus)
@@ -273,9 +375,10 @@ def _entry_size_mb(entry: Path) -> int:
     return round(total / 2**20)
 
 
-def _state(entry: Path, asked) -> str:
+def _state(entry: Path, record: dict) -> str:
     if (entry / _ARTIFACT).is_file():
-        return "built"
+        return "published" if record.get("provenance") == "published" else "built"
+    asked = record.get("asked")
     if (entry / _CORPUS).is_file():
         return "corpus complete, not fitted"
     done = 0
@@ -291,8 +394,9 @@ def list_store() -> list[dict]:
     """One row per store entry (entries moved aside by a rebuild are left out).
 
     Each row is ``{"path", "model_id", "frame", "built_at", "size_mb", "state"}``: ``built_at``
-    is the artifact's modification time (``None`` until it is built), ``size_mb`` the whole
-    entry's size on disk (corpus included), and ``state`` one of ``"built"``,
+    is the artifact's modification time (``None`` until there is one; for a published artifact,
+    when it was downloaded), ``size_mb`` the whole entry's size on disk (corpus included), and
+    ``state`` one of ``"built"`` (here), ``"published"`` (downloaded),
     ``"corpus complete, not fitted"`` (a fit failed; the next build fits without generating) or
     ``"in progress: <done>/<asked> documents"``.
     """
@@ -301,16 +405,13 @@ def list_store() -> list[dict]:
         return []
     rows = []
     for entry in sorted(root.iterdir()):
-        if not entry.is_dir() or _REPLACED in entry.name:
-            continue
-        try:
-            record = json.loads((entry / _ENTRY_JSON).read_text())
-        except (FileNotFoundError, ValueError):
-            record = {}
+        if not entry.is_dir() or _REPLACED in entry.name or not any(entry.iterdir()):
+            continue                 # an empty directory is no entry
+        record = _record(entry)
         artifact = entry / _ARTIFACT
         built_at = (time.strftime("%Y-%m-%d %H:%M", time.localtime(artifact.stat().st_mtime))
                     if artifact.is_file() else None)
         rows.append({"path": entry, "model_id": record.get("model_id"),
                      "frame": record.get("frame"), "built_at": built_at,
-                     "size_mb": _entry_size_mb(entry), "state": _state(entry, record.get("asked"))})
+                     "size_mb": _entry_size_mb(entry), "state": _state(entry, record)})
     return rows

@@ -252,7 +252,9 @@ and see §4 on running detached.
 ## 4. Build the self-generated artifact, then probe it
 
 p(h) is model-specific — it is that model's own hidden states — so a new model needs its own
-artifact, built once.
+artifact, built once. A new model has no published artifact for `init` to download
+([the-artifact.md](the-artifact.md#published-artifacts)) until someone builds one and publishes it,
+so `init` builds it.
 
 **First a trial build**, to find a broken tokenizer reading or a refused corpus in minutes rather
 than hours. It is off the recorded frame, and `train` will say so; that is expected:

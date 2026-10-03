@@ -100,6 +100,16 @@ def test_list_artifacts_lists_the_store(tmp_path, monkeypatch, capsys):
     assert "  built 2026-09-28  " in out and "built  built" not in out      # "built" said once
 
 
+def test_list_artifacts_says_which_entries_were_published(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr("lfa.cli.list_store", lambda: [
+        {"path": tmp_path / "e", "model_id": "Qwen/Qwen3-0.6B",
+         "frame": {"n_raw": 2500, "max_new_tokens": 2048, "gmm_k": 32},
+         "built_at": "2026-10-04 09:00", "size_mb": 108, "state": "published"}])
+    assert main(["list-artifacts"]) == 0
+    out = capsys.readouterr().out
+    assert "  published, downloaded 2026-10-04 09:00  " in out and "built" not in out
+
+
 def test_list_artifacts_shows_an_unfinished_entry_by_its_state(tmp_path, monkeypatch, capsys):
     """An entry with no artifact yet has no build date: its state stands alone."""
     frame = {"n_raw": 2500, "max_new_tokens": 2048, "gmm_k": 32}
@@ -138,6 +148,16 @@ def test_init_needs_an_artifact_and_its_help_names_self_generated(capsys):
     with pytest.raises(SystemExit):
         main(["init", "--help"])
     assert "self-generated" in capsys.readouterr().out
+
+
+def test_init_help_says_what_happens_on_a_store_miss(capsys):
+    """A miss fetches a published artifact for this exact model and frame, else builds; and
+    --rebuild always builds here."""
+    with pytest.raises(SystemExit):
+        main(["init", "--help"])
+    out = " ".join(capsys.readouterr().out.split())
+    assert "published artifact" in out and "verified" in out
+    assert "never downloads" in out
 
 
 def test_there_is_no_subcommand_that_downloads_an_artifact(capsys):
@@ -237,6 +257,7 @@ def test_an_interrupted_command_says_how_to_continue_rather_than_printing_a_trac
     assert "Traceback" not in captured.err
     assert "--resume" in captured.err and "interrupted" in captured.err
     assert "`lfa init`" in captured.err                   # a self-generated build resumes too
+    assert "download" in captured.err and "starts again" in captured.err
 
 
 def test_chain_passes_the_extension_knobs_it_advertises(tmp_path, base_dir, monkeypatch):
@@ -593,6 +614,24 @@ def test_a_self_generated_build_already_running_exits_two_with_one_line(tmp_path
     assert code == 2
     lines = error_lines(capsys)
     assert len(lines) == 1 and "4242" in lines[0]
+    assert not (tmp_path / "ws").exists()
+
+
+def test_a_failed_published_download_exits_two_with_one_line(tmp_path, base_dir, monkeypatch,
+                                                            capsys):
+    import lfa.workspace as ws_module
+    from lfa.artifact.published import PublishedArtifactUnavailable
+
+    def refused(model_id, options, **_):
+        raise PublishedArtifactUnavailable(
+            "Downloading https://example.org/a.pt failed: HTTP 404. Pass --rebuild.")
+    monkeypatch.setattr(ws_module, "obtain_self_generated", refused)
+
+    code = main(["init", str(tmp_path / "ws"), "--model", str(base_dir),
+                 "--artifact", "self-generated"])
+    assert code == 2
+    lines = error_lines(capsys)
+    assert len(lines) == 1 and "https://example.org/a.pt" in lines[0]
     assert not (tmp_path / "ws").exists()
 
 

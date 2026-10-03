@@ -173,7 +173,9 @@ anything was preserved.
 Three steps, and only the third is real work: an **adapter** so LFA can find the sub-modules
 (usually free — `LlamaLayoutAdapter` covers Llama, Qwen2/3, Mistral and their kin), an
 **artifact** built for that model — `lfa init <workspace> --model <id> --artifact self-generated`
-has the model write the text it is fitted on, no download — and a **λ calibration** at your rank
+has the model write the text it is fitted on, no dataset downloaded (a model new to the package
+has no published artifact to download until someone publishes one) — and a **λ calibration** at
+your rank
 and corpus,
 against that artifact. Never port λ across models. [model-integration-cookbook.md](model-integration-cookbook.md) has
 the interface, the fallback orders, and
@@ -197,6 +199,12 @@ One built with an earlier release works too, as long as it has the same format: 
 recorded as `format_version` (a file without `format_version` is format 1; see
 [the artifact](the-artifact.md#sharing-and-keeping-artifacts)). A release that changes the layout
 refuses older files with a sentence saying so; build the artifact again with the release you have.
+
+A published artifact is one of these too: when the package pins one for your model and frame,
+`lfa init --artifact self-generated` downloads it, with its corpus and manifest, into the store
+on a miss and checks it — each file's sha256 and size against the pin, the same format checks,
+and that the corpus is the one it was fitted on — before using it
+([the artifact](the-artifact.md#published-artifacts)). `--rebuild` builds it here instead.
 
 ## Where is the corpus the paper used?
 
@@ -311,5 +319,7 @@ dtype=torch.float32)`), which doubles the reservoir memory —
 No. Every score this package computes is a perplexity, computed locally from model logits:
 held-out domain perplexity and WikiText-2 by sliding window. There is no judge, no API key, and
 nothing to configure. The text self-generation needs — the artifact corpus and the domain
-supplement — is written locally by the model being adapted, never by an external one. The
+supplement — is written locally by the model being adapted, never by an external one. What `init`
+may download besides the model is a [published artifact](the-artifact.md#published-artifacts):
+a file, not an API. The
 paper's judged results are in the paper.

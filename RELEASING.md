@@ -121,10 +121,12 @@ question-and-answer supplement the stage's entry model writes from the domain, a
 and warns that it is off the frame. The held-out split is taken before anything is mixed, so
 the domain number stays a raw-text measurement.
 
-No published artifacts: `lfa init --artifact self-generated` builds one from the model's own text
-and keeps it in a local store for reuse (`lfa list-artifacts`); the build resumes after an
-interruption and keeps its corpus if the fit fails. `--artifact` is required; the download command
-and the flag that named a published artifact by id are gone. `prepare-domain --supplement --model`
+`lfa init --artifact self-generated` builds the artifact from the model's own text, or, when the
+package pins a published one for that exact model, checkpoint and frame, downloads it with its
+corpus and verifies it (`--rebuild` always builds here); either way it is kept in a local store
+for reuse (`lfa list-artifacts`). A build resumes after an interruption and keeps its corpus if
+the fit fails. `--artifact` is required; the separate download command and the flag that named a
+published artifact by id are gone. `prepare-domain --supplement --model`
 and `prepare-supplement --model` prepare the supplement with the data. The recipe is calibrated
 against the self-generated artifact at `self_generated_frame`.
 
