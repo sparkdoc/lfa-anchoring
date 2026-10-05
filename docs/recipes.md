@@ -181,7 +181,9 @@ windows; about 0.5 %) and held-out Darwin 13.63, 13.64 and 13.65 (about 0.15 %);
 WikiText-2 14.48, 14.36 and 14.41 (100 windows) and held-out Darwin 19.89, 19.43 and 19.88. The
 1,000,000 rung's lead over 2,500,000 — 1.2 % on WikiText-2 (13.15 against 13.31) and 1.4 % on
 held-out Darwin (13.63 against 13.82) — is larger than that spread on both axes. WikiText-2 falls
-below base at strong λ; that is what was measured, and no mechanism is claimed for it.
+below base at strong λ; that is what was measured, and no mechanism is claimed for it. A general
+number below base is not evidence that anything was kept: [the
+FAQ](faq.md#wikitext-2-perplexity-came-out-below-the-base-models-is-that-a-win) says how to read it.
 
 **The dose at the chosen λ.** On this corpus (about 189 k training tokens an epoch), the per-epoch
 validation perplexity — the training split's own 10 % — fell at λ = 1,000,000 from 14.53 after
@@ -208,16 +210,20 @@ At λ = 1,000,000, 3× matched 1× on cookery (−27.0 % against −26.4 %, one 
 Darwin retention and on WikiText-2. At λ = 100,000, 3× was ahead on all three.
 
 **Training memory**, one RTX 3090, batch 6 × 512: an anchored 15-epoch run trained at about
-13.0 GiB (maximum 13,033–13,056 MiB across every rung, 20,000 to 5,000,000); the unanchored control
+12.7 GiB (maximum 13,033–13,056 MiB across every rung, 20,000 to 5,000,000); the unanchored control
 at a maximum of 11,236 MiB; the second stage of a chain, training on the fused stage-1 model,
-16,206–19,291 MiB (per arm in the table above). The measure is nvidia-smi `memory.used` sampled
+16,206–19,291 MiB (per arm in the table above; 19,291 MiB is about 18.8 GiB, more than a 16 GB
+card holds). The measure is nvidia-smi `memory.used` sampled
 every 10 s, which includes PyTorch's caching allocator, so it is an upper bound on what a run
 needs. It is not comparable with Qwen3-0.6B's "8.63 GiB allocated" in [faq.md](faq.md), which
 is the allocator's own peak, a different measure.
 
 **λ does not port** across artifacts, domains or protocols. A separate research run on another
 domain chose 50,000 for this model, against an artifact fitted on real text and at a different
-protocol; that is a different point, not a check on this one.
+protocol; that is a different point, not a check on this one. Nor is this λ's ratio to the
+`qwen3-0.6b` recipe's 100,000 a statement about model size: that one was calibrated on a corpus
+about ten times larger (about 1,700 documents, ~1.8 M training tokens, against Darwin's ~189 k an
+epoch), so at a different dose, and first against an artifact fitted on real text.
 
 ## The couplings, and what the warnings mean
 

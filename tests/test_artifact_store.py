@@ -139,6 +139,28 @@ def test_list_store_shows_a_build_in_progress(isolated_store):
     assert row["state"] == "in progress: 20/60 documents"
 
 
+@pytest.mark.parametrize("staged", ["corpus.jsonl.manifest.json.download",
+                                    "corpus.jsonl.download", "artifact.partial.pt"])
+def test_list_store_shows_a_download_in_progress(isolated_store, staged):
+    # A download writes no corpus progress file, so "0/? documents" would say nothing true.
+    entry = store.entry_dir("m", "a" * 64, SelfGenOptions(n_raw=60))
+    entry.mkdir(parents=True)
+    (entry / ".lock").write_text(str(os.getpid()))
+    (entry / staged).write_bytes(b"x")
+    [row] = store.list_store()
+    assert row["state"] == "downloading"
+
+
+def test_list_store_shows_a_fit_under_way_as_a_build_not_a_download(isolated_store):
+    # A local build also writes artifact.partial.pt, but only after its corpus is complete.
+    entry = store.entry_dir("m", "a" * 64, SelfGenOptions(n_raw=60))
+    entry.mkdir(parents=True)
+    (entry / "corpus.jsonl").write_text('{"text": "x"}\n')
+    (entry / "artifact.partial.pt").write_bytes(b"x")
+    [row] = store.list_store()
+    assert row["state"] == "corpus complete, not fitted"
+
+
 _HOLD_LOCK = """
 import sys
 from pathlib import Path
@@ -589,6 +611,35 @@ def test_an_unfinished_local_build_is_moved_aside_for_a_published_entry(isolated
     assert (aside / "corpus.jsonl.partial").is_file()
 
 
+def test_an_artifact_finished_just_before_the_move_aside_is_reused_not_moved(isolated_store,
+                                                                            served, monkeypatch):
+    # Another process finishes its build after this one saw no artifact.pt and before it moves
+    # the entry aside for the published one: the finished artifact is reused, and nothing moves.
+    root, base, requests = served
+    calls = []
+    monkeypatch.setattr(store, "build_artifact_self_generated", _fake_build(calls))
+    options = SelfGenOptions(n_raw=60)
+    entry = store.entry_dir(_MODEL, "a" * 64, options)
+    entry.mkdir(parents=True)
+    (entry / "corpus.jsonl.partial").write_text('{"text": "x"}\n')
+    pin = _pin(base, _published_entry(root, options), options)
+    real_guard = store._guard
+    finished = []
+
+    def guard_after_another_build_finished(directory):
+        if not finished:             # the other process finishes once, just before the guard
+            finished.append(_fake_build([])(_MODEL, entry / "artifact.pt", options,
+                                            corpus_path=entry / "corpus.jsonl"))
+        return real_guard(directory)
+
+    monkeypatch.setattr(store, "_guard", guard_after_another_build_finished)
+    path, manifest = store.obtain_self_generated(_MODEL, options, published=[pin])
+    assert path == entry / "artifact.pt" and path.is_file()
+    assert manifest["corpus_sha256"] == "e" * 64
+    assert requests == [] and calls == []
+    assert not list(isolated_store.glob("*.replaced-*"))
+
+
 def test_a_download_meeting_a_live_one_waits_rather_than_rebuilding(isolated_store, served,
                                                                     monkeypatch):
     root, base, requests = served
@@ -623,6 +674,13 @@ def test_the_shipped_pin_list_loads_and_a_malformed_pin_is_refused(monkeypatch):
         published.check_pin(dict(good, manifest_file_sha256="not-hex"))
     with pytest.raises(ValueError, match="unknown fields"):
         published.check_pin(dict(good, corpus_sha256="c" * 64))   # the text hash is not a pin field
+    # The shipped pins are package data: plain http is refused there. (A list passed to
+    # `obtain_self_generated(published=...)` is not checked, which is how the tests here serve
+    # from 127.0.0.1 over http.)
+    with pytest.raises(ValueError, match="not an https URL"):
+        published.check_pin(dict(good, corpus_url="http://example.org/corpus"))
+    with pytest.raises(ValueError, match="not an https URL"):
+        published.check_pin(dict(good, artifact_url="ftp://example.org/artifact"))
 
 
 def test_obtain_reads_the_shipped_list_when_none_is_given(isolated_store, monkeypatch):

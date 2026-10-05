@@ -82,6 +82,9 @@ def _hex64(value) -> bool:
 def check_pin(pin: dict) -> dict:
     """Return ``pin`` once it has exactly the pin fields, each in the expected form.
 
+    Every URL must be ``https://``: the pins are package data. Pins handed to
+    :func:`lfa.artifact.store.obtain_self_generated` as ``published=`` are not checked here.
+
     Raises:
         ValueError: naming the first field that is missing, unknown or malformed.
     """
@@ -97,8 +100,8 @@ def check_pin(pin: dict) -> dict:
             problem = "not 64 lower-case hex digits"
         elif field.endswith("size_bytes") and (type(value) is not int or value <= 0):
             problem = "not a positive integer"
-        elif field.endswith("_url") and not str(value).startswith(("https://", "http://")):
-            problem = "not an http(s) URL"
+        elif field.endswith("_url") and not str(value).startswith("https://"):
+            problem = "not an https URL"
         else:
             continue
         raise ValueError(f"The published-artifact pin for {pin['model_id']!r} has {field} "

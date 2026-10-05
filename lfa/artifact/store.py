@@ -204,9 +204,19 @@ def _lock(entry: Path):
 
 
 def _move_aside(entry: Path, then: str = "Wait for it to finish before rebuilding; nothing "
-                                          "was moved.") -> None:
+                                          "was moved.", *, keep_finished: bool = False) -> bool:
+    """Rename ``entry`` aside to ``<entry>.replaced-<timestamp>``; refuse while it is locked.
+
+    With ``keep_finished``, an entry that holds a finished ``artifact.pt`` by the time the guard
+    is held is left where it is and ``False`` is returned: another process can finish its build
+    between the caller's own check and this one. The holder is read before the artifact is
+    looked for, and a build renames its artifact into place before it releases its lock, so a
+    build that finishes in between is seen either way. Returns ``True`` once the entry is moved.
+    """
     with _guard(entry.parent):
         pid = _holder(entry / _LOCK)
+        if keep_finished and (entry / _ARTIFACT).is_file():
+            return False
         if pid is not None and _alive(pid):
             raise _locked(entry, pid, then)
         stamp = time.strftime("%Y%m%d-%H%M%S")
@@ -217,6 +227,7 @@ def _move_aside(entry: Path, then: str = "Wait for it to finish before rebuildin
             aside = entry.with_name(f"{entry.name}{_REPLACED}{stamp}-{n}")
         entry.rename(aside)
     logger.info("Moved the previous store entry aside to %s", aside)
+    return True
 
 
 def _record(entry: Path) -> dict:
@@ -336,8 +347,10 @@ def obtain_self_generated(model_id: str, options: SelfGenOptions, *, rebuild: bo
     if pin is not None:
         if _holds_a_build(entry):
             # The published artifact replaces an unfinished local build, which is kept aside;
-            # a live build or download of the entry refuses here.
-            _move_aside(entry, then=_WAIT)
+            # a live build or download of the entry refuses here, and one that finished since
+            # the check above is reused rather than moved.
+            if not _move_aside(entry, then=_WAIT, keep_finished=True):
+                return _reused(artifact, corpus)
         try:
             with _lock(entry):
                 if artifact.is_file():   # another process finished between the check and lock
@@ -381,6 +394,10 @@ def _state(entry: Path, record: dict) -> str:
     asked = record.get("asked")
     if (entry / _CORPUS).is_file():
         return "corpus complete, not fitted"
+    staged = (entry / (_MANIFEST + _DOWNLOAD), entry / (_CORPUS + _DOWNLOAD),
+              entry / _PARTIAL_ARTIFACT)
+    if not progress_path(entry / _CORPUS).is_file() and any(p.is_file() for p in staged):
+        return "downloading"         # a download's files, with no corpus being written
     done = 0
     try:
         progress = json.loads(progress_path(entry / _CORPUS).read_text())
@@ -397,8 +414,9 @@ def list_store() -> list[dict]:
     is the artifact's modification time (``None`` until there is one; for a published artifact,
     when it was downloaded), ``size_mb`` the whole entry's size on disk (corpus included), and
     ``state`` one of ``"built"`` (here), ``"published"`` (downloaded),
-    ``"corpus complete, not fitted"`` (a fit failed; the next build fits without generating) or
-    ``"in progress: <done>/<asked> documents"``.
+    ``"corpus complete, not fitted"`` (a fit failed; the next build fits without generating),
+    ``"downloading"`` (a published artifact's files are being fetched, or a fetching process was
+    killed) or ``"in progress: <done>/<asked> documents"``.
     """
     root = store_root()
     if not root.is_dir():

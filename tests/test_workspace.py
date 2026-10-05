@@ -1655,6 +1655,10 @@ def test_init_warns_when_the_recipe_names_another_model(tmp_path, base_dir, capl
     notes = [r.message for r in caplog.records if "is calibrated for" in r.message]
     assert len(notes) == 1
     assert "someone/another-model" in notes[0] and str(base_dir) in notes[0]
+    # A local path to the recipe's own checkpoint is a different id: the note says so, since in
+    # that case the recipe is the right one.
+    assert "local path to the same checkpoint" in notes[0]
+    assert "this recipe is the right one" in notes[0]
 
 
 def test_init_is_silent_when_the_recipe_names_this_model(tmp_path, base_dir, caplog):

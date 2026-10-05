@@ -205,8 +205,9 @@ What `init` does with the entry:
 
 `lfa list-artifacts` prints one line per entry: the model, the frame (documents × tokens, K), its
 state — `built <date>` for an entry built here, `published, downloaded <date>` for a downloaded
-one, otherwise `corpus complete, not fitted` or `in progress: n/N documents` — its size on disk
-and its path.
+one, otherwise `corpus complete, not fitted`, `downloading` (a published artifact's files being
+fetched, or left by a fetch whose process was killed) or `in progress: n/N documents` — its size on disk and
+its path.
 
 **Locking.** A build holds `<entry>/.lock`, which records its process id. A second build of the
 same entry — the same `lfa init` in another terminal — is refused with a message naming the lock
@@ -226,7 +227,8 @@ fetched instead of built again. On a store miss, `lfa init --artifact self-gener
 model up in the list of published artifacts pinned in the package, `lfa/artifact/published.json`.
 A pin names exactly what the store keys an entry on — `model_id` (the Hub id, as you pass it to
 `--model`), the checkpoint's `writer_sha256` and the `frame_sha256` — and the entry's three files,
-each by URL, sha256 of the file and size in bytes:
+each by an `https://` URL (a pin with any other scheme is refused when the list loads), sha256 of
+the file and size in bytes:
 
 | file | URL | sha256 of the file | size |
 |---|---|---|---|

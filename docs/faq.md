@@ -2,11 +2,16 @@
 
 ## How much GPU memory does a run need?
 
-About **8 GB** allocated for Qwen3-0.6B at its recipe, more on the card, and more for Qwen3-1.7B
-(the two side by side below).
-Measured on an RTX 3090 (2026-09-07) at rank 32, batch 6 × 512 tokens, 16 anchor samples: **8.63 GiB
-allocated at peak, 10.8 GiB reserved** by the caching allocator — with a second, separately loaded
-teacher, which is what every run did before 0.1.1 and what `--teacher-mode separate` still does. A
+About **8 GB** allocated for Qwen3-0.6B at its recipe, and more on the card. On the card, by
+`nvidia-smi`, single training runs read maxima of 11,236–13,971 MiB on the two bundled models, and
+the second stage of a Qwen3-1.7B chain up to **19,291 MiB (about 18.8 GiB, 20.2 GB) — more than a
+16 GB card holds** ([per model below](#training-per-model)). That measure does not order the two
+models by size.
+
+The allocated figure was measured on an RTX 3090 (2026-09-07) at rank 32, batch 6 × 512 tokens, 16
+anchor samples: **8.63 GiB allocated at peak, 10.8 GiB reserved** by the caching allocator — with
+a second, separately loaded teacher, which is what every run did before 0.1.1 and what
+`--teacher-mode separate` still does. A
 LoRA run now holds **one** model: PEFT freezes the base weight of every module it adapts, so the
 student *is* the teacher and it is read there with the adapters switched off. That is the whole of
 the teacher's resident weights returned — **1.11 GiB at 0.6B** (596 M parameters in bfloat16),
@@ -28,12 +33,28 @@ evaluate, fuse) on an RTX 3090, 2026-10-03, sampled every 5 s over the whole tes
 
 The test includes the model in float32 during the trial build (about 6.9 GB for Qwen3-1.7B, whose
 1,720,574,976 parameters are 3.44 GB in bfloat16), and a 5-second sample can miss a short spike.
-Batch 6 × 512 ran without running out of memory on both. These are not training figures: a
-Qwen3-0.6B training run — unanchored, 4 epochs at batch 6 × 512 — read about 7.0–7.5 GiB while
-writing the supplement and about 13.5–14.0 GiB while training, at most 13,971 MiB, by the same
-measure sampled every 10 s over `init`, `train` and `evaluate` (2026-10-03). Training runs for
-Qwen3-1.7B are in [the cookbook's worked
-example](model-integration-cookbook.md#9-worked-example-qwen3-17b).
+Batch 6 × 512 ran without running out of memory on both. These are not training figures.
+
+### Training, per model
+
+The same `nvidia-smi` memory.used, sampled every 10 s over `init`, `train` and `evaluate`, batch
+6 × 512, rank 32, one RTX 3090 per run, 2026-10-03 to 2026-10-05; one seed, one domain (Darwin;
+cookery for a chain's second stage). Maxima while training:
+
+| model | run | `nvidia-smi` memory.used, maximum |
+|---|---|---:|
+| Qwen3-0.6B | unanchored, 4 epochs | 13,971 MiB (about 13.6 GiB); 7,325 MiB while writing the supplement |
+| Qwen3-1.7B | anchored, 15 epochs (every λ from 20,000 to 5,000,000) | 13,033–13,056 MiB (about 12.7 GiB) |
+| Qwen3-1.7B | unanchored, 8 and 15 epochs | 11,236 MiB (about 11.0 GiB) |
+| Qwen3-1.7B | a two-stage chain's second stage, training on the fused model | 16,206–19,291 MiB (up to about 18.8 GiB) |
+
+The 19,291 MiB arm is the bundled `qwen3-1.7b` recipe's own chain point (λ 1,000,000, stage-2
+multiplier 3), and it held that for about the last 5 minutes of the stage. Being an upper bound,
+it does not prove a 16 GB card too small, but a Qwen3-1.7B chain has only been measured on 24 GB
+cards. The Qwen3-0.6B run reading above both Qwen3-1.7B single-stage runs is a caching
+effect of this measure, not a statement about model size. PyTorch's own allocated peak — the other
+measure — was taken for Qwen3-0.6B only (8.63 GiB, above). Per arm, with the λ ladder: [the
+cookbook's worked example](model-integration-cookbook.md#9-worked-example-qwen3-17b).
 
 Full-weight training moves the base weights, so there the student is not a copy of anything and a
 real teacher is loaded: a full-weight run still holds two models, and `--teacher-mode

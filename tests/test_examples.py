@@ -30,8 +30,9 @@ EXAMPLES = REPO_ROOT / "examples"
 #: Every subcommand the CLI defines. Kept as a literal list rather than read off the parser: the
 #: point is to notice a subcommand that stopped parsing, and a list generated from the parser
 #: would follow it into the change.
-SUBCOMMANDS = ["init", "list-artifacts", "train", "extend", "evaluate", "fuse", "chain",
-               "build-artifact", "prepare-seed-corpus", "prepare-domain"]
+SUBCOMMANDS = ["init", "list-artifacts", "train", "prepare-supplement", "extend",
+               "regenerate-artifact", "evaluate", "fuse", "chain", "build-artifact",
+               "probe-artifact", "prepare-seed-corpus", "prepare-domain"]
 
 
 def run(command: list[str], **kwargs) -> subprocess.CompletedProcess:
@@ -161,6 +162,19 @@ def test_the_chain_example_generates_a_corpus_per_domain_and_leaves_the_spec_alo
 # ==============================================================================================
 # The command line's own help
 # ==============================================================================================
+
+def test_the_subcommand_list_names_every_subcommand_the_parser_defines():
+    """The literal list above must not fall behind the parser: a subcommand added without it would
+    never have its ``--help`` run. (The list stays literal, so a removed subcommand still fails.)"""
+    import argparse
+
+    from lfa.cli import build_parser
+
+    actions = [action for action in build_parser()._actions
+               if isinstance(action, argparse._SubParsersAction)]
+    assert len(actions) == 1
+    assert sorted(actions[0].choices) == sorted(SUBCOMMANDS)
+
 
 @pytest.mark.parametrize("subcommand", SUBCOMMANDS)
 def test_every_subcommand_has_help(subcommand):

@@ -41,7 +41,10 @@
 #
 # Lambda does not port across artifacts, domains or protocols. A separate research run on another
 # domain chose 50,000 for this model, against an artifact fitted on real text and at a different
-# protocol; it is not this recipe's point, and this recipe's point is not its.
+# protocol; it is not this recipe's point, and this recipe's point is not its. Nor is the ratio
+# to the qwen3-0.6b recipe's 100,000 a model-size effect: that lambda was calibrated on a corpus
+# about ten times larger (about 1,700 documents, ~1.8 M training tokens, against Darwin's ~189 k
+# an epoch), so at a different dose, and first against an artifact fitted on real text.
 #
 # This is a JOINT point: the values were tuned together, and lambda in particular does not travel
 # on its own. It is coupled to three things:
@@ -88,7 +91,7 @@ checkpoint_every: 5
 learning_rate: 3.0e-4
 # warmup then cosine decay to zero over the epochs actually trained (`constant` holds the peak)
 lr_schedule: cosine
-# 6 x 512 fits one 24 GB card (RTX 3090): anchored 15-epoch training peaked at about 13.0 GiB,
+# 6 x 512 fits one 24 GB card (RTX 3090): anchored 15-epoch training peaked at about 12.7 GiB,
 # and stage 2 of a chain at up to 19,291 MiB (nvidia-smi memory.used, every 10 s; it includes
 # PyTorch's caching allocator, so an upper bound on what a run needs)
 batch_size: 6

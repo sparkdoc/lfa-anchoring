@@ -195,7 +195,7 @@ a new model's numbers are arithmetic until it has run.
 of the student's own LoRA base with the adapters switched off):
 
 * the weights: 2 B × parameters as loaded, a tied head counted once (Qwen3-0.6B: 596 M
-  parameters, 1.11 GiB; Qwen3-1.7B: 1.72 B, 3.44 GB). A checkpoint can store a tied head twice, so
+  parameters, 1.11 GiB; Qwen3-1.7B: 1.72 B, 3.20 GiB). A checkpoint can store a tied head twice, so
   its file size overstates the load (§9);
 * LoRA's parameters, gradients and Adam state: `r × (d_in + d_out)` per adapted projection per
   layer — an estimate, not a measurement: small beside the rest at rank 32 on models this size;
@@ -212,9 +212,9 @@ Measured anchors (RTX 3090, 24 GB), by two measures that are not read against ea
 with a separately loaded teacher, which the default no longer loads). `nvidia-smi` memory.used,
 which includes what PyTorch's caching allocator holds and so is an upper bound on what a run needs,
 sampled every 10 s over `init`, `train` and `evaluate`: an unanchored 4-epoch Qwen3-0.6B run read
-about 7.0–7.5 GiB while writing the supplement and about 13.5–14.0 GiB while training, at most
-13,971 MiB (2026-10-03). For Qwen3-1.7B, §9 has the GPU smoke and the training runs by the second
-measure.
+at most 7,325 MiB (about 7.2 GiB) while writing the supplement and at most 13,971 MiB (about
+13.6 GiB) while training (2026-10-03). For Qwen3-1.7B, §9 has the GPU smoke and the training runs
+by the second measure; a Qwen3-1.7B chain's second stage reached 19,291 MiB.
 
 If batch 6 × 512 does not fit, keep the geometry and halve the micro-batch: `batch_size: 3`,
 `gradient_accumulation_steps: 2`. The package does not pick a batch for you, on purpose: the
@@ -566,8 +566,11 @@ held-out domain perplexity and WikiText-2 — and the public text of the walkthr
    not only the pick. Pick from the frontier, never from the general axis alone: over-anchoring
    makes general perplexity look its best while domain quality collapses, and that failure is
    invisible unless you are watching the domain number. For Qwen3-1.7B the control over-trained at
-   15 epochs, and the rung best on both axes was λ = 1,000,000, ten times the bundled Qwen3-0.6B
-   recipe's 100,000 (§9): λ does not port, even within a family.
+   15 epochs, and the rung best on both axes was λ = 1,000,000 (§9). The bundled Qwen3-0.6B
+   recipe's 100,000 was calibrated on a different corpus — about 1,700 documents, ~1.8 M training
+   tokens, against Darwin's ~189 k an epoch, so 15 epochs is a different dose on each — and first
+   against an artifact fitted on real text. The ratio between the two says nothing about model
+   size: λ does not port, even within a family.
 6. **The dose curve**: no new run. From the chosen rung's validation curve, record the epoch with
    the lowest validation perplexity and the value at the last epoch, beside the controls' curves.
    At the recipe dose the chosen rung's curve should not climb in the late epochs the way the
@@ -842,21 +845,23 @@ perplexity on the 10 % that `train` holds out of the training text.
 * **Training memory.** `nvidia-smi` memory.used, sampled every 10 s over a whole run (`init`,
   `train`, `evaluate`; batch 6 × 512). It includes what PyTorch's caching allocator holds, so it is
   an upper bound on what a run needs, and it is not comparable with PyTorch's allocated figure of
-  §3. Anchored 15-epoch rungs (every rung, 20,000 to 5,000,000): about 13.0–13.1 GiB while training,
+  §3. Anchored 15-epoch rungs (every rung, 20,000 to 5,000,000): about 12.7 GiB while training,
   maxima 13,033–13,056 MiB, and about 7 GiB while evaluating. Unanchored (8 and 15 epochs): about
-  11.0–11.5 GiB while training, maximum 11,236 MiB. The two-stage chains' stage-2 training on the
-  fused model: maxima 16,206–19,291 MiB (λ = 1,000,000: 16,206 at 1× and 19,291 at 3×, which held
-  19.0–19.3 GiB for the last 5 minutes or so of stage 2; λ = 100,000: 17,511 at 1× and 16,842 at
-  3×).
+  11.0 GiB while training, maximum 11,236 MiB. The two-stage chains' stage-2 training on the
+  fused model: maxima 16,206–19,291 MiB (λ = 1,000,000: 16,206 at 1× and 19,291 at 3×, which it
+  held for the last 5 minutes or so of stage 2; λ = 100,000: 17,511 at 1× and 16,842 at 3×).
+  19,291 MiB is about 18.8 GiB (20.2 GB): more than a 16 GB card holds.
 * **The recipe.** The bundled `qwen3-1.7b` recipe (`lfa/recipes/qwen3-1.7b.yaml`): `lambda_qkv` =
   `lambda_mlp` = 1,000,000; every other field as `qwen3-0.6b`, including `stage2_lambda_multiplier`
   3.0 and 15 epochs, which the runs above support on this model. That λ is ten times the Qwen3-0.6B
-  recipe's 100,000, on a model of the same family and layout.
+  recipe's 100,000, but the two were calibrated on different corpora (about 10× apart in size),
+  doses and artifacts, so the ratio says nothing about model size.
 
 **What differed from Qwen3-0.6B**, in short: nothing in the layout or the tokenizer; twice the
 `Σ d²`, and a GPU smoke whose `nvidia-smi` memory.used sat mostly at 8.5–9 GiB (maximum 14,781 MiB,
 against Qwen3-0.6B's 10,235 MiB); a model that writes two-fifths of its unprompted text in Chinese,
-which a word-counting filter could not read; and a calibrated λ ten times the Qwen3-0.6B recipe's.
+which a word-counting filter could not read; and a calibrated λ of 1,000,000, not comparable with
+the Qwen3-0.6B recipe's 100,000, which was calibrated on a different corpus, dose and artifact.
 
 ## 10. Extending to multimodal models (image and audio) — general advice, untested
 

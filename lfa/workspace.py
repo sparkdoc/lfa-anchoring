@@ -480,8 +480,9 @@ class Workspace:
                 logger.warning(
                     "Recipe %r is calibrated for %s, and this workspace's model is %s: lambda does "
                     "not port between models, so use the recipe for this model or calibrate one "
-                    "(docs/model-integration-cookbook.md).", recipe_obj.name, recipe_obj.model_id,
-                    model_id)
+                    "(docs/model-integration-cookbook.md). A local path to the same checkpoint "
+                    "is a different id: if that is what %s is, this recipe is the right one.",
+                    recipe_obj.name, recipe_obj.model_id, model_id, model_id)
 
         state = {
             "model_id": model_id,
