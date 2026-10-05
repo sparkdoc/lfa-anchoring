@@ -131,11 +131,10 @@ RAM it was 28, every layer in one pass, logged as
 `layer_group_size=28 for Qwen/Qwen3-0.6B: ~42.7 GiB of reservoirs per group against 103.9 GiB available`
 and followed by `Collected 84 sites, 603008 samples at the thinnest site` (2026-10-04).
 
-Qwen3-1.7B's sites are all 2,048 wide, so a layer's reservoirs cost about 2.3 GiB:
-`layer_group_size=22 for Qwen/Qwen3-1.7B: ~50.4 GiB of reservoirs per group against 102.3 GiB available`
-on that host while another job held part of its memory (2026-10-03), and 25 of its 28 layers at
-115.0 GiB available (2026-10-03) — two corpus passes either way. All 28 layers in one pass hold
-about 64 GiB of reservoirs, so the build chooses it only with about 128 GiB available.
+Qwen3-1.7B's sites are all 2,048 wide, so a layer's reservoirs cost about 2.3 GiB; on that host
+the build chose 25 of its 28 layers at 115.0 GiB available (2026-10-03), two corpus passes. All 28
+layers in one pass hold about 64 GiB of reservoirs, so the build chooses it only with about 128 GiB
+available.
 
 **The group size is a memory choice only.** Every site draws its reservoir from its own torch
 generator, seeded from the build seed and the site's layer and name, so a site keeps the same

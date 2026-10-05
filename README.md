@@ -42,17 +42,18 @@ card. Tested at torch 2.10.0+cu128, transformers 4.57.6, accelerate 1.14.0, peft
 Two models have a bundled recipe. `--model` picks it: `init` uses the bundled recipe whose own
 model id is the one you pass.
 
-| model (`--model`) | recipe | licence | artifact build, one RTX 3090 | artifact | GPU pipeline test peak |
+| model (`--model`) | recipe | licence | artifact build, one RTX 3090 | artifact | GPU pipeline test, `nvidia-smi` maximum |
 |---|---|---|---|---:|---:|
-| `Qwen/Qwen3-0.6B` | `qwen3-0.6b` | Apache-2.0 | 3 h 51 min, 83 min of it generation | 110.0 MB | 5,435 MiB |
-| `Qwen/Qwen3-1.7B` | `qwen3-1.7b` | Apache-2.0 | 5 h 56 min, 87 min of it generation | 243.7 MB | 8,853 MiB |
+| `Qwen/Qwen3-0.6B` | `qwen3-0.6b` | Apache-2.0 | 3 h 51 min, 83 min of it generation | 110.0 MB | 10,235 MiB |
+| `Qwen/Qwen3-1.7B` | `qwen3-1.7b` | Apache-2.0 | 5 h 56 min, 87 min of it generation | 243.7 MB | 14,781 MiB (brief; mostly 8.5–9 GiB) |
 
 The builds are the full recorded frame from a cold store, on one RTX 3090 (24 GB) in a host with 125
 GiB of RAM, 2026-10-03/04. The Qwen3-0.6B build ran alone on the host; the Qwen3-1.7B build shared
 it for most of its run with a second Qwen3-1.7B build (at 1.5 M samples per site). The last column
 is the GPU pipeline test on an RTX 3090 (2026-10-03: a trial-frame artifact build with the model
-in float32, the supplement, one epoch at batch 6 × 512, evaluate, fuse), by `nvidia-smi` sampled
-every 5 s over the whole test. It is not a training run's peak: [the
+in float32, the supplement, one epoch at batch 6 × 512, evaluate, fuse): the highest `nvidia-smi`
+memory.used sampled every 5 s over the whole test. memory.used includes what PyTorch's caching
+allocator holds, so it is an upper bound on need. It is not a training run's figure: [the
 FAQ](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/faq.md#how-much-gpu-memory-does-a-run-need)
 has training memory. The licence is the model's own, from its Hub card. Build detail per model: [the
 artifact](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/the-artifact.md#what-it-costs).

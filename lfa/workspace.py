@@ -365,10 +365,9 @@ class Workspace:
                 (:func:`lfa.artifact.build.build_artifact_self_generated`) -- a GPU job of about
                 3 h 51 min for Qwen3-0.6B on an RTX 3090, not a cheap init. The artifact lives in
                 the local store (:mod:`lfa.artifact.store`), keyed on the checkpoint and the
-                frame, so it is made
-                once per model: a later init over the same model at the same frame copies the
-                finished artifact in, and a build that stopped part-way resumes where it
-                stopped. On a store miss, an artifact published for exactly this model,
+                frame, so it is made once per model: a later init over the same model at the same
+                frame copies the finished artifact in, and a build that stopped part-way resumes
+                where it stopped. On a store miss, an artifact published for exactly this model,
                 checkpoint and frame (pinned in the package, :mod:`lfa.artifact.published`) is
                 downloaded with its corpus and verified instead of built. The corpus and its
                 manifest are copied in beside it (``artifacts/v1.corpus.jsonl``). A path must

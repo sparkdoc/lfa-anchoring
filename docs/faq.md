@@ -2,7 +2,8 @@
 
 ## How much GPU memory does a run need?
 
-About **8 GB** for Qwen3-0.6B at its recipe, and more for Qwen3-1.7B (the two side by side below).
+About **8 GB** allocated for Qwen3-0.6B at its recipe, more on the card, and more for Qwen3-1.7B
+(the two side by side below).
 Measured on an RTX 3090 (2026-09-07) at rank 32, batch 6 × 512 tokens, 16 anchor samples: **8.63 GiB
 allocated at peak, 10.8 GiB reserved** by the caching allocator — with a second, separately loaded
 teacher, which is what every run did before 0.1.1 and what `--teacher-mode separate` still does. A
@@ -14,20 +15,25 @@ inside a run-to-run spread of 0.8 %). What is left is the student, the optimizer
 activations; the anchor itself is small, since it evaluates sub-modules on 16 vectors rather than on
 the batch.
 
-**Per model**, on the same test and the same card — the GPU pipeline test (a trial-frame artifact
-build, the supplement, one epoch at batch 6 × 512 with no accumulation, evaluate, fuse) on an
-RTX 3090, 2026-10-03, peak by `nvidia-smi` sampled every 5 s over the whole test:
+**Per model**, on the same test and the same card, by a different measure — `nvidia-smi`
+memory.used, which includes what PyTorch's caching allocator holds and so is an upper bound on what
+a run needs; it is not read against the allocated figures above. The GPU pipeline test (a
+trial-frame artifact build, the supplement, one epoch at batch 6 × 512 with no accumulation,
+evaluate, fuse) on an RTX 3090, 2026-10-03, sampled every 5 s over the whole test:
 
-| model | peak | test time |
+| model | `nvidia-smi` memory.used | test time |
 |---|---:|---:|
-| Qwen3-0.6B | 5,435 MiB | 323 s |
-| Qwen3-1.7B | 8,853 MiB | 482 s |
+| Qwen3-0.6B | maximum 10,235 MiB | 323 s |
+| Qwen3-1.7B | mostly 8.5–9 GiB; maximum 14,781 MiB (brief) | 482 s |
 
-The peak includes the model in float32 during the trial build (about 6.9 GB for Qwen3-1.7B, whose
+The test includes the model in float32 during the trial build (about 6.9 GB for Qwen3-1.7B, whose
 1,720,574,976 parameters are 3.44 GB in bfloat16), and a 5-second sample can miss a short spike.
-Batch 6 × 512 ran without running out of memory on both. These are not training peaks: a
-Qwen3-0.6B training run — unanchored, 4 epochs at batch 6 × 512 — peaked at 7,325 MiB by
-`nvidia-smi` sampled every 10 s over init, train and evaluate (2026-10-03).
+Batch 6 × 512 ran without running out of memory on both. These are not training figures: a
+Qwen3-0.6B training run — unanchored, 4 epochs at batch 6 × 512 — read about 7.0–7.5 GiB while
+writing the supplement and about 13.5–14.0 GiB while training, at most 13,971 MiB, by the same
+measure sampled every 10 s over `init`, `train` and `evaluate` (2026-10-03). Training runs for
+Qwen3-1.7B are in [the cookbook's worked
+example](model-integration-cookbook.md#9-worked-example-qwen3-17b).
 
 Full-weight training moves the base weights, so there the student is not a copy of anything and a
 real teacher is loaded: a full-weight run still holds two models, and `--teacher-mode
@@ -173,8 +179,11 @@ Because every published LFA result is LoRA. The loss is method-agnostic by const
 compares sub-module outputs, not adapters — so full-weight training runs, and
 `--full-weight` will do it. But the operating point in each bundled recipe was tuned at rank 32,
 and λ's meaning goes with the size of the space it constrains: a full-weight run is not
-"rank ∞ at the same λ". The warning says what to do instead — calibrate λ in the 50,000–100,000
-region and read **held-out domain** perplexity, not only general-text perplexity.
+"rank ∞ at the same λ". The warning says so — full-weight anchoring is unvalidated and every
+measured λ is for LoRA — and what to do instead: re-calibrate λ for full weight by
+[the cookbook's §5](model-integration-cookbook.md#5-calibrate-λ) and check **held-out domain**
+perplexity, not only general-text perplexity. Only a recipe naming Qwen3-0.6B adds a starting
+range for that search, 50,000–100,000.
 
 ## WikiText-2 perplexity came out *below* the base model's. Is that a win?
 

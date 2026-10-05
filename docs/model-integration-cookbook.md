@@ -207,10 +207,14 @@ of the student's own LoRA base with the adapters switched off):
   micro-batch 6 on an 8 GB card ([faq.md](faq.md#how-much-gpu-memory-does-a-run-need));
 * the anchor itself: small — it evaluates sub-modules on 16 sampled vectors, not on the batch.
 
-Measured anchors (RTX 3090, 24 GB): Qwen3-0.6B at the shipped recipe peaked at 8.63 GiB allocated
-(2026-09-07, with a separately loaded teacher, which the default no longer loads); an unanchored
-4-epoch Qwen3-0.6B run peaked at 7,325 MiB by `nvidia-smi` sampled every 10 s over init, train
-and evaluate (2026-10-03). For Qwen3-1.7B, §9 has the GPU smoke's peak.
+Measured anchors (RTX 3090, 24 GB), by two measures that are not read against each other. PyTorch's
+`max_memory_allocated`: Qwen3-0.6B at the shipped recipe peaked at 8.63 GiB allocated (2026-09-07,
+with a separately loaded teacher, which the default no longer loads). `nvidia-smi` memory.used,
+which includes what PyTorch's caching allocator holds and so is an upper bound on what a run needs,
+sampled every 10 s over `init`, `train` and `evaluate`: an unanchored 4-epoch Qwen3-0.6B run read
+about 7.0–7.5 GiB while writing the supplement and about 13.5–14.0 GiB while training, at most
+13,971 MiB (2026-10-03). For Qwen3-1.7B, §9 has the GPU smoke and the training runs by the second
+measure.
 
 If batch 6 × 512 does not fit, keep the geometry and halve the micro-batch: `batch_size: 3`,
 `gradient_accumulation_steps: 2`. The package does not pick a batch for you, on purpose: the
@@ -247,11 +251,11 @@ fixed seed ([the-artifact.md](the-artifact.md#host-ram-the-layer-group)).
 sites sum to 176,160,768 and its artifact is 110.0 MB (int8); Qwen3-1.7B's 84 sites, all 2,048
 wide, sum to 352,321,536, twice that, and its artifact is 243.7 MB (both built 2026-10-03/04).
 
-**Time.** On one RTX 3090 in a host with 125 GiB of RAM, the full-frame Qwen3-0.6B build took
-231 minutes (3 h 51 min) from a cold store: 83 minutes of generation, about 27 minutes collecting
-hidden states and about 2 h fitting the mixtures (2026-10-04; it ran alone on the host). Qwen3-1.7B's
-took 355.5 minutes (5 h 56 min), 87 of them generation (2026-10-03/04; §9). Plan for hours, and see
-§4 on running detached.
+**Time.** On one RTX 3090 in a host with 125 GiB of RAM, the full-frame Qwen3-0.6B build took 231
+minutes (3 h 51 min) from a cold store: 83 minutes of generation, about 27 minutes collecting hidden
+states and about 2 h fitting the mixtures (2026-10-04; it ran alone on the host). Qwen3-1.7B's took
+355.5 minutes (5 h 56 min), 87 of them generation (2026-10-03/04; §9). Plan for hours, and see §4 on
+running detached.
 
 ## 4. Build the self-generated artifact, then probe it
 
@@ -328,10 +332,11 @@ refused while the first holds its lock.
   been measured. Record the share. Watch, too, for anything in the package that counts
   whitespace-separated words: scripts written without spaces (Chinese, Japanese, Thai) are one or
   two "words" a paragraph, and a word-count filter mis-handles them (§9).
-* **The layer-group line and the collection line**, e.g. `Collected 84 sites, 603008 samples at
-  the thinnest site` (Qwen3-0.6B, one group, 2026-10-04). With several groups each logs its own: a group of
-  `g` layers that includes layer 0 has `3g − 1` sites (layer 0's `pre_qkv` is an exact embedding
-  lookup, not a fitted site), and the last group adds `pre_lm_head`.
+* **The layer-group line and the collection line**, e.g. for Qwen3-0.6B (one group, 2026-10-04)
+  `Collected 84 sites, 603008 samples at the thinnest site`.
+  With several groups each logs its own: a group of `g` layers that includes layer 0 has `3g − 1`
+  sites (layer 0's `pre_qkv` is an exact embedding lookup, not a fitted site), and the last group
+  adds `pre_lm_head`.
 * **The store entry**: `lfa list-artifacts` shows `built <date>` for a finished entry.
 * **The format contract.** The build writes a `__meta__` block naming the model, its hidden size
   and its depth, with `built_with: lfa-anchoring` (what a file is accepted on) and `format_version`
@@ -422,8 +427,8 @@ than it is. Measured on a Qwen3-0.6B self-generated artifact (one artifact, RTX 
 corpus, the median SHAPE read 0.238 (linear sites) and 0.606 (MLP sites); with an unanchored
 adapter, 0.056 and 0.108. The probe reads each adapter's run `config.json` and says when a witness
 was anchored or its history is unknown. The recipe above — unanchored, 4 epochs, Darwin — is the
-one the recorded numbers below were measured with, so keep to it when comparing against them; the
-8-epoch control of §5 step 3 is a different witness.
+one the recorded numbers below were measured with, so keep to it when comparing against them. It
+is also §5's 4-epoch control; §5's recipe-dose control is a different witness.
 
 **What it reports**, per probed site (default: five layers, first and last included) and as
 medians by site class (linear = `pre_qkv` + `pre_o`; MLP = `pre_mlp`):
@@ -448,10 +453,12 @@ work, **measured with the same witness recipe**. The recorded reference:
 
 Witness recipe: one adapter from an unanchored run (λ = μ = 0) on the walkthrough's Darwin training
 text, 4 epochs, the `qwen3-0.6b` recipe otherwise. Probe settings: WikiText-2 truth, `--n-real
-30000 --n-model 30000 --n-random 4`, layers 0, 7, 14, 20, 27, probe seed 0. One witness, one seed,
-RTX 3090, 2026-10-04; the probe took 15 s. Over probe seeds 1 and 2 the artifact read 0.055 and
-0.053 (linear) and 0.102 and 0.095 (MLP). The same probe on Qwen3-0.6B peaked at 4,691 MiB by
-`nvidia-smi` (2026-10-03). §9 has Qwen3-1.7B's numbers at the same witness recipe.
+30000 --n-model 30000 --n-random 4`, layers 0, 7, 14, 20, 27, probe seed 0. One witness, one
+training seed, RTX 3090, 2026-10-04; the probe took 15 s. Over probe seeds 1 and 2 the artifact
+read 0.055 and 0.053 (linear) and 0.102 and 0.095 (MLP). The same probe on Qwen3-0.6B read at most
+4,691 MiB of `nvidia-smi` memory.used sampled every 5 s (2026-10-03): four samples over a run of
+about 15 s, so a short spike could be missed. §9 has Qwen3-1.7B's numbers at the same witness
+recipe.
 
 * **A collapsed artifact** (a point mass, a degenerate corpus) shows as SHAPE many times these.
 * **A scale or layer error** (the wrong model's artifact, layers out of order) shows in LEVEL,
@@ -492,8 +499,9 @@ held-out domain perplexity and WikiText-2 — and the public text of the walkthr
    point.save("recipes/your-model.yaml")
    ```
 
-   One copy per arm below, differing only in `lambda_qkv` = `lambda_mlp` (and `mu` for the
-   control).
+   One copy per arm below. The ladder's copies (step 4) differ only in `lambda_qkv` = `lambda_mlp`;
+   the controls' copy (step 3) sets them and `mu` to 0; step 7's two copies carry the chosen λ and
+   differ only in `stage2_lambda_multiplier` (1 and 3).
 
 2. **The text and its supplement** are prepared once, in §4 ("Probe it", step 1): the
    walkthrough's two Gutenberg books from
@@ -501,60 +509,97 @@ held-out domain perplexity and WikiText-2 — and the public text of the walkthr
    in `data/darwin/` and `data/cookery/`, and the base model's supplement beside
    `data/darwin/train`. Every run below reuses them.
 
-3. **The unanchored control**, at 8 epochs (λ = μ = 0). It sets both ends of the scale: how far the
-   domain can move, and what that costs on the general axis when nothing is preserved. (The
-   probe's witness in §4 is a separate 4-epoch unanchored run: this one writes no 4-epoch
-   checkpoint, and its learning-rate schedule is laid over 8 epochs.)
+3. **The unanchored controls** (λ = μ = 0), at two doses: the recipe's own epoch count — the dose
+   you will train at, `epochs` in the recipe (15 in the bundled one) — and a short dose of 4 epochs.
+   Together they are the unanchored model's dose curve: how far the domain can move, how soon,
+   and what training on at the recipe dose costs on both axes when nothing is preserved. The
+   4-epoch control is §4's probe witness (the same recipe copy, text and epochs), so evaluate
+   `runs/witness` rather than training it again. Each dose is its own run, because the
+   learning-rate schedule is laid over the run's epochs: a 15-epoch run passes through no 4-epoch
+   state. An 8-epoch control is an optional third point on the curve.
 
    ```bash
-   lfa init runs/lam0 --model your/model --artifact self-generated --recipe recipes/your-model-lam0.yaml
-   lfa train --workspace runs/lam0 --corpus data/darwin/train --epochs 8
-   lfa evaluate --workspace runs/lam0 --corpus data/darwin/heldout
+   lfa init     runs/lam0-e15 --model your/model --artifact self-generated --recipe recipes/your-model-lam0.yaml
+   lfa train    --workspace runs/lam0-e15 --corpus data/darwin/train --epochs 15
+   lfa evaluate --workspace runs/lam0-e15 --corpus data/darwin/heldout
+   lfa evaluate --workspace runs/witness  --corpus data/darwin/heldout
    ```
 
    `init` reuses the stored artifact; `evaluate` reports WikiText-2 and held-out domain perplexity,
    base and trained. It logs that a named corpus is "a fit, not a held-out measurement", because a
    named corpus is not split; `heldout/` was never in the training directory, so here it is held
    out. `lfa evaluate --compare-unanchored` would re-run each stage with λ = μ = 0 as a third
-   column; one separate control run is cheaper when every arm is read against it.
+   column; separate control runs are cheaper when every arm is read against them. Record each
+   run's validation curve as well: the run's `training_history.json` holds the per-epoch
+   perplexity on the share of the training text that `train` held out (`val_fraction`).
 
-4. **The λ ladder**, at a fixed rank (32) and a fixed **4 epochs** (the walkthrough's dose): three
-   rungs a factor of 2–2.5 apart around a starting guess, each run as in step 3 with `--epochs 4`.
-   With no starting guess, cover roughly a decade with rungs a factor of 2–3 apart. If the pick
-   lands at an end of the ladder, extend it one rung outward and read again. Arms can run in
-   parallel, one per card.
-5. **The selection rule.** Among the ladder runs whose held-out domain improvement over the base
-   model (the drop in held-out perplexity) is at least 90 % of the unanchored control's
-   improvement, choose the one with the lowest WikiText-2 perplexity; ties within 1 % go to the
-   smaller λ. Record the whole frontier — held-out domain perplexity against general perplexity —
+   **Keep one WikiText-2 window count across everything you compare.** `evaluate` scores 100
+   windows of 512 tokens (51,200 tokens) by default, and the whole test split with
+   `--n-windows 0`. A figure at one count is not read against a figure at the other.
+
+4. **The λ ladder**, at a fixed rank (32) and at the recipe dose (15 epochs, as the long control):
+   three rungs a factor of 2–2.5 apart around a starting guess, each from its own recipe copy and
+   run as the control above. With no starting guess, cover roughly a decade with rungs a factor of
+   2–3 apart. Arms can run in parallel, one per card.
+
+   ```bash
+   lfa init     runs/lam1e6 --model your/model --artifact self-generated --recipe recipes/your-model-lam1e6.yaml
+   lfa train    --workspace runs/lam1e6 --corpus data/darwin/train --epochs 15
+   lfa evaluate --workspace runs/lam1e6 --corpus data/darwin/heldout
+   ```
+
+5. **The selection rule.** First read the long control. If it improves the held-out domain over
+   the base model: among the ladder runs whose held-out domain improvement over the base model (the
+   drop in held-out perplexity) is at least 90 % of the control's improvement, choose the one with
+   the lowest WikiText-2 perplexity; ties within 1 % go to the smaller λ.
+
+   **If the control over-trains at the recipe dose** — its held-out domain perplexity ends above the
+   base model's — every rung that does not over-train worse than the control clears that 90 % bar,
+   and the rule above reduces to the general axis alone. Then pick, on the recipe-dose frontier, the
+   rung that is best on both axes (lowest held-out domain perplexity and lowest WikiText-2). If no
+   rung is best on both, take the rung with the lowest held-out domain perplexity among the rungs
+   within 1 % of the lowest WikiText-2 perplexity.
+
+   Either way, if the choice lands at an end of the ladder, add a rung one step further out (a
+   factor 2–2.5) and read again, until the ladder turns over and the choice is interior. Record the
+   whole frontier — held-out domain perplexity against general perplexity, the controls included —
    not only the pick. Pick from the frontier, never from the general axis alone: over-anchoring
    makes general perplexity look its best while domain quality collapses, and that failure is
-   invisible unless you are watching the domain number.
-6. **The dose check**: one 8-epoch run at the chosen λ. Record the epoch with the lowest held-out
-   perplexity; the run's `training_history.json` holds the per-epoch validation curve.
+   invisible unless you are watching the domain number. For Qwen3-1.7B the control over-trained at
+   15 epochs, and the rung best on both axes was λ = 1,000,000, ten times the bundled Qwen3-0.6B
+   recipe's 100,000 (§9): λ does not port, even within a family.
+6. **The dose curve**: no new run. From the chosen rung's validation curve, record the epoch with
+   the lowest validation perplexity and the value at the last epoch, beside the controls' curves.
+   At the recipe dose the chosen rung's curve should not climb in the late epochs the way the
+   control's does. If it does, the recipe's epoch count is too long for that λ: shorten `epochs` in
+   the recipe copies, re-run the long control and the ladder at the new dose, and read them again
+   (steps 3–5).
 7. **The stage-2 multiplier.** A two-stage chain, Darwin then cookery, at the chosen λ with
-   `stage2_lambda_multiplier` 1 and 3, 4 epochs a stage:
+   `stage2_lambda_multiplier` 1 and 3, the recipe dose (15 epochs) in each stage:
 
    ```bash
    lfa init     runs/chain-m3 --model your/model --artifact self-generated --recipe recipes/your-model-m3.yaml
-   lfa train    --workspace runs/chain-m3 --corpus data/darwin/train --epochs 4
+   lfa train    --workspace runs/chain-m3 --corpus data/darwin/train --epochs 15
    lfa extend   --workspace runs/chain-m3
-   lfa train    --workspace runs/chain-m3 --corpus data/cookery/train --epochs 4
+   lfa train    --workspace runs/chain-m3 --corpus data/cookery/train --epochs 15
    lfa evaluate --workspace runs/chain-m3 --corpus data/darwin/heldout
    lfa evaluate --workspace runs/chain-m3 --corpus data/cookery/heldout
    ```
 
    Stage 2's supplement is written by that stage's entry model (the fused stage-1 model) when
-   `train` runs, not by the base model. Choose the multiplier that keeps more of Darwin (held-out
-   Darwin after stage 2, lower is better) while cookery's improvement stays within 90 % of the
-   better arm's. Record both arms.
+   `train` runs, not by the base model. Each evaluation compares stage 2 against its start, the
+   fused stage-1 model. Both evaluations score WikiText-2 at the default 51,200 tokens, the ladder's
+   count, so the arms read against each other and against the ladder on one measure. Choose the
+   multiplier that keeps more of Darwin (held-out Darwin after stage 2, lower is better) while
+   cookery's improvement stays within 90 % of the better arm's. Record both arms.
 8. **Then, and only then, change rank.** Lower rank ⇒ lower λ, and the frontier has to be re-read.
 
 μ = 0.05 is a reasonable starting backstop on a new model; it is a global shrinkage term rather
 than a steering one, so it is far less sensitive than λ.
 
-Scope everything you record: one model, one seed, one domain (Darwin; cookery for stage 2), a
-perplexity frontier, the card and the date. No judged numbers: no judge is part of this package.
+Scope everything you record: one model, one training seed, one domain (Darwin; cookery for stage
+2), a perplexity frontier with its WikiText-2 window count, the card and the date. No judged
+numbers: no judge is part of this package.
 
 ## 6. Write the recipe
 
@@ -609,8 +654,10 @@ Copy the existing ones; each is short.
   `tests/test_selfgen_generate.py`; add a case there for any new quirk.
 * **GPU pipeline smoke, `gpu`** — add the id to the parametrization in `tests/test_pipeline_gpu.py`:
   a trial-frame build, `prepare-domain --supplement`, one epoch of `train`, `evaluate`, `fuse`, and a
-  second `init` that must reuse the stored artifact. Before the model has a bundled recipe it runs on
-  an uncalibrated copy, as that file shows. Run it one model at a time:
+  second `init` that must reuse the stored artifact. Each model in it runs on its bundled recipe,
+  which `--model` adopts. A model with no bundled recipe yet is smoke-tested on an uncalibrated
+  copy of one (§5 step 1), passed with `--recipe`; the file's docstring shows how. Run it one
+  model at a time:
   `pytest tests/test_pipeline_gpu.py -m gpu -q -k <its parametrize id>` (e.g. `-k 1.7B`); give the
   new entry an id of its own in the parametrization's `ids`.
 * **Recipe** — once the recipe is bundled, pin its operating point the way `tests/test_recipe.py`
@@ -635,17 +682,18 @@ scope; it does not mean passed against a threshold.
 - [ ] The unprompted corpus has been read: its language share and empty count recorded.
 - [ ] The probe has run with a witness from an unanchored run, and its numbers are recorded beside
       the reference model's, with the witness recipe.
-- [ ] The control, the λ ladder, the selection, the dose check and the stage-2 multiplier are
-      recorded, with their scope.
+- [ ] The controls (recipe dose and 4 epochs), the λ ladder at the recipe dose, the selection, the
+      dose curve and the stage-2 multiplier are recorded, with their scope and WikiText-2 window
+      count.
 - [ ] The recipe is bundled with true `calibrated_*` fields and a scoped header; `lfa init` on the
       model adopts it, and `lfa train` logs no calibration note.
 - [ ] The tests of §7 are in, and the fast tier passes.
 
 ## 9. Worked example: Qwen3-1.7B
 
-What integrating Qwen3-1.7B (`Qwen/Qwen3-1.7B`) took, step by step. Everything measured here is one
-model, one seed, on an RTX 3090 (24 GB) in a host with 125 GiB of RAM, on 2026-10-03 and
-2026-10-04.
+What integrating Qwen3-1.7B (`Qwen/Qwen3-1.7B`) took, step by step. Everything measured here is on
+Qwen3-1.7B except the Qwen3-0.6B figures each bullet names for comparison; one training seed;
+RTX 3090 cards (24 GB, one run per card) in a host with 125 GiB of RAM; 2026-10-03 to 2026-10-05.
 
 **The model.** Family Qwen3, `model_type` `qwen3` (`Qwen3ForCausalLM`) — the same family as the
 bundled Qwen3-0.6B. Hidden size 2,048; 28 layers; 16 query and 8 key-value heads of width 128, so
@@ -669,9 +717,11 @@ user opener `"<|im_start|>user\n"`, turn end `<|im_end|>`, and the boundary mark
 build is about 6.9 GB. Reservoirs cost 2.29 GiB per layer, 64.1 GiB for all 28. The GPU pipeline
 smoke (`tests/test_pipeline_gpu.py -k 1.7B`: a trial-frame build at `--n-raw 60 --max-new-tokens
 128`, the supplement, one epoch at batch 6 × 512 with no accumulation, evaluate, fuse) passed in
-482 s at a peak of 8,853 MiB, against Qwen3-0.6B's 323 s and 5,435 MiB on the same test. The peaks
-are `nvidia-smi` sampled every 5 s over the whole test, so they include the fp32 model during the
-trial build. Batch 6 × 512 did not run out of memory.
+482 s, against Qwen3-0.6B's 323 s on the same test (2026-10-03). By `nvidia-smi` memory.used sampled
+every 5 s over the whole test, the fp32 model of the trial build included, it sat mostly at 8.5–9
+GiB, with a brief maximum of 14,781 MiB; Qwen3-0.6B's maximum on the same test was 10,235 MiB.
+memory.used includes what PyTorch's caching allocator holds, so these are upper bounds on need.
+Batch 6 × 512 did not run out of memory.
 
 **§4 The build, and what the corpus showed.**
 
@@ -692,12 +742,11 @@ trial build. Batch 6 × 512 did not run out of memory.
   English domain has not been measured.
 * **The build.** The build behind the stored artifact took 355.5 minutes (5 h 56 min) from a cold
   store and wrote 243.7 MB: generation 87 minutes for the 2,500 documents, none of them empty,
-  against 83 minutes for Qwen3-0.6B; then the collection and fit, with 25 of the 28 layers in a
-  group at 115.0 GiB available, two corpus passes (2026-10-03/04). It shared the host for most of
-  its run with a second Qwen3-1.7B build, the 1.5 M-sample adequacy build below.
-* **The layer group.** The build logged
+  against 83 minutes for Qwen3-0.6B; then the collection and fit (2026-10-03/04). It shared the
+  host for most of its run with a second Qwen3-1.7B build, the 1.5 M-sample adequacy build below.
+* **The layer group.** Two corpus passes, of 25 layers and of 3; the build logged (2026-10-03)
   `layer_group_size=25 for Qwen/Qwen3-1.7B: ~57.2 GiB of reservoirs per group against 115.0 GiB available`
-  (2026-10-03) — two corpus passes, of 25 layers and of 3 — and the passes logged
+  and the passes logged
   `Collected 74 sites, 600087 samples at the thinnest site` (25 layers × 3 sites, less layer 0's
   `pre_qkv`) and `Collected 10 sites, …` (3 layers × 3 sites, plus `pre_lm_head`). At 118 GiB
   available the same arithmetic gives 25 as well (pinned in `tests/test_model_families.py`).
@@ -719,9 +768,95 @@ trial build. Batch 6 × 512 did not run out of memory.
 * **The trial recipe.** Before calibration the model ran on a copy of the `qwen3-0.6b` recipe naming
   `Qwen/Qwen3-1.7B` with `calibrated_artifact: uncalibrated`, and `train` said so at every stage.
 
+**§5 Calibration.** Qwen3-1.7B on the stored artifact of the build above; the walkthrough's Darwin
+text (cookery for stage 2); rank 32 (α 64), batch 6 × 512, μ = 0.05 on every anchored run and 0
+on the control; one training seed; perplexity only; one run per RTX 3090; 2026-10-04 and
+2026-10-05. Base model: WikiText-2 15.09 (the default 100 windows, 51,200 tokens), held-out
+Darwin 21.45 (the 27 documents of `data/darwin/heldout`). The validation curve is the per-epoch
+perplexity on the 10 % that `train` holds out of the training text.
+
+* **The frontier at 15 epochs**, the dose the recipe trains at, with the unanchored control at 4,
+  8 and 15 epochs (perplexity after training; change against the base model; WikiText-2 over the
+  default 51,200 tokens):
+
+  | run | epochs | WikiText-2 | held-out Darwin |
+  |---|---:|---:|---:|
+  | unanchored (λ = μ = 0) | 4 | 15.01 (−0.5 %) | 14.34 (−33.2 %) |
+  | unanchored (λ = μ = 0) | 8 | 40.30 (+167 %) | 49.08 (+129 %) |
+  | unanchored (λ = μ = 0) | 15 | 132.47 (+778 %) | 162.70 (+658 %) |
+  | λ = 20,000 | 15 | 15.67 (+3.8 %) | 42.00 (+95.8 %) |
+  | λ = 50,000 | 15 | 15.03 (−0.4 %) | 27.04 (+26.1 %) |
+  | λ = 100,000 | 15 | 14.48 (−4.0 %) | 19.89 (−7.3 %) |
+  | λ = 200,000 | 15 | 14.10 (−6.6 %) | 16.47 (−23.2 %) |
+  | λ = 500,000 | 15 | 13.43 (−11.0 %) | 14.00 (−34.7 %) |
+  | **λ = 1,000,000** | 15 | **13.15 (−12.8 %)** | **13.63 (−36.5 %)** |
+  | λ = 2,500,000 | 15 | 13.31 (−11.8 %) | 13.82 (−35.6 %) |
+  | λ = 5,000,000 | 15 | 13.91 (−7.8 %) | 14.24 (−33.6 %) |
+
+* **The control over-trains; at λ = 1,000,000, 15 epochs are safe on this corpus.** Darwin's
+  training text, about 189,000 tokens an epoch, is learned in two to four epochs: every unanchored
+  run's validation curve is lowest at epoch 2 (10.83 to 11.01) and climbs after it, to 144.81 at
+  epoch 15. At 4 epochs the unanchored run is a good result on its own (held-out Darwin −33.2 %,
+  WikiText-2 −0.5 %); on a corpus this small a few epochs suffice. At 15 epochs it is far worse than
+  the base model on both axes. At λ = 1,000,000 the 15-epoch run ends below the 4-epoch unanchored
+  run on both axes (13.63 against 14.34 on Darwin, 13.15 against 15.01 on WikiText-2), and from
+  epoch 10 on its validation curve stays between 12.69 and 12.76 (lowest at epoch 11; 12.71 at epoch
+  15). Weaker anchors still over-train late: at 20,000 the validation curve is lowest at epoch 3
+  (11.79) and ends at 38.83; at 100,000 it is lowest at epoch 5 (12.25) and ends at 18.45; at
+  500,000 it is lowest at epoch 9 (12.65) and ends at 13.11.
+* **How λ was chosen.** §5's first rule takes the unanchored control's domain improvement as its
+  reference. At 15 epochs the control makes held-out Darwin worse, not better, so every rung
+  qualifies and that rule would pick on WikiText-2 alone. §5's over-training branch applies
+  instead (step 5, "If the control over-trains at the recipe dose"): the rung best on both axes,
+  with the ladder extended outward while its top rung was best — 200,000 beat 100,000 on both
+  axes, 500,000 and 1,000,000 beat 200,000, and 2,500,000 and 5,000,000 were worse than 1,000,000
+  on both. **λ = 1,000,000 is the interior
+  optimum**, ahead of 2,500,000 by 1.2 % on WikiText-2 and 1.4 % on held-out Darwin.
+* **WikiText-2 below the base model.** Every rung from λ = 50,000 up ends with WikiText-2 below
+  the base model's 15.09: by 0.4 % at 50,000, and by up to 12.8 % (13.15) at 1,000,000. That is
+  what was measured; why has not been established.
+* **The stage-2 multiplier.** A two-stage chain at the chosen λ — Darwin 15 epochs, `extend`,
+  cookery 15 epochs — with `stage2_lambda_multiplier` 1 and 3, and the same pair at λ = 100,000.
+  Each stage's change is against that stage's start (for stage 2, the fused stage-1 model);
+  held-out cookery is its 15 held-out documents; WikiText-2 is over the default 100 windows
+  (51,200 tokens), as on the frontier table:
+
+  | stage-1 λ | multiplier | held-out cookery, stage 2 | held-out Darwin after stage 2 | WikiText-2 (100 windows, 51,200 tokens) after stage 2 |
+  |---:|---:|---:|---:|---:|
+  | 1,000,000 | 1× | 16.16 → 11.90 (−26.4 %) | 13.64 → 16.24 (+19.0 %) | 13.09 → 13.16 (+0.5 %) |
+  | 1,000,000 | **3×** | 16.20 → 11.84 (−27.0 %) | 13.65 → 15.40 (+12.8 %) | 13.13 → 12.79 (−2.6 %) |
+  | 100,000 | 1× | 22.35 → 20.38 (−8.8 %) | 19.43 → 29.76 (+53.1 %) | 14.36 → 14.53 (+1.2 %) |
+  | 100,000 | 3× | 22.75 → 13.92 (−38.8 %) | 19.88 → 19.90 (+0.1 %) | 14.41 → 13.87 (−3.8 %) |
+
+  At λ = 1,000,000, 3× came out ahead of 1× on all three axes: it kept more of Darwin (15.40
+  against 16.24), it left WikiText-2 lower (12.79 against 13.16), and cookery ended slightly lower
+  (11.84 against 11.90). §5's multiplier rule picks 3×. At λ = 100,000 3× was ahead on all three
+  as well, by wider margins.
+* **Run-to-run spread.** Repeated stage-1 runs of the same recipe and training seed (the ladder run
+  and the two chains' first stages), on the frontier table's measures: at λ = 1,000,000, WikiText-2
+  13.15, 13.09 and 13.13 (51,200 tokens) and held-out Darwin 13.63, 13.64 and 13.65; at λ = 100,000,
+  held-out Darwin 19.89, 19.43 and 19.88, 2.4 % apart. The 1.2–1.4 % margin of 1,000,000 over
+  2,500,000 is larger than the spread at 1,000,000 (0.5 % on WikiText-2, 0.15 % on Darwin) and
+  smaller than the Darwin spread at 100,000; the 0.5 % cookery margin between the multipliers is
+  smaller than the latter.
+* **Training memory.** `nvidia-smi` memory.used, sampled every 10 s over a whole run (`init`,
+  `train`, `evaluate`; batch 6 × 512). It includes what PyTorch's caching allocator holds, so it is
+  an upper bound on what a run needs, and it is not comparable with PyTorch's allocated figure of
+  §3. Anchored 15-epoch rungs (every rung, 20,000 to 5,000,000): about 13.0–13.1 GiB while training,
+  maxima 13,033–13,056 MiB, and about 7 GiB while evaluating. Unanchored (8 and 15 epochs): about
+  11.0–11.5 GiB while training, maximum 11,236 MiB. The two-stage chains' stage-2 training on the
+  fused model: maxima 16,206–19,291 MiB (λ = 1,000,000: 16,206 at 1× and 19,291 at 3×, which held
+  19.0–19.3 GiB for the last 5 minutes or so of stage 2; λ = 100,000: 17,511 at 1× and 16,842 at
+  3×).
+* **The recipe.** The bundled `qwen3-1.7b` recipe (`lfa/recipes/qwen3-1.7b.yaml`): `lambda_qkv` =
+  `lambda_mlp` = 1,000,000; every other field as `qwen3-0.6b`, including `stage2_lambda_multiplier`
+  3.0 and 15 epochs, which the runs above support on this model. That λ is ten times the Qwen3-0.6B
+  recipe's 100,000, on a model of the same family and layout.
+
 **What differed from Qwen3-0.6B**, in short: nothing in the layout or the tokenizer; twice the
-`Σ d²` and about 1.6× the smoke's peak memory; and a model that writes two-fifths of its unprompted
-text in Chinese, which a word-counting filter could not read.
+`Σ d²`, and a GPU smoke whose `nvidia-smi` memory.used sat mostly at 8.5–9 GiB (maximum 14,781 MiB,
+against Qwen3-0.6B's 10,235 MiB); a model that writes two-fifths of its unprompted text in Chinese,
+which a word-counting filter could not read; and a calibrated λ ten times the Qwen3-0.6B recipe's.
 
 ## 10. Extending to multimodal models (image and audio) — general advice, untested
 
