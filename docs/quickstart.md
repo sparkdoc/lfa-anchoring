@@ -259,13 +259,13 @@ For the whole thing worked through on real text — two domains one after the ot
 public-domain books the notebook downloads itself, with **each stage run a second time with the
 anchor off** so the control sits beside every number — open
 [`examples/two_domain_walkthrough.ipynb`](../examples/two_domain_walkthrough.ipynb). It ran end to
-end in 35.4 minutes on one RTX 3090 (four training runs, two of them controls, and a supplement
+end in 35.3 minutes on one RTX 3090 (four training runs, two of them controls, and a supplement
 written for each stage), plus whatever the
 model and WikiText-2 cost you on a cold cache and the artifact build when the store has none for
 the model yet. Its epoch count is demo scale — a quarter of the
 recipe's fifteen — and the notebook says so
 beside every table, so do not read its settings as the recommended ones. Its recorded outputs were
-made on 2026-09-30 on that card, with the self-generated artifact at the recorded frame (2,500
+made on 2026-10-05 on that card, with the self-generated artifact at the recorded frame (2,500
 documents × 2,048 tokens, K = 32) and the supplement on.
 [`examples/what_the_anchor_does.ipynb`](../examples/what_the_anchor_does.ipynb) is optional and
 picks up the workspace it leaves behind: each control re-run at its own best number of epochs,

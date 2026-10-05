@@ -65,7 +65,7 @@ def test_no_shipped_file_speaks_in_the_research_records_terms():
 def test_a_notebooks_recorded_outputs_are_scanned_as_well_as_its_sources():
     # The stored artifact's size, printed by the walkthrough's artifact cell: it is in a recorded
     # output and in no cell's source.
-    needle = "110.3 MB"
+    needle = "110.0 MB"
     raw = (REPO_ROOT / "examples" / "two_domain_walkthrough.ipynb").read_text(encoding="utf-8")
     assert needle in raw, "the recorded output this test reads has changed; pick another string"
 

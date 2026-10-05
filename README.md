@@ -179,10 +179,10 @@ per domain. Details:
 [`examples/two_domain_walkthrough.ipynb`](https://github.com/sparkdoc/lfa-anchoring/blob/main/examples/two_domain_walkthrough.ipynb):
 Qwen3-0.6B adapted to Darwin, then to a Victorian cookbook, with every stage repeated with the
 anchor off so the control sits beside each number. Across stage 2 the anchored model's Darwin
-perplexity moves 17.07 → 18.60 while the unanchored one's goes to 33.56, having read no Darwin
-either way. Recorded 2026-09-30 on one RTX 3090 with the self-generated artifact at the recorded
+perplexity moves 19.25 → 19.92 while the unanchored one's goes to 37.47, having read no Darwin
+either way. Recorded 2026-10-05 on one RTX 3090 with the self-generated artifact at the recorded
 frame (2,500 documents × 2,048 tokens, K = 32) and the supplement on; one seed, one run per cell.
-35.4 minutes of training and tables on that card once the artifact is in the store, and it
+35.3 minutes of training and tables on that card once the artifact is in the store, and it
 downloads what it needs and needs no API key.
 
 A second notebook is optional and continues from the workspace the first leaves behind:
@@ -190,7 +190,7 @@ A second notebook is optional and continues from the workspace the first leaves 
 re-runs each control at its own best epoch count, so the gaps above can be split into what is
 dose and what is anchor — at its own dose each control fits its new domain more closely than the
 anchored run and keeps less of the rest — and then puts the three models to fixed probes, whose
-answers, at this scale, do not show that difference.
+answers, at this scale, mostly do not show that difference.
 
 ## Documentation
 

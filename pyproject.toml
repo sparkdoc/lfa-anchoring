@@ -53,7 +53,7 @@ lfa = ["recipes/*.yaml", "artifact/published.json"]
 "lfa.examples" = ["*.yaml", "*.ipynb"]
 
 [tool.pytest.ini_options]
-markers = ["gpu: needs CUDA", "slow: downloads data from the Hugging Face Hub", "notebook: executes the example notebooks end to end (a GPU, the network, ~35 minutes on an RTX 3090 for the walkthrough and ~19 for its companion, recorded with the self-generated artifact already in the store and the supplement on; the companion's test re-runs the walkthrough first, ~1 h 31 min for the tier)"]
+markers = ["gpu: needs CUDA", "slow: downloads data from the Hugging Face Hub", "notebook: executes the example notebooks end to end (a GPU, the network, ~35 minutes on an RTX 3090 for the walkthrough and ~19 for its companion, recorded with the self-generated artifact already in the store and the supplement on; the companion's test re-runs the walkthrough first, ~1 h 29 min for the tier)"]
 addopts = "-m 'not gpu and not slow and not notebook'"
 # `error` first, so a warning this package starts emitting fails the suite instead of joining a
 # pile of noise. Left at that, the rule is brittle in a way that has nothing to do with this
