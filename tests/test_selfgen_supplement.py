@@ -66,6 +66,8 @@ def test_the_template_names_the_domain_and_keeps_the_rules():
     assert "write 6 diverse question-answer pairs" in prompt
     assert "Keep answers to 2-5 sentences" in prompt and "PASSAGE" in prompt
     assert "philosophy" not in prompt
+    assert "Chalmers" not in prompt and "thought experiment" not in prompt
+    assert '"Smith argues that..."' in prompt
 
 
 class _Tok:

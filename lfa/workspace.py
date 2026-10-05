@@ -591,7 +591,8 @@ class Workspace:
                 recipe's lambda was calibrated at, and warns. Ignored when the recipe's
                 fraction is 0.
             domain_description: what the supplement template says the text is on. Defaults to
-                the corpus directory's name with ``_``/``-`` read as spaces.
+                the corpus directory's name with ``_``/``-`` read as spaces, or its nearest
+                ancestor's when that name is generic (``data/darwin/train`` -> ``darwin``).
 
         Returns:
             The history entry this run appended.

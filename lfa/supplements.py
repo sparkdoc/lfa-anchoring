@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from pathlib import Path
 
@@ -27,10 +28,39 @@ __all__ = ["domain_description_for", "beside_corpus", "recipe_for", "supplement_
            "prepare_supplement"]
 
 
+# Container names that say where text sits, not what it is about (compared after `_`/`-` -> space).
+_GENERIC_NAMES = frozenset({
+    "train", "training", "test", "val", "valid", "validation", "heldout", "held out", "dev",
+    "data", "dataset", "datasets", "corpus", "corpora", "text", "texts", "docs", "documents",
+    "raw", "clean", "cleaned", "input", "inputs", "src"})
+
+
+def _readable(name: str) -> str:
+    return re.sub(r"[_\-]+", " ", name).strip()
+
+
 def domain_description_for(corpus_path: Path) -> str:
-    """The corpus directory's name with `_`/`-` as spaces; what the template says the text is on."""
-    name = corpus_path.stem if corpus_path.is_file() else corpus_path.name
-    return re.sub(r"[_\-]+", " ", name).strip() or "the domain"
+    """What the template says the text is on: the corpus's name with `_`/`-` as spaces.
+
+    The name is the directory's, or the file's stem for a file. A generic container name
+    (``train``, ``data``, ``corpus`` ...) says nothing about the domain, so the nearest ancestor
+    directory whose name is not generic is used instead (``data/darwin/train`` -> ``darwin``):
+    first along the path as given, then, when a relative path runs out, on up from the working
+    directory, stopping below the home directory (whose name is the user's, not a domain's).
+    ``..`` is folded; the callers resolve symlinks before they get here. ``"the domain"`` when no
+    name on the way is anything else.
+    """
+    corpus_path = Path(corpus_path)
+    full = Path(os.path.abspath(corpus_path))   # the given path is its tail; `..` folded
+    home = Path.home().resolve()                # callers pass resolved corpus paths
+    stop = {home, *home.parents}
+    for i, step in enumerate([full, *full.parents]):
+        if step in stop:
+            break
+        readable = _readable(step.stem if i == 0 and corpus_path.is_file() else step.name)
+        if readable and readable.lower() not in _GENERIC_NAMES:
+            return readable
+    return "the domain"
 
 
 def beside_corpus(corpus_path: Path) -> Path:

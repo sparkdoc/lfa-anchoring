@@ -1,5 +1,6 @@
 """The supplement cache: where a supplement is found, and which writer it must come from."""
 import json
+from pathlib import Path
 
 import pytest
 
@@ -79,3 +80,34 @@ def test_no_recipe_anywhere_is_refused(tmp_path, patched):
 def test_the_default_description_is_the_directory_name(tmp_path):
     assert supplements.domain_description_for(tmp_path / "victorian_cookery-1861") == \
         "victorian cookery 1861"
+    assert supplements.domain_description_for(tmp_path / "data" / "my_domain") == "my domain"
+
+
+def test_a_generic_directory_name_gives_way_to_the_nearest_named_ancestor(tmp_path):
+    describe = supplements.domain_description_for
+    assert describe(tmp_path / "data" / "darwin" / "train") == "darwin"
+    assert describe(tmp_path / "history" / "data" / "train") == "history"
+    assert describe(tmp_path / "victorian_cookery" / "Held-Out") == "victorian cookery"
+    assert describe(tmp_path / "corpora" / "victorian_cookery-1861") == "victorian cookery 1861"
+    book = tmp_path / "data" / "darwin" / "train.jsonl"           # a file: its stem is the name
+    book.parent.mkdir(parents=True)
+    book.write_text("{}\n")
+    assert describe(book) == "darwin"
+
+
+def test_a_relative_path_walks_on_up_from_the_working_directory(tmp_path, monkeypatch):
+    (tmp_path / "geology" / "data" / "train").mkdir(parents=True)
+    monkeypatch.chdir(tmp_path / "geology")
+    assert supplements.domain_description_for(Path("data/train")) == "geology"
+    assert supplements.domain_description_for(Path("data/darwin/train")) == "darwin"
+
+
+def test_nothing_but_generic_names_falls_back_to_the_domain():
+    # Absolute, so the walk never reaches the working directory; lexical, so it need not exist.
+    assert supplements.domain_description_for(Path("/data/corpus/raw/train")) == "the domain"
+
+
+def test_the_walk_stops_below_the_home_directory(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "alice"))
+    assert supplements.domain_description_for(tmp_path / "alice" / "data" / "train") == "the domain"
+    assert supplements.domain_description_for(tmp_path / "alice" / "darwin" / "train") == "darwin"

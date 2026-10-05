@@ -138,8 +138,12 @@ writes the seed corpus p(h) is estimated on; no download), the supplement `train
 with the entry model and mixes in at the recipe's `supplement_fraction` (0.13, the frame the
 shipped λ was tuned at; every earlier companion run trained at 0), `prepare-supplement`,
 `regenerate-artifact` and the chain's `artifact: regenerate` route. Two recorded deviations
-from the research frame: the template says "about a text on <domain>" (was "a philosophy
-text"), and the contamination screen against an evaluation set is not ported. The toolchain
+from the research frame: the template's wording is domain-neutral (it says "about a text on
+<domain>" where the research one said "a philosophy text", its rule against exam-style
+questions no longer names thought experiments, and its third-person example is "Smith", not
+"Chalmers"), and the contamination screen against an evaluation set is not ported. The measured
+supplement result was on the research wording. The default domain description skips a generic
+directory name for the nearest named ancestor (`data/darwin/train` → `darwin`). The toolchain
 check is a warning. Recipe fields `supplement_fraction`, `self_generated_frame`; artifact meta
 fields `provenance`, `corpus_sha256`, `selfgen_frame`; history keys `supplement`,
 `artifact_route`. Evidence scope: one model, one seed (the self-generated artifact, the

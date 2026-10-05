@@ -393,7 +393,8 @@ def build_parser() -> argparse.ArgumentParser:
                             help="a prompt/response JSONL to mix in instead of writing one")
     train.add_argument("--domain-description", dest="domain_description", metavar="TEXT",
                        help="what the template says the text is on (default: the corpus "
-                            "directory's name)")
+                            "directory's name, or its nearest non-generic ancestor's for names "
+                            "like train or data)")
     _add_device(train, sharding=True)
     train.set_defaults(handler=_train)
 
@@ -603,7 +604,8 @@ def build_parser() -> argparse.ArgumentParser:
                              "(default: the bundled recipe for --model)")
     domain.add_argument("--domain-description", dest="domain_description", metavar="TEXT",
                         help="what the template says the text is on (default: the --out "
-                             "directory's name)")
+                             "directory's name, or its nearest non-generic ancestor's for names "
+                             "like train or data)")
     _add_device(domain)
     domain.set_defaults(handler=_prepare_domain)
 

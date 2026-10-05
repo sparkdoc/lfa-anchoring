@@ -123,7 +123,11 @@ as it is. A chain's later stage starts from a fused model, a different writer, s
 own into the workspace rather than training on pairs the base model wrote.
 
 **`--domain-description`** is what the template says the text is on. The default is the corpus
-directory's name with `_` and `-` read as spaces (`data/my_domain` → `my domain`). If you pass
+directory's name with `_` and `-` read as spaces (`data/my_domain` → `my domain`). A generic
+container name — `train`, `test`, `val`, `data`, `corpus`, `texts`, `raw` and the like — says
+nothing about the domain, so the nearest enclosing directory with a real name is used instead
+(`data/darwin/train` → `darwin`), looking no higher than your home directory, whose name is
+yours rather than the domain's; `the domain` if there is none. If you pass
 one when preparing, pass the same one to `train`, or `train` sees a different description and
 writes its own. `--force` rewrites a supplement that already exists.
 

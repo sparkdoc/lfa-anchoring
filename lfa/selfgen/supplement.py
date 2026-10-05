@@ -8,8 +8,11 @@ new knowledge becomes answerable when the model is asked about it. It does not p
 supplement written in a skill's mode left that skill no better (instruction following and
 reasoning); keeping skills is the anchor's job. One model (Qwen3-0.6B), one seed, one domain.
 
-Two deliberate deviations from the research frame: the template says "about a text on
-{domain}" where the research one said "about a philosophy text", and there is no contamination
+Two deliberate deviations from the research frame. First, the template's wording is domain-neutral
+where the research one was written for philosophy texts: it says "about a text on {domain}"
+where that said "about a philosophy text", its rule against exam-style questions no longer
+names thought experiments, and its third-person example names "Smith" rather than "Chalmers".
+The measured result above was on the research wording. Second, there is no contamination
 screen against an evaluation set (a user has none). The comparison-only `--enforce-spec`
 reminder and the reasoning/instruction modes are not ported.
 """
@@ -32,7 +35,7 @@ __all__ = ["GENERATE_TEMPLATE", "SupplementOptions", "NoPairsWritten", "render_t
            "template_sha256", "chunk_document", "chunk_passages", "parse_assistant_turn",
            "parse_qa_pairs", "write_supplement"]
 
-# The research code's template, with the one change recorded in the module docstring.
+# The research code's template, made domain-neutral as recorded in the module docstring.
 GENERATE_TEMPLATE = """You are creating training data that teaches a small language model to \
 ANSWER QUESTIONS about a text on {domain} in a helpful assistant's voice.
 
@@ -40,11 +43,11 @@ From the passage below, write {n} diverse question-answer pairs.
 
 Rules:
 - QUESTIONS: natural, information-seeking questions a curious student might ask. Do NOT write \
-exam-style questions that name specific thought experiments or arguments (avoid "How does the \
-author use the X thought experiment to argue Y"). Prefer "What is...", "Why does...", "What is \
+exam-style questions that only make sense with the passage in hand (avoid "How does the \
+author use the example of X to argue Y"). Prefer "What is...", "Why does...", "What is \
 the relationship between...", "What does the author mean by...".
 - ANSWERS: written in the THIRD PERSON as a knowledgeable assistant, referring to the author by \
-name where the passage names them (e.g., "Chalmers argues that..."). NEVER answer in the first \
+name where the passage names them (e.g., "Smith argues that..."). NEVER answer in the first \
 person as the author ("I argue..."). Ground every answer strictly in the passage; do not invent. \
 Keep answers to 2-5 sentences.
 - Vary the difficulty and type.
