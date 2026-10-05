@@ -356,6 +356,12 @@ def test_init_adopts_a_bundled_recipe_that_names_the_same_model(tmp_path):
     assert ws.state["recipe"] == "qwen3-0.6b"
 
 
+def test_init_adopts_the_qwen3_1_7b_recipe_for_qwen3_1_7b(tmp_path):
+    """Each bundled model gets its own recipe: lambda does not port between models."""
+    ws = Workspace.init(tmp_path / "ws", "Qwen/Qwen3-1.7B", artifact=TINY_ARTIFACT_PATH)
+    assert ws.state["recipe"] == "qwen3-1.7b"
+
+
 # --------------------------------------------------------------------------------------- train
 
 def test_the_first_stage_records_its_recipe_and_the_lambda_it_applied(flow, corpus_a, base_dir):

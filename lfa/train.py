@@ -79,11 +79,13 @@ class ResumeSourceHasNoAdapter(RuntimeError):
     """Raised when a LoRA run resumes from a checkpoint that saved no adapter."""
 
 
-#: Said once, at the start of a full-weight run. Every published LFA result is LoRA.
+#: Said once, at the start of a full-weight run. Every measured lambda is for LoRA, and the trainer
+#: does not know which model's calibration applies, so it quotes no range (a recipe's own
+#: warnings do, for the model it was measured on).
 FULL_WEIGHT_NOTICE = (
-    "Full-weight anchoring is unvalidated on this model in the LFA paper (LoRA is the validated "
-    "path); calibrate λ in 50,000–100,000 and check held-out domain perplexity, not only "
-    "general-text perplexity."
+    "Full-weight anchoring is unvalidated: every measured λ is for LoRA. Re-calibrate λ for full "
+    "weight (docs/model-integration-cookbook.md §5) and check held-out domain perplexity, not "
+    "only general-text perplexity."
 )
 
 #: Said once, at the start of a run whose sampler has no layer-0 embedding table. The embedding

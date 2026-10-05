@@ -34,9 +34,9 @@ from lfa.train import (
 )
 
 FULL_WEIGHT_NOTICE = (
-    "Full-weight anchoring is unvalidated on this model in the LFA paper (LoRA is the validated "
-    "path); calibrate λ in 50,000–100,000 and check held-out domain perplexity, not only "
-    "general-text perplexity."
+    "Full-weight anchoring is unvalidated: every measured λ is for LoRA. Re-calibrate λ for full "
+    "weight (docs/model-integration-cookbook.md §5) and check held-out domain perplexity, not "
+    "only general-text perplexity."
 )
 
 
@@ -539,6 +539,15 @@ def test_full_weight_warns_that_it_is_unvalidated(setup, tmp_path, caplog):
         train(teacher, fresh_student(), dataset, sampler, adapter, config, tmp_path)
 
     assert sum(record.message == FULL_WEIGHT_NOTICE for record in caplog.records) == 1
+
+
+def test_the_full_weight_notice_quotes_no_models_lambda_range():
+    """The trainer does not know which model's calibration applies, so it names none: a range
+    measured on one model would be read as guidance for every other. `Recipe.warnings` quotes
+    Qwen3-0.6B's range for that model's recipe."""
+    from lfa.train import FULL_WEIGHT_NOTICE as notice
+    assert notice == FULL_WEIGHT_NOTICE
+    assert "50,000" not in notice and "100,000" not in notice
 
 
 def test_a_frozen_student_is_reported_not_silently_trained(setup, tmp_path, caplog):

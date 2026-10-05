@@ -45,3 +45,17 @@ def test_the_published_artifact_list_ships_in_the_wheel_and_the_sdist():
             covered += [pattern for pattern in globs if fnmatch.fnmatch(relative, pattern)]
     assert covered, "pyproject.toml [tool.setuptools.package-data] leaves out published.json"
     assert "lfa/artifact/published.json" in (REPO_ROOT / "MANIFEST.in").read_text()
+
+
+def test_every_bundled_recipe_ships_in_the_wheel_and_the_sdist():
+    """`Recipe.load("<name>")` and `init`'s adoption by model id read `lfa/recipes/*.yaml` from the
+    installed package; a recipe left out of the wheel would silently leave its model unbundled."""
+    import fnmatch
+    config = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    globs = config["tool"]["setuptools"]["package-data"]["lfa"]
+    recipes = sorted((REPO_ROOT / "lfa" / "recipes").glob("*.yaml"))
+    assert {p.stem for p in recipes} >= {"qwen3-0.6b", "qwen3-1.7b"}
+    for recipe in recipes:
+        relative = recipe.relative_to(REPO_ROOT / "lfa").as_posix()
+        assert any(fnmatch.fnmatch(relative, pattern) for pattern in globs), relative
+    assert "recursive-include lfa/recipes *.yaml" in (REPO_ROOT / "MANIFEST.in").read_text()

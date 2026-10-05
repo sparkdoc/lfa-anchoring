@@ -39,6 +39,36 @@ def test_bundled_recipe_is_the_published_operating_point():
     assert dataclasses.asdict(recipe) == SHIPPED
 
 
+#: The Qwen3-1.7B point: the 0.6B recipe's frame with this model's own measured lambda.
+SHIPPED_1_7B = dict(SHIPPED, name="qwen3-1.7b", model_id="Qwen/Qwen3-1.7B",
+                    lambda_qkv=1000000.0, lambda_mlp=1000000.0)
+
+
+def test_the_qwen3_1_7b_recipe_is_its_calibrated_operating_point():
+    """lambda 1e6 and the 3x stage-2 multiplier were measured on this model; every other value
+    is the 0.6B recipe's frame."""
+    assert dataclasses.asdict(Recipe.load("qwen3-1.7b")) == SHIPPED_1_7B
+
+
+@pytest.mark.parametrize("model_id,name", [("Qwen/Qwen3-0.6B", "qwen3-0.6b"),
+                                           ("Qwen/Qwen3-1.7B", "qwen3-1.7b")])
+def test_each_bundled_model_has_its_recipe(model_id, name):
+    recipe = Recipe.load(name)
+    assert Recipe.bundled_for(model_id) == name and recipe.model_id == model_id
+    assert recipe.calibrated_artifact == SELF_GENERATED_REFERENCE
+    assert recipe.self_generated_frame == RECORDED_SELF_GENERATED_FRAME
+    assert recipe.calibrated_rank == recipe.lora_rank == 32
+    assert recipe.lambda_qkv == recipe.lambda_mlp > 0
+
+
+def test_the_qwen3_1_7b_header_says_how_its_lambda_was_chosen_and_that_it_does_not_port():
+    comments = "\n".join(line for line in (BUNDLED_DIR / "qwen3-1.7b.yaml").read_text().splitlines()
+                         if line.lstrip().startswith("#"))
+    for phrase in ("Qwen3-1.7B", "Apache-2.0", "1,000,000", "held-out Darwin", "WikiText-2",
+                   "one seed", "RTX 3090", "50,000", "does not port"):
+        assert phrase in comments, f"the 1.7B recipe's comment block never mentions {phrase!r}"
+
+
 def test_bundled_recipe_is_found_from_the_package_not_the_working_directory(tmp_path, monkeypatch):
     """`load` resolves against the installed package, so a wheel and a `cd` both work."""
     monkeypatch.chdir(tmp_path)
@@ -51,9 +81,10 @@ def test_unknown_bundled_name_names_what_is_available():
         Recipe.load("qwen4-70b")
 
 
-def test_yaml_documents_the_couplings_a_reader_has_to_know():
+@pytest.mark.parametrize("name", ["qwen3-0.6b", "qwen3-1.7b"])
+def test_yaml_documents_the_couplings_a_reader_has_to_know(name):
     """The file is read by humans before it is read by the loader; the guidance is the point."""
-    text = (BUNDLED_DIR / "qwen3-0.6b.yaml").read_text()
+    text = (BUNDLED_DIR / f"{name}.yaml").read_text()
     comments = "\n".join(line for line in text.splitlines() if line.lstrip().startswith("#")).lower()
     for phrase in ("rank", "artifact", "corpus composition", "full-weight", "re-tune"):
         assert phrase in comments, f"the recipe's comment block never mentions {phrase!r}"
@@ -159,6 +190,19 @@ def test_a_different_rank_warns_that_lambda_must_be_retuned():
     assert "re-tune" in warning.lower()
 
 
+def test_the_rank_warning_quotes_qwen3_0_6b_s_measured_range_only_for_qwen3_0_6b():
+    """The rank-16 range was measured on Qwen3-0.6B; another model's recipe is told to
+    re-calibrate, not handed a range that was never measured for it."""
+    [small] = Recipe.load("qwen3-0.6b").warnings(16, "self-generated:abc",
+                                                 _selfgen_meta("Qwen/Qwen3-0.6B"))
+    assert "Qwen3-0.6B" in small and "2e4-5e4" in small
+    [large] = Recipe.load("qwen3-1.7b").warnings(16, "self-generated:abc",
+                                                 _selfgen_meta("Qwen/Qwen3-1.7B"))
+    assert "calibrated at rank 32" in large and "re-tune" in large.lower()
+    assert "model-integration-cookbook.md" in large and "§5" in large
+    assert "2e4" not in large and "Qwen3-0.6B" not in large
+
+
 def test_the_rank_warning_quotes_both_lambdas_when_they_differ():
     recipe = dataclasses.replace(Recipe.load("qwen3-0.6b"), lambda_mlp=50000.0)
     [warning] = recipe.warnings(16, "self-generated:abc", _selfgen_meta("Qwen/Qwen3-0.6B"))
@@ -180,6 +224,17 @@ def test_a_full_weight_recipe_adds_its_own_note():
     warnings = recipe.warnings(32, "self-generated:abc", _selfgen_meta("Qwen/Qwen3-0.6B"))
     assert len(warnings) == 1
     assert "full-weight" in warnings[0].lower() and "unvalidated" in warnings[0]
+
+
+def test_the_full_weight_note_quotes_qwen3_0_6b_s_range_only_for_qwen3_0_6b():
+    small = dataclasses.replace(Recipe.load("qwen3-0.6b"), full_weight=True)
+    [note] = small.warnings(32, "self-generated:abc", _selfgen_meta("Qwen/Qwen3-0.6B"))
+    assert "Qwen3-0.6B" in note and "50,000-100,000" in note
+    large = dataclasses.replace(Recipe.load("qwen3-1.7b"), full_weight=True)
+    [note] = large.warnings(32, "self-generated:abc", _selfgen_meta("Qwen/Qwen3-1.7B"))
+    assert "unvalidated" in note and "LoRA" in note
+    assert "model-integration-cookbook.md" in note and "§5" in note
+    assert "50,000" not in note and "Qwen3-0.6B" not in note
 
 
 # ==============================================================================================
@@ -288,14 +343,16 @@ def test_the_bundled_recipe_is_calibrated_against_the_self_generated_artifact():
     assert recipe.self_generated_frame == RECORDED_SELF_GENERATED_FRAME
 
 
-def test_a_self_generated_artifact_at_the_recorded_frame_is_silent():
-    recipe = Recipe.load("qwen3-0.6b")
+@pytest.mark.parametrize("name", ["qwen3-0.6b", "qwen3-1.7b"])
+def test_a_self_generated_artifact_at_the_recorded_frame_is_silent(name):
+    recipe = Recipe.load(name)
     meta = _selfgen_meta(recipe.model_id)
     assert recipe.warnings(recipe.calibrated_rank, "self-generated:abc", meta) == []
 
 
-def test_a_trial_frame_names_the_fields_that_differ():
-    recipe = Recipe.load("qwen3-0.6b")
+@pytest.mark.parametrize("name", ["qwen3-0.6b", "qwen3-1.7b"])
+def test_a_trial_frame_names_the_fields_that_differ(name):
+    recipe = Recipe.load(name)
     meta = _selfgen_meta(recipe.model_id, n_raw=60, max_new_tokens=128)
     notes = recipe.warnings(recipe.calibrated_rank, "self-generated:abc", meta)
     assert len(notes) == 1
@@ -336,6 +393,7 @@ def test_a_recipe_calibrated_against_a_named_artifact_still_compares_ids(tmp_pat
 
 def test_bundled_for_finds_the_recipe_that_names_the_model():
     assert Recipe.bundled_for("Qwen/Qwen3-0.6B") == "qwen3-0.6b"
+    assert Recipe.bundled_for("Qwen/Qwen3-1.7B") == "qwen3-1.7b"
     assert Recipe.bundled_for("nobody/nothing") is None
 
 

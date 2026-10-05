@@ -56,6 +56,10 @@ SELF_GENERATED_REFERENCE = "self-generated"
 RECORDED_SELF_GENERATED_FRAME = {"n_raw": 2500, "n_chat": 0, "max_new_tokens": 2048,
                                  "max_samples": 600_000, "gmm_k": 32, "pca_variance": 0.95}
 
+#: The one model whose rank-16 and full-weight lambda ranges were measured; :meth:`Recipe.warnings`
+#: quotes them only for a recipe naming it.
+_QWEN3_0_6B = "Qwen/Qwen3-0.6B"
+
 #: The keys a ``self_generated_frame`` may carry: the recorded frame's, plus the rest of
 #: :meth:`lfa.selfgen.artifact_corpus.SelfGenOptions.artifact_frame`.
 _FRAME_KEYS = frozenset(RECORDED_SELF_GENERATED_FRAME) | {
@@ -338,14 +342,16 @@ class Recipe:
         quoted = (f"{self.lambda_qkv:g}" if self.lambda_qkv == self.lambda_mlp
                   else f"qkv {self.lambda_qkv:g}, mlp {self.lambda_mlp:g}")
         if rank != self.calibrated_rank:
+            measured = (" (Qwen3-0.6B at rank 16 measured at roughly 2e4-5e4 on a book-sized "
+                        "corpus)" if self.model_id == _QWEN3_0_6B else "")
             notes.append(
                 f"lambda is coupled to LoRA rank: this recipe's lambda ({quoted}) was "
                 f"calibrated at rank {self.calibrated_rank} and you are running rank {rank}. "
                 "Lambda constrains motion inside the rank-r update subspace, so the same value "
                 "binds harder at a lower rank -- re-tune it rather than porting it (lower rank "
-                "=> lower lambda; rank 16 measured at roughly 2e4-5e4 on this corpus), and "
-                "diagnose against held-out domain perplexity, since over-anchoring makes "
-                "general-text perplexity look its best."
+                f"=> lower lambda{measured}; docs/model-integration-cookbook.md §5 is the "
+                "procedure), and diagnose against held-out domain perplexity, since "
+                "over-anchoring makes general-text perplexity look its best."
             )
         meta = artifact_meta or {}
         self_generated = meta.get("provenance") == "self-generated"
@@ -385,9 +391,12 @@ class Recipe:
                 "read the frontier rather than a single point."
             )
         if self.full_weight:
+            start = (" (for Qwen3-0.6B, start the search in 50,000-100,000)"
+                     if self.model_id == _QWEN3_0_6B else "")
             notes.append(
-                "full-weight anchoring is unvalidated on this model in the LFA paper (every "
-                "published result is LoRA): calibrate lambda in 50,000-100,000 and check "
-                "held-out domain perplexity, not only general-text perplexity."
+                "full-weight anchoring is unvalidated for this recipe: its lambda was "
+                "calibrated for LoRA, and every measurement behind it is LoRA. Re-calibrate "
+                f"lambda for full weight{start} by docs/model-integration-cookbook.md §5, and "
+                "check held-out domain perplexity, not only general-text perplexity."
             )
         return notes
