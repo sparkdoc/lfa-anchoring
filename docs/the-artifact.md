@@ -3,10 +3,10 @@
 The artifact is the only part of LFA that is not data-free: it is fitted once on text, and every
 adaptation afterwards samples hidden states from it instead of from text. This package fits it on
 text the model writes itself, so no dataset is downloaded. It is made once per **model**
-([model-integration-cookbook.md](model-integration-cookbook.md) for a model that is not Qwen3), not per domain — a new
-domain is what [`lfa extend`](multi-domain-chains.md) is for — and once made it can be published:
-when this package pins a published artifact for your model and frame, `lfa init` downloads and
-verifies it instead of building ([below](#published-artifacts)).
+([model-integration-cookbook.md](model-integration-cookbook.md) for a model with no bundled recipe),
+not per domain — a new domain is what [`lfa extend`](multi-domain-chains.md) is for — and once made
+it can be published: when this package pins a published artifact for your model and frame,
+`lfa init` downloads and verifies it instead of building ([below](#published-artifacts)).
 
 ## The self-generated artifact
 
@@ -38,7 +38,8 @@ commands — is:
 `generation_config.json` ships `top_k: 20`, so passing only temperature and top-p would sample
 top-20 out of a 151,936-token vocabulary while looking untruncated.
 
-The bundled recipe records this frame as `self_generated_frame` ([recipes.md](recipes.md)).
+Each bundled recipe, `qwen3-0.6b` and `qwen3-1.7b`, records this frame as `self_generated_frame`
+([recipes.md](recipes.md)).
 `--n-raw`, `--n-chat` and `--max-new-tokens` (both commands) and `--max-samples`, `--gmm-k` and
 `--pca-variance` (`build-artifact`) change it — usually to scale it down for a trial — and the
 result is then not the recorded frame: `train` warns, naming each field that differs from the recipe's.
@@ -51,11 +52,12 @@ for one; the log says so.
 
 **What it is worth.** On Qwen3-0.6B an artifact fitted on the model's own text at this frame
 matched an artifact fitted on real text at every λ tried, and was at least as good at the recipe's
-λ — one model, one seed, one domain. That real-text artifact is the one the recipe's λ was first
-tuned against ([below](#advanced-an-artifact-fitted-on-real-text)); the recipe is now calibrated
-against the self-generated one at this frame, and warns about nothing when a Qwen3-0.6B workspace
-uses it. On any other model nothing has been measured: the route gives a first artifact, and λ is
-calibrated against it ([model-integration-cookbook.md](model-integration-cookbook.md)).
+λ — one model, one seed, one domain. That real-text artifact is the one the `qwen3-0.6b` recipe's
+λ was first tuned against ([below](#advanced-an-artifact-fitted-on-real-text)); the comparison has
+been made on that model only. Each bundled recipe is calibrated against its own model's
+self-generated artifact at this frame, and warns about nothing when a workspace over that model
+uses it. On a model with no bundled recipe the route gives a first artifact, and λ is calibrated
+against it ([model-integration-cookbook.md](model-integration-cookbook.md)).
 
 ### What it writes
 
@@ -67,6 +69,12 @@ version. In a workspace the corpus sits beside the artifact as `artifacts/v1.cor
 `build-artifact`, it is the `--out` path with its suffix replaced (`artifacts/selfgen.corpus.jsonl`
 above).
 
+The corpus is what the model writes from a bare document start, in whatever language it writes.
+In the full-frame corpora behind the costs below (counted 2026-10-04), 1,043 of Qwen3-1.7B's 2,500
+documents (41.7 %) are mostly CJK — more than 30 % of their characters in U+4E00–U+9FFF — and 154
+of Qwen3-0.6B's 2,500 (6.2 %). The artifact describes the hidden states of that text, so it
+describes the model as it writes.
+
 The artifact's meta records `provenance: "self-generated"`, that `corpus_sha256`, the frame it was
 built at (`selfgen_frame`, which is what `train` compares with the recipe's
 `self_generated_frame`), and the `layer_group_size` the fit used. A corpus with fewer than 50
@@ -75,14 +83,23 @@ refused before any fit: an artifact fitted on it would fail nowhere downstream.
 
 ### What it costs
 
-About 3 h 40 min for the full frame from a cold store, on one RTX 3090 (24 GB, 2026-09-30): about
-80 minutes of generation, then 2 h 22 min of fitting — 22 min collecting hidden states and about
-2 h 00 min fitting the mixtures on the GPU — on a host with 125 GiB of RAM. The artifact file is
-110.3 MB, and the store entry, with its corpus, 126 MB. An 8 GB card has not been measured at this
-frame; [faq.md](faq.md#how-long-does-self-generation-take) has the smaller pieces timed on one.
-The generation survives an interruption ([below](#durability-and-resume)), so hours already spent
-are not lost. A [published artifact](#published-artifacts) costs only its download: the artifact
-file, its corpus and the manifest.
+The full frame from a cold store, on one RTX 3090 (24 GB) in a host with 125 GiB of RAM:
+
+| model | generation | collection and fit | total | layer group (RAM available) | artifact file |
+|---|---:|---:|---:|---|---:|
+| Qwen3-0.6B | 83 min | 2 h 28 min | 3 h 51 min | 28 of 28 (103.9 GiB) | 110.0 MB |
+| Qwen3-1.7B | 87 min | 4 h 29 min | 5 h 56 min | 25 of 28 (115.0 GiB) | 243.7 MB |
+
+Measured 2026-10-03/04, one build per model. The Qwen3-0.6B build ran alone on the host; the
+Qwen3-1.7B build shared it for most of its run with a second Qwen3-1.7B build (at 1.5 M samples per
+site). The Qwen3-0.6B fit was 27 min collecting hidden states and about 2 h fitting the mixtures.
+Qwen3-1.7B's 84 sites are all 2,048 wide, twice the width of most of Qwen3-0.6B's, so its stored
+statistics and its file are about twice as large; its group of 25 layers meant two corpus passes
+([below](#host-ram-the-layer-group)). An 8 GB card has not been measured at this frame;
+[faq.md](faq.md#how-long-does-self-generation-take) has the smaller pieces timed on one. The
+generation survives an interruption ([below](#durability-and-resume)), so hours already spent are
+not lost. A [published artifact](#published-artifacts) costs only its download: the artifact file,
+its corpus and the manifest.
 
 The GPU side is otherwise undemanding — the model is loaded in **float32** for the fit,
 deliberately: the artifact is a second-moment estimate and bf16's 8-bit mantissa is a large error
@@ -106,13 +123,19 @@ The float64 covariance accumulators add `D² × 8` bytes per site (8.39 MB at wi
 reservoirs but not nothing.
 
 On the self-generated route no value is needed: the build chooses the group from the model's
-config and the host RAM available when it starts, and logs the choice. On a 28-layer Qwen3-0.6B at
-the 200,000-vector reservoir that was 7 (about 10.7 GiB of reservoirs per group against about
-24 GiB available) on the machine this was written on, and a host with less free memory chooses a
-smaller group. On the host that built the recorded artifact (125 GiB of RAM, 2026-09-30) it was
-28, every layer in one pass. It logged
-`layer_group_size=28 for Qwen/Qwen3-0.6B: ~42.7 GiB of reservoirs per group against 117.9 GiB available`,
-and the collection that followed logged `Collected 84 sites, 603973 samples at the thinnest site`.
+config and the host RAM available when it starts — the most layers whose reservoirs fit in half of
+it — and logs the choice. On a 28-layer Qwen3-0.6B at the 200,000-vector reservoir that was 7
+(about 10.7 GiB of reservoirs per group against about 24 GiB available) on the machine this was
+written on, and a host with less free memory chooses a smaller group. On a host with 125 GiB of
+RAM it was 28, every layer in one pass, logged as
+`layer_group_size=28 for Qwen/Qwen3-0.6B: ~42.7 GiB of reservoirs per group against 117.9 GiB available`
+and followed by `Collected 84 sites, 603973 samples at the thinnest site` (2026-09-30).
+
+Qwen3-1.7B's sites are all 2,048 wide, so a layer's reservoirs cost about 2.3 GiB:
+`layer_group_size=22 for Qwen/Qwen3-1.7B: ~50.4 GiB of reservoirs per group against 102.3 GiB available`
+on that host while another job held part of its memory (2026-10-03), and 25 of its 28 layers at
+115.0 GiB available (2026-10-03) — two corpus passes either way. All 28 layers in one pass hold
+about 64 GiB of reservoirs, so the build chooses it only with about 128 GiB available.
 
 **The group size is a memory choice only.** Every site draws its reservoir from its own torch
 generator, seeded from the build seed and the site's layer and name, so a site keeps the same
@@ -304,7 +327,7 @@ without them is refused.
 `build-artifact` writes blockwise-int8 by default (`--no-quantize` for full precision, which
 doubles the file). Quantization is a storage format: it is applied to a shallow copy on save and
 reconstructed on load, so nothing downstream knows whether the file was quantized. The real-text
-Qwen3-0.6B artifact the recipe's λ was tuned against is ~108 MB int8 against ~226 MB in fp16.
+Qwen3-0.6B artifact the `qwen3-0.6b` recipe's λ was tuned against is ~108 MB int8 against ~226 MB in fp16.
 
 ⚠ **The fp16 reservoir has no range guard.** An activation above 65,504 would be stored as `inf`
 and poison that site's fit. Nothing checks for it. If a model is suspected of large activations,
@@ -325,9 +348,81 @@ way: a matching entry in a format this release does not read is refused at `lfa 
 entry, and `--rebuild` builds it afresh. A [published artifact](#published-artifacts) is checked
 the same way again after its download.
 
+## Checking an artifact
+
+`validate_against_model` checks that an artifact has the model's shapes, not that it describes the
+model. `lfa probe-artifact` measures that, in minutes on one card: it prices the update directions
+of a trained adapter under the artifact's samples and under the model's real activations, and
+reports how far the two disagree. It is a report, never a verdict — the exit status says only that
+the measurement ran.
+
+```bash
+lfa probe-artifact --model Qwen/Qwen3-1.7B --artifact runs/my_domain \
+                   --adapter runs/witness/runs/stage1/final_model --output probe.json
+```
+
+`--artifact` takes a file or a workspace (its current artifact). `--adapter` is a saved PEFT
+adapter trained on that model — the **witness** — and can be repeated. The real activations are
+the model's on WikiText-2's test split, read from the Hub as `lfa evaluate` reads it.
+
+**What it reports**, per probed site (default: five layers, first and last included) and as medians
+by site class — linear (`pre_qkv` + `pre_o`) and MLP (`pre_mlp`). Each witness direction is one of
+the adapter's LoRA deltas, or one of four random rank-32 directions matched to it in norm; its price
+is the anchor's charge for that change of weights, `E‖Δf(h)‖²`, under the artifact's samples and
+under real activations, and the probe reads their ratio:
+
+* **LEVEL** — the geometric mean of the ratios: a uniform mis-scaling, which λ absorbs. Reported,
+  not judged.
+* **SHAPE** — the spread of the log ratios across directions: direction-dependent mispricing, which
+  no scalar λ absorbs. This is the number to read.
+* **floor** — SHAPE with a second, disjoint half of the real activations in place of the artifact:
+  what real-against-real noise alone gives.
+* **diagonal reference** — SHAPE of that second half with each feature column shuffled
+  independently: every marginal kept, every correlation gone. What a perfect diagonal model of the
+  real activations would give; it does not depend on the artifact.
+
+**The witness must come from an unanchored run** (λ = μ = 0). An adapter trained anchored against
+an artifact moves into the directions that artifact underprices, and makes it look worse than it
+is: on a Qwen3-0.6B artifact (2026-10-03), a witness trained anchored at λ = 100,000 against a
+sibling build of the same corpus read median SHAPE 0.238 (linear) and 0.606 (MLP), where an
+unanchored one read 0.056 and 0.108. The probe reads each
+adapter's run `config.json` and says when a witness was anchored or its history is unknown.
+[model-integration-cookbook.md](model-integration-cookbook.md#probe-it) has the commands for a
+witness run.
+
+**Reading the numbers.** There is no threshold. Read a model's numbers against those recorded for
+the two bundled models, measured with the same witness recipe:
+
+| median SHAPE, linear / MLP | Qwen3-0.6B | Qwen3-1.7B |
+|---|---:|---:|
+| floor | 0.018 / 0.017 | about 0.03 / 0.02 |
+| the self-generated artifact | 0.053–0.055 / 0.095–0.106 | 0.058–0.067 / 0.137–0.139 |
+| diagonal reference | 0.139 / 0.064 | about 0.14 / 0.06 |
+
+Witness recipe, both models: one adapter from an unanchored run (λ = μ = 0) on the walkthrough's
+Darwin training text, 4 epochs, the `qwen3-0.6b` recipe's other fields (rank 32, batch 6 × 512).
+The probe at its defaults (WikiText-2, `--n-real 30000 --n-model 30000 --n-random 4`, layers 0, 7,
+14, 20, 27) on each model's self-generated artifact at the recorded frame; the artifact rows span
+three probe seeds (0, 1, 2; the command uses 0), the Qwen3-0.6B floor and reference are at seed 0.
+One witness per model, one RTX 3090, 2026-10-03/04. Qwen3-1.7B's LEVEL read about 0.97 (linear) and
+0.76 (MLP). A Qwen3-1.7B artifact fitted on 1.5 M samples per site instead of 600k read the same
+(0.060–0.064 / 0.136–0.141), so the frame's 600k per site is enough for it.
+
+* **A collapsed artifact** (a point mass, a degenerate corpus) shows as SHAPE many times these.
+* **A scale or layer error** (another model's artifact, layers out of order) shows in LEVEL, far
+  from 1, while SHAPE may look ordinary.
+* **The artifact against the diagonal reference is not a pass mark.** Both models' MLP class reads
+  above its reference here. With another unanchored witness (20 epochs on another domain), another
+  build of the Qwen3-0.6B artifact at the same frame read 0.034 against a reference of 0.093, below
+  it (mean of 3 probe seeds, 2026-10-03). A comparison that flips with the witness says nothing on
+  its own. More witnesses (repeat `--adapter`) steady the medians.
+* The probe catches a broken artifact; it does not show that a sound one anchors well. Only a λ
+  calibration shows that ([model-integration-cookbook.md](model-integration-cookbook.md#5-calibrate-λ)).
+
 ## Advanced: an artifact fitted on real text
 
-The route the recipe's λ was first tuned on: a downloaded seed corpus, then the same fit.
+The route the `qwen3-0.6b` recipe's λ was first tuned on: a downloaded seed corpus, then the same
+fit.
 
 ```bash
 lfa prepare-seed-corpus --out data/seed_corpus_10to1.jsonl
@@ -341,7 +436,7 @@ Over a seed corpus nothing chooses the layer group for you: `--layer-group-size`
 and 7 is the value for a 28-layer model on a 64 GB host ([the arithmetic](#host-ram-the-layer-group)).
 This step needs network. There is no offline path: the corpus is a download.
 
-**What the recipe says about it.** The bundled recipe is calibrated against the self-generated
+**What the recipe says about it.** Each bundled recipe is calibrated against the self-generated
 artifact at its frame, so a workspace over an artifact fitted here is told, at every stage, that
 it is not the artifact the recipe's λ is calibrated against and that λ should be calibrated
 against held-out domain perplexity ([model-integration-cookbook.md](model-integration-cookbook.md)). It is a note, never a
@@ -359,7 +454,7 @@ levels of number are involved and they are not the same:
 
 * **Download targets** — `--n-pretraining 12000` (a per-source cap of 2,000) and
   `--n-instruction 20000`. These are what you ask for.
-* **The realised corpus** — the composition the recipe's λ was tuned on, which that real-text
+* **The realised corpus** — the composition the `qwen3-0.6b` recipe's λ was tuned on, which that real-text
   artifact (1,543,040 vectors per site) was estimated from: **9,663 pretraining documents and 966
   instruction pairs**, which is `SHIPPED_COMPOSITION` in `lfa/seed_corpus.py`:
 
@@ -415,7 +510,7 @@ The research code accumulates its running variance with `old_mean` computed **af
 already been folded into the running sum (`self.sum_x +=` and only then
 `old_mean = self.sum_x / self.n`), so its `std` is slightly off. This package's accumulator takes
 `old_mean` before folding, which is the correct Chan update. The consequence is small but real: the
-real-text artifact the recipe's λ was tuned against was built by the research code, so an artifact
+real-text artifact the `qwen3-0.6b` recipe's λ was tuned against was built by the research code, so an artifact
 built here over the same corpus has slightly different `std` values, and `std` enters the sample
 stream through the off-basis residual term. It is a correction, not a divergence — but it is why
 an artifact built here is not bit-identical to one the research code built, and why a λ

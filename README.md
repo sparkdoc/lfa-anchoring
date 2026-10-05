@@ -37,6 +37,32 @@ card. Tested at torch 2.10.0+cu128, transformers 4.57.6, accelerate 1.14.0, peft
 > interpreters ship them). The package's own paths do not, so `lfa` warns once if the headers are
 > missing and proceeds.
 
+## Models
+
+Two models have a bundled recipe. `--model` picks it: `init` uses the bundled recipe whose own
+model id is the one you pass.
+
+| model (`--model`) | recipe | licence | artifact build, one RTX 3090 | artifact | GPU pipeline test peak |
+|---|---|---|---|---:|---:|
+| `Qwen/Qwen3-0.6B` | `qwen3-0.6b` | Apache-2.0 | 3 h 51 min, 83 min of it generation | 110.0 MB | 5,435 MiB |
+| `Qwen/Qwen3-1.7B` | `qwen3-1.7b` | Apache-2.0 | 5 h 56 min, 87 min of it generation | 243.7 MB | 8,853 MiB |
+
+The builds are the full recorded frame from a cold store, on one RTX 3090 (24 GB) in a host with 125
+GiB of RAM, 2026-10-03/04. The Qwen3-0.6B build ran alone on the host; the Qwen3-1.7B build shared
+it for most of its run with a second Qwen3-1.7B build (at 1.5 M samples per site). The last column
+is the GPU pipeline test on the same card (2026-10-03: a trial-frame artifact build with the model
+in float32, the supplement, one epoch at batch 6 × 512, evaluate, fuse), by `nvidia-smi` sampled
+every 5 s over the whole test. It is not a training run's peak: [the
+FAQ](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/faq.md#how-much-gpu-memory-does-a-run-need)
+has training memory. The licence is the model's own, from its Hub card. Build detail per model: [the
+artifact](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/the-artifact.md#what-it-costs).
+
+When the package pins a published artifact for the model's exact checkpoint and the recorded
+frame, `init` downloads that instead of building ([the artifact](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/the-artifact.md#published-artifacts)).
+Any other model needs an adapter check, an artifact and a λ calibration of its own:
+[docs/model-integration-cookbook.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/model-integration-cookbook.md)
+is the procedure, with Qwen3-1.7B worked through.
+
 ## The pipeline
 
 ```bash
@@ -49,12 +75,12 @@ lfa fuse     --workspace runs/my_domain
 ```
 
 **`init`** creates the workspace and puts its p(h) artifact in place: the model writes 2,500
-documents of its own and p(h) is fitted on them — about 3 h 40 min on one RTX 3090 (24 GB); an
-8 GB card has not been measured. The result
-is kept in a local store, so every later workspace over the same model reuses it
-(`lfa list-artifacts` shows what is there), and a build that was interrupted resumes when the
-same command is run again. When the package pins a published artifact for exactly this model and
-frame, `init` downloads and verifies that instead of building, and `--rebuild` builds here anyway
+documents of its own and p(h) is fitted on them — hours on one RTX 3090 (24 GB), per model in
+[Models](#models); an 8 GB card has not been measured. The result is kept in a local store, so
+every later workspace over the same model reuses it (`lfa list-artifacts` shows what is there),
+and a build that was interrupted resumes when the same command is run again. When the package
+pins a published artifact for exactly this model and frame, `init` downloads and verifies that
+instead of building, and `--rebuild` builds here anyway
 ([the artifact](docs/the-artifact.md#published-artifacts)). `--artifact` also takes a path, but
 only to an artifact this package built: another workspace's `artifacts/v1.pt`, or what
 `lfa build-artifact` wrote.
@@ -171,7 +197,7 @@ answers, at this scale, do not show that difference.
 | [docs/concepts.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/concepts.md) | the building blocks, what the anchor does, what λ and μ are, how a run is read |
 | [docs/recipes.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/recipes.md) | the shipped operating point field by field, and its couplings |
 | [docs/multi-domain-chains.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/multi-domain-chains.md) | second and third domains; what `extend` does, and the `regenerate` route |
-| [docs/model-integration-cookbook.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/model-integration-cookbook.md) | a model that is not Qwen3: adapter, artifact, λ |
+| [docs/model-integration-cookbook.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/model-integration-cookbook.md) | a model with no bundled recipe: adapter, artifact, probe, λ |
 | [docs/faq.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/faq.md) | GPU memory (8 GB cards included), self-generation cost, full weights, reading the general axis, what is not shipped |
 | [`examples/two_domain_walkthrough.ipynb`](https://github.com/sparkdoc/lfa-anchoring/blob/main/examples/two_domain_walkthrough.ipynb) | the runnable how-to: two domains one after the other, each stage repeated with the anchor off |
 | [`examples/what_the_anchor_does.ipynb`](https://github.com/sparkdoc/lfa-anchoring/blob/main/examples/what_the_anchor_does.ipynb) | optional, continues from it: the controls at their own best dose, and what the models say |
@@ -196,9 +222,9 @@ and what it changes. Agreement with another implementation is not correctness, a
 reproduces a published number: the paper's headline (domain perplexity 8.76 on Qwen3-0.6B at a
 seed ΔPPL of −10.0 %) is the paper's measurement on the paper's corpus and instruments.
 
-The recipe's lambda was tuned against an artifact fitted on real text; this package builds an
-artifact from the model's own text instead, which matched it at every lambda tried — one model,
-one seed, one domain.
+The Qwen3-0.6B recipe's lambda was first tuned against an artifact fitted on real text; this
+package builds an artifact from the model's own text instead, which matched it at every lambda
+tried — one model, one seed, one domain.
 
 The research code — every arm, ladder and retraction — is private and is not distributed. This is
 what survived, ported, tested and documented.

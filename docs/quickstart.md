@@ -60,7 +60,33 @@ python -c "import lfa.examples, pathlib; print(pathlib.Path(lfa.examples.__file_
 On an 8 GB card, set the recipe's batch geometry before the first `train`:
 [faq.md](faq.md#how-much-gpu-memory-does-a-run-need) has the numbers.
 
-## 1. Build (or reuse) the artifact
+## 1. Choose a model
+
+Two models have a bundled recipe — the operating point (λ, μ, rank, batch, epochs) calibrated for
+that model — and the `--model` value picks it:
+
+| `--model` | bundled recipe |
+|---|---|
+| `Qwen/Qwen3-0.6B` | `qwen3-0.6b` |
+| `Qwen/Qwen3-1.7B` | `qwen3-1.7b` |
+
+The match is on the recipe's own `model_id`, so it takes the Hub id exactly as written; a local
+checkpoint path is another id, gets no default recipe, and needs `--recipe`. What each costs to
+build an artifact for and to train is in the README's [Models](../README.md#models) table. The
+commands on this page use Qwen3-0.6B; every one of them takes the other id the same way.
+
+`--recipe` names a recipe yourself — a bundled name or a YAML path. When the recipe names a model
+other than the workspace's, `init` warns, once:
+
+```
+Recipe 'qwen3-0.6b' is calibrated for Qwen/Qwen3-0.6B, and this workspace's model is Qwen/Qwen3-1.7B: lambda does not port between models, so use the recipe for this model or calibrate one (docs/model-integration-cookbook.md).
+```
+
+It is a warning, not a refusal: a local path to the same weights is a different id, and for it
+the bundled recipe of those weights is the right one. For a model with no bundled recipe,
+[model-integration-cookbook.md](model-integration-cookbook.md) is the procedure.
+
+## 2. Build (or reuse) the artifact
 
 The anchor samples hidden states from a fitted p(h) artifact, so a workspace needs one before its
 first stage. The model writes it, or, when one has been published for it, `init` downloads it:
@@ -70,23 +96,24 @@ lfa init runs/my_domain --model Qwen/Qwen3-0.6B --artifact self-generated
 ```
 
 **What it does.** `init` creates the workspace. It *records* the model (a Hub id or a path: the
-checkpoint is not copied in) and the recipe — the bundled one that names your model, `qwen3-0.6b`,
-unless you pass `--recipe` — and then has the model write 2,500 documents of its own, each started
-from its bare document-start token, and fits p(h) on them at 600k samples per site with a K = 32
-mixture. The build happens in the local store, `~/.cache/lfa/artifacts` (or `$LFA_ARTIFACT_STORE`),
-and the finished file is copied into the workspace as `artifacts/v1.pt`, with the corpus beside it
-as `artifacts/v1.corpus.jsonl` and its manifest. The workspace records the artifact as
-`self-generated:<corpus sha256[:12]>`. Move or delete the checkpoint (or a `--recipe` file you
-passed by path) and the workspace will not find it again.
+checkpoint is not copied in) and the recipe — the bundled one that names your model, here
+`qwen3-0.6b`, unless you pass `--recipe` — and then has the model write 2,500 documents of its own,
+each started from its bare document-start token, and fits p(h) on them at 600k samples per site with
+a K = 32 mixture. The build happens in the local store, `~/.cache/lfa/artifacts` (or
+`$LFA_ARTIFACT_STORE`), and the finished file is copied into the workspace as `artifacts/v1.pt`,
+with the corpus beside it as `artifacts/v1.corpus.jsonl` and its manifest. The workspace records the
+artifact as `self-generated:<corpus sha256[:12]>`. Move or delete the checkpoint (or a `--recipe`
+file you passed by path) and the workspace will not find it again.
 
-**What it costs.** About 3 h 40 min from a cold store on one RTX 3090 (24 GB): about 80 minutes
-for the model to write its 2,500 documents, then 2 h 22 min to fit p(h) on them, on a host with
-125 GiB of RAM. An 8 GB card has not been measured at this frame; [faq.md](faq.md) has the
-smaller pieces that were timed on one. It is paid once per model: a second `init` over the same model at the same frame
-finds the finished artifact in the store and copies it in, logging `Reused the self-generated
-artifact built <date> from <store path>`. `lfa list-artifacts` shows what the store holds: the
-model, the frame (documents × tokens, K), the date it was built, its size and its path, or how far
-an unfinished build got.
+**What it costs.** From a cold store on one RTX 3090 (24 GB) in a host with 125 GiB of RAM,
+3 h 51 min for Qwen3-0.6B (83 minutes for the model to write its 2,500 documents, then the fit)
+and 5 h 56 min for Qwen3-1.7B (87 minutes of writing), measured 2026-10-03/04
+([the-artifact.md](the-artifact.md#what-it-costs)). An 8 GB card has not been measured at this
+frame; [faq.md](faq.md) has the smaller pieces that were timed on one. It is paid once per model: a
+second `init` over the same model at the same frame finds the finished artifact in the store and
+copies it in, logging `Reused the self-generated artifact built <date> from <store path>`.
+`lfa list-artifacts` shows what the store holds: the model, the frame (documents × tokens, K), the date
+it was built, its size and its path, or how far an unfinished build got.
 
 **When one has been published.** On a store miss, `init` first looks the model up in the list of
 published artifacts pinned in the package. If there is one for exactly this model id, checkpoint
@@ -101,9 +128,11 @@ model, another snapshot of the weights, another frame — is built
 
 **What it is worth.** On Qwen3-0.6B an artifact fitted on the model's own text at this frame
 matched an artifact fitted on real text at every λ tried, and was at least as good at the recipe's
-λ — one model, one seed, one domain. The bundled recipe is calibrated against it and says nothing.
-On any other model it is the way to a first artifact, and λ is then calibrated against it
-([model-integration-cookbook.md](model-integration-cookbook.md)).
+λ — one model, one seed, one domain. Each bundled recipe is calibrated against its own model's
+self-generated artifact at this frame and says nothing. On a model with no bundled recipe it is the
+way to a first artifact, and λ is then calibrated against it
+([model-integration-cookbook.md](model-integration-cookbook.md)). `lfa probe-artifact` checks that
+an artifact describes its model ([the-artifact.md](the-artifact.md#checking-an-artifact)).
 
 **While it runs** it logs one line per batch of documents, `self-generated corpus: n/2500
 documents (e empty)`. Each finished batch is on disk before the next starts, so:
@@ -136,7 +165,7 @@ was calibrated at, naming each field that differs. That is expected for a trial;
 build at the default frame. [the-artifact.md](the-artifact.md) has the frame in full, the host-RAM
 arithmetic and the store's layout.
 
-## 2. Prepare your data
+## 3. Prepare your data
 
 ```bash
 lfa prepare-domain ~/papers ~/notes.md --out data/my_domain --supplement --model Qwen/Qwen3-0.6B
@@ -150,7 +179,7 @@ each, and then has the model write the question-and-answer supplement over it, b
 [preparing-your-data.md](preparing-your-data.md) has the formats, the cleaning, the corpus shapes
 that train badly and everything about the supplement.
 
-## 3. Train
+## 4. Train
 
 ```bash
 lfa train --workspace runs/my_domain --corpus data/my_domain
@@ -175,7 +204,7 @@ instead ([preparing-your-data.md](preparing-your-data.md#bringing-your-own)).
 Before the first step the trainer also reads the corpus's shape and warns about the three shapes
 that train badly ([preparing-your-data.md](preparing-your-data.md#three-shapes-that-train-badly)).
 
-## 4. Evaluate
+## 5. Evaluate
 
 ```bash
 lfa evaluate --workspace runs/my_domain
@@ -200,7 +229,7 @@ That table is from this package's own verification run on Qwen3-0.6B (2026-09-07
 with no supplement: the domain moved a long way, the general axis moved a little.
 Read both. A general number *below* the base model's is not a win — [faq.md](faq.md) says why.
 
-## 5. Fuse
+## 6. Fuse
 
 ```bash
 lfa fuse --workspace runs/my_domain
@@ -212,7 +241,7 @@ lfa fuse --workspace runs/my_domain
 The same flow as Python is [`examples/quickstart.py`](../examples/quickstart.py); nothing in the
 CLI is decided differently from the way the library decides it for a caller who imports it.
 
-## 6. A next domain
+## 7. A next domain
 
 ```bash
 lfa extend --workspace runs/my_domain
@@ -243,13 +272,13 @@ and what the three models say when asked.
 
 ## What it costs
 
-The verification run — the bundled recipe, 1,673 documents at 512 tokens, 15 epochs, rank 32 —
+The verification run — the `qwen3-0.6b` recipe, 1,673 documents at 512 tokens, 15 epochs, rank 32 —
 took **about 1 h 48 m on one RTX 3090** (432 s per epoch) and about 9 GB of GPU memory — that run
-held a separate teacher, as every run before 0.1.1 did; the same run today loads no second model
-and peaks 1.11 GB lower ([faq.md](faq.md)). LFA pins a
-single card by default and refuses a sharded device map unless you pass `--allow-sharding`:
-sharding buys memory, not speed, and costs about 8 % here because every anchored hidden state then
-crosses a device boundary.
+held a separate teacher, as every run before 0.1.1 did; the same run today loads no second model and
+peaks 1.11 GB lower ([faq.md](faq.md)). LFA pins a single card by default and refuses a sharded
+device map unless you pass `--allow-sharding`: sharding buys memory, not speed, and costs about 8 %
+here because every anchored hidden state then crosses a device boundary. Qwen3-1.7B needs more:
+[faq.md](faq.md#how-much-gpu-memory-does-a-run-need) has the two models side by side.
 
 The artifact build is the expensive part, and you do it once per model, not per domain:
 [the-artifact.md](the-artifact.md). The supplement is written once per corpus and writer before
@@ -288,5 +317,5 @@ and reports the general axis as unmeasured rather than losing the domain number 
 * [multi-domain-chains.md](multi-domain-chains.md) — a second and third domain.
 * [`examples/two_domain_walkthrough.ipynb`](../examples/two_domain_walkthrough.ipynb) — all of it end to end, with the unanchored control.
 * [`examples/what_the_anchor_does.ipynb`](../examples/what_the_anchor_does.ipynb) — optional: the controls at their own best dose, and what the models say.
-* [model-integration-cookbook.md](model-integration-cookbook.md) — a model that is not Qwen3.
+* [model-integration-cookbook.md](model-integration-cookbook.md) — a model with no bundled recipe.
 * [faq.md](faq.md) — memory, full weights, reading the general axis, what is not shipped.

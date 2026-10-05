@@ -1,8 +1,10 @@
 # Releasing
 
-What is released is the **package**: a tag, an sdist and a wheel. There are no artifacts to
-publish — every user builds p(h) from the model's own text (`lfa init --artifact self-generated`)
-and keeps it in a local store.
+What is released is the **package**: a tag, an sdist and a wheel. The p(h) artifacts it can
+download are pinned in `lfa/artifact/published.json` (model id, checkpoint and frame, then each
+file's URL, sha256 and size); `lfa init --artifact self-generated` fetches a pinned one on a store
+miss and builds from the model's own text otherwise
+([docs/the-artifact.md](docs/the-artifact.md#published-artifacts)).
 
 Nothing here is published automatically. Every step below is a command to run and a thing to look
 at; a line marked ✅ records the rehearsal it was checked in.
@@ -51,7 +53,8 @@ Check what the sdist carries (`MANIFEST.in` governs it): `lfa/`, `docs/`, `examp
 `tar -tzf dist/*.tar.gz | grep -v '/$' | wc -l`. ✅ 2026-09-08 at 0.1.0: 73 files, 240 KiB; files
 have been added and removed since, so re-measure rather than trusting the figure.
 
-The **wheel** carries the package, `lfa/recipes/qwen3-0.6b.yaml`, and `lfa/examples/` — the
+The **wheel** carries the package, the bundled recipes (`lfa/recipes/qwen3-0.6b.yaml`,
+`lfa/recipes/qwen3-1.7b.yaml`), the pins `lfa/artifact/published.json`, and `lfa/examples/` — the
 top-level `examples/` directory, mapped into the package by `[tool.setuptools.package-dir]` so
 that a pip-installed user has the two scripts the documentation sends them to
 (`python -m lfa.examples.quickstart`). ✅ 34 files at 0.1.0; re-measure it too. Docs and tests are
@@ -142,6 +145,23 @@ fields `provenance`, `corpus_sha256`, `selfgen_frame`; history keys `supplement`
 `artifact_route`. Evidence scope: one model, one seed (the self-generated artifact, the
 supplement); rank 4, one seed (the regenerate route).
 
+* **Qwen3-1.7B** is a bundled model: recipe `qwen3-1.7b`, for `Qwen/Qwen3-1.7B`, calibrated against
+  its own self-generated artifact at the recorded frame ([docs/recipes.md](docs/recipes.md)). The
+  `--model` value picks the bundled recipe whose `model_id` it is.
+* **`init` warns when the recipe names another model** than the workspace's: λ does not port
+  between models. A warning, never a refusal — a local path to the same weights is another id.
+* **`lfa probe-artifact`** (`lfa.probe.probe_artifact`) prices a trained adapter's update
+  directions under an artifact's samples and under the model's real WikiText-2 activations, and
+  reports LEVEL and SHAPE per site beside a real-against-real floor and a diagonal reference. It
+  gives numbers and no verdict; the exit status says only that it ran. Read with a witness adapter
+  from an unanchored run ([docs/the-artifact.md](docs/the-artifact.md#checking-an-artifact)).
+* **`chat_turn_end`** (`lfa.selfgen.generate`): the supplement writer reads the token that closes
+  an assistant turn off the writer's chat template (`<|im_end|>` under ChatML, `<|eot_id|>` under
+  Llama 3) and stops and cuts there. `TrainConfig.model_id` is required.
+* **Text without spaces is not degenerate.** The self-generated corpus's degeneracy filter counts
+  repeated 8-grams of whitespace-separated words; a text with fewer than eight such words has no
+  8-gram, so only the length floor can reject it. A paragraph in a script written without spaces
+  is one or two such words.
 * **The artifact meta also records `layer_group_size`**, for the record. The self-generated build
   chooses the group from host RAM when none is given, and the choice does not change the artifact.
 * **Per-site reservoir generators.** Each site's reservoir draws come from its own generator,
@@ -174,14 +194,16 @@ supplement); rank 4, one seed (the regenerate route).
   (it fits diagonal covariances only), and the reading of
   full-covariance, whitened and top-m GMM heads (`Sampler.sample_gmm`, `fit_domain_gmm`,
   `merge_gmm_blocks`).
-* Docs: README (the five-command pipeline), `docs/quickstart.md` (the full pipeline, step by
-  step), `docs/preparing-your-data.md` (new: formats, corpus shapes, the supplement),
-  `docs/the-artifact.md` (renamed and rewritten: the self-generated build, the store, a real-text
-  artifact), `docs/model-integration-cookbook.md`, `docs/recipes.md`, `docs/concepts.md` (the building blocks;
-  what the supplement does: reachability; what it does not: protect skills),
-  `docs/multi-domain-chains.md` (the regenerate route), `docs/faq.md` (8 GB cards, bf16 on Turing,
-  the toolchain warning, what self-generation costs). `docs/verification.md` gains only a dated
-  header: nothing in 0.2.0 was checked bit-for-bit against the research code.
+* Docs: README (the five-command pipeline, the Models table), `docs/quickstart.md` (choosing a
+  model, then the full pipeline, step by step), `docs/preparing-your-data.md` (new: formats,
+  corpus shapes, the supplement), `docs/the-artifact.md` (renamed and rewritten: the
+  self-generated build, the store, published artifacts, per-model cost, checking an artifact with
+  `lfa probe-artifact`, a real-text artifact), `docs/model-integration-cookbook.md` (the procedure
+  for a model with no bundled recipe, Qwen3-1.7B worked through), `docs/recipes.md`,
+  `docs/concepts.md` (the building blocks; what the supplement does: reachability; what it does
+  not: protect skills), `docs/multi-domain-chains.md` (the regenerate route), `docs/faq.md` (8 GB cards, bf16 on Turing,
+  the toolchain warning, what self-generation costs, memory per model). `docs/verification.md`
+  gains only a dated header: nothing in 0.2.0 was checked bit-for-bit against the research code.
 
 ### 0.1.1
 

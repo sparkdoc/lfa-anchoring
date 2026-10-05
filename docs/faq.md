@@ -2,16 +2,32 @@
 
 ## How much GPU memory does a run need?
 
-About **8 GB** for Qwen3-0.6B at the shipped recipe. Measured on an RTX 3090
-(2026-09-07) at rank 32, batch 6 × 512 tokens, 16 anchor samples: **8.63 GiB allocated at peak,
-10.8 GiB reserved** by the caching allocator — with a second, separately loaded teacher, which is
-what every run did before 0.1.1 and what `--teacher-mode separate` still does. A LoRA run now
-holds **one** model: PEFT freezes the base weight of every module it adapts, so the student *is*
-the teacher and it is read there with the adapters switched off. That is the whole of the teacher's
-resident weights returned — **1.11 GiB at 0.6B** (596 M parameters in bfloat16), measured on all
-three of allocated, reserved and `nvidia-smi`, at no cost in step time (−0.2 %, inside a
-run-to-run spread of 0.8 %). What is left is the student, the optimizer state and the activations;
-the anchor itself is small, since it evaluates sub-modules on 16 vectors rather than on the batch.
+About **8 GB** for Qwen3-0.6B at its recipe, and more for Qwen3-1.7B (the two side by side below).
+Measured on an RTX 3090 (2026-09-07) at rank 32, batch 6 × 512 tokens, 16 anchor samples: **8.63 GiB
+allocated at peak, 10.8 GiB reserved** by the caching allocator — with a second, separately loaded
+teacher, which is what every run did before 0.1.1 and what `--teacher-mode separate` still does. A
+LoRA run now holds **one** model: PEFT freezes the base weight of every module it adapts, so the
+student *is* the teacher and it is read there with the adapters switched off. That is the whole of
+the teacher's resident weights returned — **1.11 GiB at 0.6B** (596 M parameters in bfloat16),
+measured on all three of allocated, reserved and `nvidia-smi`, at no cost in step time (−0.2 %,
+inside a run-to-run spread of 0.8 %). What is left is the student, the optimizer state and the
+activations; the anchor itself is small, since it evaluates sub-modules on 16 vectors rather than on
+the batch.
+
+**Per model**, on the same test and the same card — the GPU pipeline test (a trial-frame artifact
+build, the supplement, one epoch at batch 6 × 512 with no accumulation, evaluate, fuse) on an
+RTX 3090, 2026-10-03, peak by `nvidia-smi` sampled every 5 s over the whole test:
+
+| model | peak | test time |
+|---|---:|---:|
+| Qwen3-0.6B | 5,435 MiB | 323 s |
+| Qwen3-1.7B | 8,853 MiB | 482 s |
+
+The peak includes the model in float32 during the trial build (about 6.9 GB for Qwen3-1.7B, whose
+1,720,574,976 parameters are 3.44 GB in bfloat16), and a 5-second sample can miss a short spike.
+Batch 6 × 512 ran without running out of memory on both. These are not training peaks: a
+Qwen3-0.6B training run — unanchored, 4 epochs at batch 6 × 512 — peaked at 7,325 MiB by
+`nvidia-smi` sampled every 10 s over init, train and evaluate (2026-10-03).
 
 Full-weight training moves the base weights, so there the student is not a copy of anything and a
 real teacher is loaded: a full-weight run still holds two models, and `--teacher-mode
@@ -36,7 +52,8 @@ For sweeps, run one configuration per card as two independent lanes (`--device c
 `--device cuda:1`). That is a true 2× on the queue, which no form of parallelism inside one run
 gets you here.
 
-The two things that *do* cost real memory are the artifact build (host RAM, tens of GB; on the
+The two things that *do* cost real memory are the artifact build (host RAM, tens of GB — about
+1.5 GiB of reservoirs a layer for Qwen3-0.6B and 2.3 GiB for Qwen3-1.7B; on the
 self-generated route, and so under `regenerate-artifact`, the build sizes itself to the RAM it finds
 — below) and the continual extension (below).
 
@@ -50,6 +67,9 @@ artifact — 84 sites, of which 28 are 2048 wide and 56 are 1024 wide — at the
 56 × 40,000 × 1024 × 4 B  +  28 × 40,000 × 2048 × 4 B  ≈  18 GB
 ```
 
+For Qwen3-1.7B, whose 84 sites are all 2048 wide, the same arithmetic gives
+`84 × 40,000 × 2048 × 4 B ≈ 27.5 GB`; that has not been measured.
+
 **Measured, on that exact configuration: 19.4 GiB peak resident** (`/usr/bin/time -v`, one RTX
 3090, 2026-09-08) — the arithmetic above plus about 1.4 GiB of interpreter, torch and model. Halve
 `--need` to halve the dominant term. The fit's quality floor is `--k-domain` components at one per
@@ -61,9 +81,11 @@ there is no `--need`: each boundary runs a whole self-generated artifact build, 
 build's reservoirs, collected `layer_group_size` layers at a time. With no group size given, the
 self-generated build chooses it from the model's config and the host RAM available when it starts,
 and logs the choice: on the machine this was written on, 7 for Qwen3-0.6B at the 200,000-vector
-reservoir (about 10.7 GiB of reservoirs per group, against about 24 GiB available); on the host
-with 125 GiB of RAM that built the recorded artifact (2026-09-30), 28, every layer in one pass
-(`layer_group_size=28 for Qwen/Qwen3-0.6B: ~42.7 GiB of reservoirs per group against 117.9 GiB available`).
+reservoir (about 10.7 GiB of reservoirs per group, against about 24 GiB available); on a host
+with 125 GiB of RAM, 28, every layer in one pass
+(`layer_group_size=28 for Qwen/Qwen3-0.6B: ~42.7 GiB of reservoirs per group against 117.9 GiB available`,
+2026-09-30), and for Qwen3-1.7B on that host 25 of its 28 layers, at 115.0 GiB available
+(2026-10-03).
 The choice changes the memory bill and the number of corpus passes, not the artifact: at a fixed
 seed any group size gives the same one, and the artifact's meta records `layer_group_size` for the
 record ([the-artifact.md](the-artifact.md#host-ram-the-layer-group)).
@@ -93,25 +115,29 @@ conda-managed interpreter ships its own headers. `LFA_SKIP_TOOLCHAIN_CHECK=1` si
 
 ## How long does self-generation take?
 
-Qwen3-0.6B, on the card each row names:
+On the card each row names:
 
-| what | size | card | time |
-|---|---|---|---|
-| generation | 16 documents × 512 tokens | RTX 2070 (8 GB), 2026-09-26 | 54 s |
-| an artifact corpus | 16 raw + 4 chat-format documents | RTX 2070 (8 GB), 2026-09-26 | 77 s |
-| a small artifact build | 20k samples per site, K = 4, model loads included | RTX 2070 (8 GB), 2026-09-26 | about 3 min |
-| a supplement | about six passages at 6 pairs each, batch 4 | RTX 2070 (8 GB), 2026-09-26 | 47 s |
-| the full frame: generation | 2,500 documents of up to 2,048 tokens | RTX 3090 (24 GB), 2026-09-30 | about 80 min, in two runs with a model load each (26.9 min, interrupted; 53.4 min, resumed) |
-| the full frame: fit | 600k samples per site, K = 32 | RTX 3090 (24 GB), 2026-09-30 | 2 h 22 min: 22 min collecting hidden states, about 2 h 00 min fitting the mixtures on the GPU |
-| the full frame, cold | both of the above | RTX 3090 (24 GB), 2026-09-30 | about 3 h 40 min |
+| model | what | size | card | time |
+|---|---|---|---|---|
+| Qwen3-0.6B | generation | 16 documents × 512 tokens | RTX 2070 (8 GB), 2026-09-26 | 54 s |
+| Qwen3-0.6B | an artifact corpus | 16 raw + 4 chat-format documents | RTX 2070 (8 GB), 2026-09-26 | 77 s |
+| Qwen3-0.6B | a small artifact build | 20k samples per site, K = 4, model loads included | RTX 2070 (8 GB), 2026-09-26 | about 3 min |
+| Qwen3-0.6B | a supplement | about six passages at 6 pairs each, batch 4 | RTX 2070 (8 GB), 2026-09-26 | 47 s |
+| Qwen3-0.6B | the full frame: generation | 2,500 documents of up to 2,048 tokens | RTX 3090 (24 GB), 2026-10-04 | 83 min |
+| Qwen3-0.6B | the full frame: fit | 600k samples per site, K = 32 | RTX 3090 (24 GB), 2026-10-04 | 2 h 28 min: 27 min collecting hidden states, about 2 h fitting the mixtures |
+| Qwen3-0.6B | the full frame, cold | both of the above | RTX 3090 (24 GB), 2026-10-04 | 3 h 51 min |
+| Qwen3-1.7B | the full frame: generation | 2,500 documents of up to 2,048 tokens | RTX 3090 (24 GB), 2026-10-03 | 87 min |
+| Qwen3-1.7B | the full frame: fit | 600k samples per site, K = 32, two corpus passes | RTX 3090 (24 GB), 2026-10-03/04 | 4 h 29 min |
+| Qwen3-1.7B | the full frame, cold | both of the above | RTX 3090 (24 GB), 2026-10-03/04 | 5 h 56 min |
 
-The first four rows are not the recorded frame; the last three are. The full-frame build ran on a
-host with 125 GiB of RAM, which chose one layer group for all 28 layers
-([the-artifact.md](the-artifact.md#host-ram-the-layer-group)), and wrote an artifact of 110.3 MB
-(126 MB for the store entry, corpus included). An 8 GB card has not been measured at the full
-frame. A supplement costs one generation per 4,000-character passage of the training side (the
-default batch is 16 passages), once per corpus and writer: it is cached under
-`<workspace>/supplements/<corpus sha256[:12]>/` (or beside the corpus, in
+The RTX 2070 rows are not the recorded frame; the RTX 3090 rows are, one build per model, on a host
+with 125 GiB of RAM. The Qwen3-0.6B build ran alone on the host; the Qwen3-1.7B build shared it for
+most of its run with a second Qwen3-1.7B build (at 1.5 M samples per site). Qwen3-0.6B's build put
+all 28 layers in one layer group and Qwen3-1.7B's 25 of 28
+([the-artifact.md](the-artifact.md#host-ram-the-layer-group)); the artifacts are 110.0 MB and 243.7
+MB. An 8 GB card has not been measured at the full frame. A supplement costs one generation per
+4,000-character passage of the training side (the default batch is 16 passages), once per corpus and
+writer: it is cached under `<workspace>/supplements/<corpus sha256[:12]>/` (or beside the corpus, in
 `<corpus>.supplement/<corpus sha256[:12]>/`, when it was prepared with the data) and reused while
 the training side's hash, the writer checkpoint's hash, the template's hash and the domain
 description all match. `lfa prepare-supplement --force` rewrites it.
@@ -145,7 +171,7 @@ anchor average across many epochs is the thing that would be worth investigating
 
 Because every published LFA result is LoRA. The loss is method-agnostic by construction — it
 compares sub-module outputs, not adapters — so full-weight training runs, and
-`--full-weight` will do it. But the operating point in the bundled recipe was tuned at rank 32,
+`--full-weight` will do it. But the operating point in each bundled recipe was tuned at rank 32,
 and λ's meaning goes with the size of the space it constrains: a full-weight run is not
 "rank ∞ at the same λ". The warning says what to do instead — calibrate λ in the 50,000–100,000
 region and read **held-out domain** perplexity, not only general-text perplexity.
@@ -168,18 +194,19 @@ Read the two axes together and always in that order:
 A general number below base is at best incidental and at worst a symptom. It is not evidence that
 anything was preserved.
 
-## How do I use a model that is not Qwen3?
+## How do I use a model that is not Qwen3-0.6B or Qwen3-1.7B?
 
-Three steps, and only the third is real work: an **adapter** so LFA can find the sub-modules
-(usually free — `LlamaLayoutAdapter` covers Llama, Qwen2/3, Mistral and their kin), an
+Those two have bundled recipes ([quickstart.md](quickstart.md#1-choose-a-model)). Any other
+model — another size of Qwen3 included — needs three things, and only the third is real work: an
+**adapter** so LFA can find the sub-modules (usually free — `LlamaLayoutAdapter` covers Llama,
+Qwen2/3, Mistral and their kin), an
 **artifact** built for that model — `lfa init <workspace> --model <id> --artifact self-generated`
 has the model write the text it is fitted on, no dataset downloaded (a model new to the package
 has no published artifact to download until someone publishes one) — and a **λ calibration** at
-your rank
-and corpus,
-against that artifact. Never port λ across models. [model-integration-cookbook.md](model-integration-cookbook.md) has
-the interface, the fallback orders, and
-the calibration procedure.
+your rank and corpus, against that artifact. Never port λ across models.
+[model-integration-cookbook.md](model-integration-cookbook.md) is the procedure, step by step:
+the adapter checks, the memory arithmetic, the build and `lfa probe-artifact`, the calibration and
+the recipe, with Qwen3-1.7B worked through.
 
 The natural next models to verify are **Gemma 3 1B** and **Llama 3.2 1B**: both should be placed by
 the existing adapter, and both are small enough that the artifact build and a λ sweep fit on one
