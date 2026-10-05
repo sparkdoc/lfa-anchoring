@@ -1,3 +1,32 @@
 {
-  "artifacts": []
+  "artifacts": [
+    {
+      "model_id": "Qwen/Qwen3-0.6B",
+      "writer_sha256": "a15c53884fd551b94cc93ae361b8a11460cb295866786275c5de9c7cac93d051",
+      "frame_sha256": "9b4469a9df3a84b8ac3de9f24f8c08b5ab6914a19749797b81588ce86f63b2bd",
+      "artifact_url": "https://github.com/sparkdoc/lfa-anchoring/releases/download/artifacts-2026-10/qwen3-0.6b-artifact.pt",
+      "artifact_file_sha256": "3eb4284108504af78d232c4649d923509f0c5fb23a5d4e720281ae2f7f39564b",
+      "artifact_size_bytes": 110023284,
+      "corpus_url": "https://github.com/sparkdoc/lfa-anchoring/releases/download/artifacts-2026-10/qwen3-0.6b-corpus.jsonl",
+      "corpus_file_sha256": "9cf6a55880ce2e2c5c6cf135a130778d45aa3fcf5d6f0abb4111133221a80e01",
+      "corpus_size_bytes": 21707587,
+      "manifest_url": "https://github.com/sparkdoc/lfa-anchoring/releases/download/artifacts-2026-10/qwen3-0.6b-corpus.manifest.json",
+      "manifest_file_sha256": "a5fc8058ee039600c33719639f47a00323eb5e8e5d5cefe50597b00d4544c19a",
+      "manifest_size_bytes": 713
+    },
+    {
+      "model_id": "Qwen/Qwen3-1.7B",
+      "writer_sha256": "0ca2680d68c117b6722418118e4091195db83ce70ed859db5592cb7b17a28035",
+      "frame_sha256": "9b4469a9df3a84b8ac3de9f24f8c08b5ab6914a19749797b81588ce86f63b2bd",
+      "artifact_url": "https://github.com/sparkdoc/lfa-anchoring/releases/download/artifacts-2026-10/qwen3-1.7b-artifact.pt",
+      "artifact_file_sha256": "5fe867c04bb85aaed8b3cb5ff4b07c0ca4a3972201cbb6ef0e4b00a58bcc8775",
+      "artifact_size_bytes": 243654324,
+      "corpus_url": "https://github.com/sparkdoc/lfa-anchoring/releases/download/artifacts-2026-10/qwen3-1.7b-corpus.jsonl",
+      "corpus_file_sha256": "ce37e238ce260a6fca24c27a876cd9750de853cd6a5b8a77562ed555e31d8cfa",
+      "corpus_size_bytes": 21454735,
+      "manifest_url": "https://github.com/sparkdoc/lfa-anchoring/releases/download/artifacts-2026-10/qwen3-1.7b-corpus.manifest.json",
+      "manifest_file_sha256": "5a60a183a73d6fc5dd632f554f74837ed326dc3e72fe6e3dbac2ab0024ae4daa",
+      "manifest_size_bytes": 713
+    }
+  ]
 }
