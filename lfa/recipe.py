@@ -56,8 +56,9 @@ SELF_GENERATED_REFERENCE = "self-generated"
 RECORDED_SELF_GENERATED_FRAME = {"n_raw": 2500, "n_chat": 0, "max_new_tokens": 2048,
                                  "max_samples": 600_000, "gmm_k": 32, "pca_variance": 0.95}
 
-#: The one model whose rank-16 and full-weight lambda ranges were measured; :meth:`Recipe.warnings`
-#: quotes them only for a recipe naming it.
+#: The one model whose rank-16 and full-weight lambda ranges were measured (in the research code,
+#: on the research corpus, at the paper's point); :meth:`Recipe.warnings` quotes them only for a
+#: recipe naming it.
 _QWEN3_0_6B = "Qwen/Qwen3-0.6B"
 
 #: The keys a ``self_generated_frame`` may carry: the recorded frame's, plus the rest of
@@ -88,8 +89,9 @@ class Recipe:
         stage2_lambda_multiplier: What :meth:`to_train_config` multiplies lambda by from stage 2
             on. A later stage anchors a model that already carries a domain, and what that wants
             is a *harder* anchor; it is a level, not a per-stage compounding factor. The shipped
-            3.0 is a starting default rather than a calibrated constant -- lambda is coupled to
-            the corpus, so a chain over a new pair of domains re-tunes it.
+            3.0 was measured on one pair of domains (ahead of 1.0 on retention for both bundled
+            models) -- lambda is coupled to the corpus, so a chain over a new pair of domains
+            re-tunes it.
         calibrated_rank: The LoRA rank the lambdas were tuned at.
         calibrated_artifact: What the lambdas were calibrated against: ``self-generated`` (an
             artifact fitted on this model's own text at :attr:`self_generated_frame`), or an id
@@ -121,8 +123,8 @@ class Recipe:
     full_weight: bool = False
 
     # -- anchoring
-    lambda_qkv: float = 100_000.0
-    lambda_mlp: float = 100_000.0
+    lambda_qkv: float = 1_000_000.0
+    lambda_mlp: float = 1_000_000.0
     mu: float = 0.05
     anchor_end_ratio: float = 0.1
     anchor_schedule: str = "cosine"
@@ -342,8 +344,9 @@ class Recipe:
         quoted = (f"{self.lambda_qkv:g}" if self.lambda_qkv == self.lambda_mlp
                   else f"qkv {self.lambda_qkv:g}, mlp {self.lambda_mlp:g}")
         if rank != self.calibrated_rank:
-            measured = (" (Qwen3-0.6B at rank 16 measured at roughly 2e4-5e4 on a book-sized "
-                        "corpus)" if self.model_id == _QWEN3_0_6B else "")
+            measured = (" (for Qwen3-0.6B on the research corpus, at the paper's point, rank 16 "
+                        "sat at roughly a fifth to a half of rank 32's lambda)"
+                        if self.model_id == _QWEN3_0_6B else "")
             notes.append(
                 f"lambda is coupled to LoRA rank: this recipe's lambda ({quoted}) was "
                 f"calibrated at rank {self.calibrated_rank} and you are running rank {rank}. "
@@ -391,7 +394,8 @@ class Recipe:
                 "read the frontier rather than a single point."
             )
         if self.full_weight:
-            start = (" (for Qwen3-0.6B, start the search in 50,000-100,000)"
+            start = (" (for Qwen3-0.6B, the research code started the search in 50,000-100,000, "
+                     "on the research corpus at the paper's point)"
                      if self.model_id == _QWEN3_0_6B else "")
             notes.append(
                 "full-weight anchoring is unvalidated for this recipe: its lambda was "

@@ -141,9 +141,8 @@ def test_no_cell_uses_a_name_no_cell_defines(path):
 def test_the_walkthrough_says_it_is_a_demo_scale_rather_than_the_recipe():
     """The one claim the notebook must never lose in an edit.
 
-    Its corpora are a quarter of what the operating point was tuned on by bytes and its epochs a
-    quarter, so a reader who takes its settings for the recommended ones has been misled by this
-    repository. The markdown has to keep saying so.
+    Its epochs are a quarter of the recipe's, so a reader who takes its settings for the
+    recommended ones has been misled by this repository. The markdown has to keep saying so.
     """
     markdown = markdown_of(WALKTHROUGH)
     assert "demo settings" in markdown

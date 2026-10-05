@@ -427,14 +427,15 @@ def test_an_evenly_split_corpus_is_not_called_lopsided():
 
 
 def test_too_many_epochs_for_the_amount_of_text_is_warned_before_the_run():
-    """200 k tokens at the recipe's 15 epochs -- the shape the held-out curve turns on, said
-    before the run rather than after it."""
+    """200 k tokens at the recipe's 15 epochs -- the shape on which a weaker anchor's held-out
+    curve turns, said before the run rather than after it."""
     ds = ChunkedCorpus(["20000"] * 10, ExactTokens(), max_length=512)
     note = one(ds.shape_warnings(batch_size=6, epochs=15), "epochs over")
 
     assert "15 epochs over 200,000 training token(s)" in note
     assert "400 chunk(s), 10 document(s)" in note
-    assert "held-out minimum at epoch 4" in note            # the measurement it rests on
+    assert "held-out minimum at epoch 10-11" in note        # the measurements it rests on
+    assert "turned by epoch 4-5" in note
     assert "val_fraction" in note                           # and how to choose the dose
 
     assert ds.shape_warnings(batch_size=6, epochs=4) == []  # the same corpus at a sane dose

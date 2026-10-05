@@ -220,16 +220,19 @@ pytest tests/test_gpu_smoke.py -m gpu -q     # one stage on the card
 
 This package is the method behind the [LFA paper](https://openreview.net/forum?id=68rQ2UBOOC), ported from the research code and checked
 against it: the sampler's draws replayed bit-for-bit, every anchor block bit-identical, and one
-full run of the bundled recipe agreeing with the research run on every deterministic series
+full run at the paper's operating point agreeing with the research run on every deterministic series
 (per-epoch content loss within 0.191 %). [docs/verification.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/verification.md)
 is the report, with the one deliberate divergence since (the corpus loader's per-epoch chunking)
 and what it changes. Agreement with another implementation is not correctness, and nothing here
 reproduces a published number: the paper's headline (domain perplexity 8.76 on Qwen3-0.6B at a
 seed ΔPPL of −10.0 %) is the paper's measurement on the paper's corpus and instruments.
 
-The Qwen3-0.6B recipe's lambda was first tuned against an artifact fitted on real text; this
-package builds an artifact from the model's own text instead, which matched it at every lambda
-tried — one model, one seed, one domain.
+The paper's Qwen3-0.6B point was tuned on the research corpus against an artifact fitted on real
+text; an artifact fitted on the model's own text, which this package builds instead, matched it
+there at every lambda tried — one model, one seed, one domain. Both bundled recipes' lambda was
+calibrated in this package, each against its own model's self-generated artifact, on the
+walkthrough's Darwin text
+([docs/recipes.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/recipes.md)).
 
 The research code — every arm, ladder and retraction — is private and is not distributed. This is
 what survived, ported, tested and documented.

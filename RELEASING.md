@@ -153,6 +153,12 @@ supplement); rank 4, one seed (the regenerate route).
 * **Qwen3-1.7B** is a bundled model: recipe `qwen3-1.7b`, for `Qwen/Qwen3-1.7B`, calibrated against
   its own self-generated artifact at the recorded frame ([docs/recipes.md](docs/recipes.md)). The
   `--model` value picks the bundled recipe whose `model_id` it is.
+* **The `qwen3-0.6b` recipe's λ is 1,000,000** (`lambda_qkv` = `lambda_mlp`; 100,000 in 0.1.x),
+  calibrated like the Qwen3-1.7B recipe's on the walkthrough's Darwin text (one seed, perplexity;
+  [docs/recipes.md](docs/recipes.md#how-λ-was-chosen)). At 100,000 that corpus over-trained at the
+  recipe's 15 epochs and ended worse than the base model on both axes. The paper's operating point
+  (λ = 100,000, calibrated on the research corpus) is unchanged, as the paper's. `TrainConfig` and
+  `Recipe` default to the new value, and the small-corpus warning cites the new measurements.
 * **`init` warns when the recipe names another model** than the workspace's: λ does not port
   between models. A warning, never a refusal — a local path to the same weights is another id.
 * **`lfa probe-artifact`** (`lfa.probe.probe_artifact`) prices a trained adapter's update

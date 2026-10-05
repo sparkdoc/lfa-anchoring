@@ -204,7 +204,8 @@ and λ's meaning goes with the size of the space it constrains: a full-weight ru
 measured λ is for LoRA — and what to do instead: re-calibrate λ for full weight by
 [the cookbook's §5](model-integration-cookbook.md#5-calibrate-λ) and check **held-out domain**
 perplexity, not only general-text perplexity. Only a recipe naming Qwen3-0.6B adds a starting
-range for that search, 50,000–100,000.
+range for that search, 50,000–100,000: the research code's, on the research corpus at the paper's
+operating point, not a measurement on the bundled recipe's corpus.
 
 ## WikiText-2 perplexity came out *below* the base model's. Is that a win?
 

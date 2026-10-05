@@ -127,8 +127,8 @@ model, another snapshot of the weights, another frame — is built
 ([the-artifact.md](the-artifact.md#published-artifacts)).
 
 **What it is worth.** On Qwen3-0.6B an artifact fitted on the model's own text at this frame
-matched an artifact fitted on real text at every λ tried, and was at least as good at the recipe's
-λ — one model, one seed, one domain. Each bundled recipe is calibrated against its own model's
+matched an artifact fitted on real text at every λ tried, and was at least as good at the paper's
+operating point — one model, one seed, one domain. Each bundled recipe is calibrated against its own model's
 self-generated artifact at this frame and says nothing. On a model with no bundled recipe it is the
 way to a first artifact, and λ is then calibrated against it
 ([model-integration-cookbook.md](model-integration-cookbook.md)). `lfa probe-artifact` checks that
@@ -187,9 +187,10 @@ lfa train --workspace runs/my_domain --corpus data/my_domain
 
 `train` adapts the workspace's current model to the corpus with the anchor on. A tenth of the
 documents are held out and scored after every epoch, so the domain number is a measurement rather
-than a fit. **Watch that number.** The recipe's 15 epochs were tuned on ~1,700 documents; on a
-smaller corpus the held-out perplexity bottoms out early and then climbs, and `final_model` is the
-last epoch by design (no best checkpoint is kept — [recipes.md](recipes.md) says why). The trainer
+than a fit. **Watch that number.** At the recipe's λ the walkthrough's Darwin text (~189 k
+training tokens an epoch) carried the 15 epochs; on a smaller corpus, or at a lower λ, the
+held-out perplexity can bottom out early and then climb, and `final_model` is the last epoch by
+design (no best checkpoint is kept — [recipes.md](recipes.md) says why). The trainer
 warns at the end if the curve turned around; the fix is to re-run with `--epochs <the epoch it
 bottomed at>` — the learning-rate schedule is laid over whatever you say, so that is a complete
 shorter run rather than a truncated long one. `--resume` continues an interrupted run.
@@ -261,8 +262,8 @@ anchor off** so the control sits beside every number — open
 end in 35.4 minutes on one RTX 3090 (four training runs, two of them controls, and a supplement
 written for each stage), plus whatever the
 model and WikiText-2 cost you on a cold cache and the artifact build when the store has none for
-the model yet. Its corpora and epoch count are demo scale — a
-quarter of the text the recipe was tuned on, a quarter of its epochs — and the notebook says so
+the model yet. Its epoch count is demo scale — a quarter of the
+recipe's fifteen — and the notebook says so
 beside every table, so do not read its settings as the recommended ones. Its recorded outputs were
 made on 2026-09-30 on that card, with the self-generated artifact at the recorded frame (2,500
 documents × 2,048 tokens, K = 32) and the supplement on.
@@ -272,7 +273,9 @@ and what the three models say when asked.
 
 ## What it costs
 
-The verification run — the `qwen3-0.6b` recipe, 1,673 documents at 512 tokens, 15 epochs, rank 32 —
+The recipe's fifteen epochs over the walkthrough's Darwin text (about 189 k tokens an epoch)
+took about 25 minutes on one RTX 3090. The verification run — the paper's Qwen3-0.6B point,
+1,673 documents at 512 tokens, 15 epochs, rank 32 —
 took **about 1 h 48 m on one RTX 3090** (432 s per epoch) and about 9 GB of GPU memory — that run
 held a separate teacher, as every run before 0.1.1 did; the same run today loads no second model and
 peaks 1.11 GB lower ([faq.md](faq.md)). LFA pins a single card by default and refuses a sharded

@@ -131,8 +131,8 @@ class TrainConfig:
     model_id: str
 
     # -- anchoring (lambda) and the weight backstop (mu)
-    lambda_qkv: float = 100000.0
-    lambda_mlp: float = 100000.0
+    lambda_qkv: float = 1000000.0
+    lambda_mlp: float = 1000000.0
     mu: float = 0.05
     n_anchor_samples: int = 16
     anchor_end_ratio: float = 0.1
@@ -1059,9 +1059,9 @@ def train(
         best_epoch, best, final = turned_around
         run_logger.warning(
             "This run trained past its own optimum: held-out perplexity was lowest at epoch %d "
-            "(%.3f) and ended at %.3f, epoch %d. The shipped recipe's epoch count was tuned on a "
-            "corpus of about 1,700 documents; a smaller one reaches its minimum in far fewer "
-            "epochs. `final_model` is the LAST epoch -- no best checkpoint is kept, by design "
+            "(%.3f) and ended at %.3f, epoch %d. How many epochs a corpus carries depends on its "
+            "size and on lambda: a smaller corpus, or a weaker anchor, reaches its minimum sooner. "
+            "`final_model` is the LAST epoch -- no best checkpoint is kept, by design "
             "(docs/recipes.md says why) -- so to ship the better model, re-run with --epochs %d, "
             "which lays the whole learning-rate schedule over that many epochs rather than "
             "truncating this one.",

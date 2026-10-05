@@ -120,7 +120,8 @@ Extending a `p(h)` artifact with a new domain is two stages, and they behave dif
 
 ## Tier 2 — one full run, against a matched run of the research code
 
-The bundled `qwen3-0.6b` recipe was trained end to end, and compared against a research-code run of
+The `qwen3-0.6b` recipe at the paper's operating point (λ = 100,000, the research corpus) was
+trained end to end, and compared against a research-code run of
 the **identical configuration**: same corpus, same int8 artifact, same seed, same fifteen epochs of
 cosine, same loader frame. Before anything trained, the two configurations were compared field by
 field — rank, α, both λ, μ, the anchor schedule, epochs, learning rate, batch geometry, warmup,

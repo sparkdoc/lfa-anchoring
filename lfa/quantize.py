@@ -1,7 +1,7 @@
 """Blockwise int8 (de)quantization for p(h) distribution artifacts — a STORAGE format.
 
 An LFA artifact is dominated by the fp16 PCA basis (`pca_components`, ~208 MB for the real-text
-qwen3-0.6b artifact the recipe's lambda was tuned against) plus the GMM parameters (~18 MB).
+qwen3-0.6b artifact the paper's operating point was tuned against) plus the GMM parameters (~18 MB).
 Blockwise-int8 halves those to ~113 MB with ~1% covariance error (measured: int8 blockwise-64 =
 1.03%, the best 8-bit option — FP8 is 4× worse because orthonormal basis entries have no dynamic
 range for exponent bits to spend).

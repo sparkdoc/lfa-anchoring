@@ -83,8 +83,9 @@ Anything the artifact has no statistics for is left **unanchored** rather than a
 `λ` constrains motion inside the update subspace, so the same number binds far harder in a smaller
 one. Three couplings, all enforced as warnings by `Recipe.warnings`:
 
-* **LoRA rank.** Lower rank ⇒ lower λ. The shipped point is rank 32 at λ = 100,000; at rank 16 the
-  measured frontier on a corpus of this kind sits nearer 2·10⁴–5·10⁴.
+* **LoRA rank.** Lower rank ⇒ lower λ. Both bundled recipes are rank 32 at λ = 1,000,000 and were
+  measured at no other rank; on the research corpus, at the paper's point, rank 16's frontier sat
+  at roughly a fifth to a half of rank 32's λ.
 * **The artifact.** A sharper or flatter p(h) changes the anchor's scale, so an artifact swap is a
   re-tune. The recipe records `calibrated_artifact` for exactly this reason, and for the
   self-generated artifact it is calibrated against, the frame it was built at
@@ -119,7 +120,7 @@ inferior* option rather than a cheap equivalent: the linear sites' inputs are st
 and a diagonal model misprices them by a factor of several, which shows up directly in the anchor
 because the loss scales with the second moment of p(h). The artifact this package builds keeps a
 correlated basis and a K = 32 mixture per site instead, quantized blockwise to int8 and dequantized
-on load (the real-text Qwen3-0.6B artifact the recipe's λ was first tuned against is ~108 MB int8
+on load (the real-text Qwen3-0.6B artifact the paper's operating point was tuned against is ~108 MB int8
 against ~226 MB in fp16). Both kinds add back the **off-basis residual variance** the ~95 % basis
 truncates, so the sampled marginals are right and λ means what it was calibrated to mean. A
 diagonal artifact is not what this package builds, and would need its own λ.
@@ -184,7 +185,7 @@ components per site: the cost per round does not grow with the number of rounds.
 
 Two different things, kept apart on purpose.
 
-**The paper's result.** On Qwen3-0.6B at the shipped operating point (rank 32, λ = 100,000,
+**The paper's result.** On Qwen3-0.6B at the paper's operating point (rank 32, λ = 100,000,
 μ = 0.05, 15 epochs) the LFA paper reports domain perplexity **8.76** at a seed ΔPPL of
 **−10.0 %** — seed-corpus perplexity 10 % *below* the base model's, which is the favourable end of
 that axis and the contrast the paper draws with methods that pay a positive drift. (A general

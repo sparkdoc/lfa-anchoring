@@ -307,10 +307,10 @@ def test_the_held_out_split_is_scored_after_every_epoch(setup, tiny_model, tmp_p
 
 # --------------------------------------------------- the run that trained past its optimum
 #
-# The shipped recipe's epoch count was tuned on ~1,700 documents. On the small corpus a first
-# user actually brings, the held-out perplexity turns around early -- one measured run bottomed
-# at epoch 2 (6.67) and ended at epoch 15 (16.88), and `final_model` is the last epoch by
-# design. The trainer printed all fifteen numbers and drew no conclusion from them.
+# How many epochs a corpus carries depends on its size and on lambda. On a small corpus at a
+# weak enough anchor the held-out perplexity turns around early -- one measured run at
+# lambda = 100,000 bottomed at epoch 2 (6.67) and ended at epoch 15 (16.88), and `final_model` is
+# the last epoch by design. The trainer printed all fifteen numbers and drew no conclusion from them.
 
 def _curve(values):
     return [{"epoch": i + 1, "val_perplexity": value} for i, value in enumerate(values)]

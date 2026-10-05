@@ -16,7 +16,7 @@ The instruction rows are rendered with the model's chat template when the corpus
 p(h) estimation -- the hidden states of a formatted exchange are not those of the same words run
 together -- which is why the pair is kept in two fields rather than joined here.
 
-**The recorded corpus.** The real-text artifact the recipe's lambda was tuned against was
+**The recorded corpus.** The real-text artifact the paper's operating point was tuned against was
 estimated on 10,629 documents in exactly this 10:1 shape (its 1.54 M samples per site count
 hidden states, not documents). Two levels are involved, and they carry different numbers:
 
@@ -74,8 +74,8 @@ class SourceUnavailable(RuntimeError):
     last line of a traceback.
     """
 
-# The composition of the corpus behind the real-text artifact the recipe's lambda was tuned
-# against (documents per source).
+# The composition of the corpus behind the real-text artifact the paper's operating point was
+# tuned against (documents per source).
 SHIPPED_COMPOSITION: dict[str, dict[str, int]] = {
     "pretraining": {
         "redpajama_arxiv": 1524,
@@ -473,8 +473,8 @@ def prepare_seed_corpus(
     """Download, mix at 10:1 and write the seed corpus; return the JSONL path.
 
     The defaults are the **download targets** that realized the corpus behind the real-text
-    artifact the recipe's lambda was tuned against: 12,000 pretraining documents (a per-source
-    cap of 2,000) and 20,000 instruction pairs. What lands is smaller -- two pretraining sources
+    artifact the paper's operating point was tuned against: 12,000 pretraining documents (a
+    per-source cap of 2,000) and 20,000 instruction pairs. What lands is smaller -- two pretraining sources
     came up below the cap, and the 10:1 mix then trims the instruction side -- giving the
     recorded 9,663 + 966 of
     :data:`SHIPPED_COMPOSITION`, which is a record rather than a target. Read the

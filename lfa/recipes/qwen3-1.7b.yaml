@@ -6,8 +6,8 @@
 # lambda = 1,000,000 on both site families with mu = 0.05 as the uniform weight backstop, n = 16
 # anchor samples per step, the anchor's layer schedule decaying to 0.1 of layer 0 on a cosine.
 # Adam at 3e-4, batch 6 x 512 tokens, 50 warmup steps then cosine decay to zero over the fifteen
-# epochs trained. Every field but `name`, `model_id` and the two lambdas is the Qwen3-0.6B
-# recipe's.
+# epochs trained. Every field but `name` and `model_id` is the Qwen3-0.6B recipe's; the two
+# lambdas were calibrated on this model and came out at the same value.
 #
 # How lambda was chosen (Qwen3-1.7B; its self-generated artifact at the recorded frame; the
 # Darwin text of the two-domain walkthrough with its question-and-answer supplement; one seed;
@@ -41,10 +41,9 @@
 #
 # Lambda does not port across artifacts, domains or protocols. A separate research run on another
 # domain chose 50,000 for this model, against an artifact fitted on real text and at a different
-# protocol; it is not this recipe's point, and this recipe's point is not its. Nor is the ratio
-# to the qwen3-0.6b recipe's 100,000 a model-size effect: that lambda was calibrated on a corpus
-# about ten times larger (about 1,700 documents, ~1.8 M training tokens, against Darwin's ~189 k
-# an epoch), so at a different dose, and first against an artifact fitted on real text.
+# protocol; it is not this recipe's point, and this recipe's point is not its. The qwen3-0.6b
+# recipe was calibrated the same way on the same Darwin text and landed on the same lambda: two
+# models, one corpus, one seed, which is not evidence that lambda is independent of model size.
 #
 # This is a JOINT point: the values were tuned together, and lambda in particular does not travel
 # on its own. It is coupled to three things:

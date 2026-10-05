@@ -367,7 +367,7 @@ lfa build-artifact --model your/model --corpus data/seed_corpus_10to1.jsonl \
 Everything about that route — the corpus composition, what is stored and what is deliberately not
 — is in [the-artifact.md](the-artifact.md#advanced-an-artifact-fitted-on-real-text). What the
 self-generated route was worth on Qwen3-0.6B (an artifact fitted on the model's own text matched
-one fitted on real text at every λ tried, and was at least as good at the recipe's λ; one model,
+one fitted on real text at every λ tried, and was at least as good at the paper's operating point; one model,
 one seed, one domain) is in [the-artifact.md](the-artifact.md#the-frame). On any other model
 nothing has been measured: it gives you a first artifact, and §5 calibrates λ against it.
 
@@ -475,7 +475,7 @@ recipe.
 ## 5. Calibrate λ
 
 **Do not port λ.** It is coupled to the LoRA rank, to the artifact, and to the corpus, and none of
-those survives a change of model. The bundled 100,000 belongs to Qwen3-0.6B at rank 32 on its
+those survives a change of model. Each bundled λ belongs to its model at rank 32 on that model's
 self-generated artifact at the recorded frame, and means nothing elsewhere
 ([concepts.md](concepts.md) has why λ is coupled).
 
@@ -566,11 +566,10 @@ held-out domain perplexity and WikiText-2 — and the public text of the walkthr
    not only the pick. Pick from the frontier, never from the general axis alone: over-anchoring
    makes general perplexity look its best while domain quality collapses, and that failure is
    invisible unless you are watching the domain number. For Qwen3-1.7B the control over-trained at
-   15 epochs, and the rung best on both axes was λ = 1,000,000 (§9). The bundled Qwen3-0.6B
-   recipe's 100,000 was calibrated on a different corpus — about 1,700 documents, ~1.8 M training
-   tokens, against Darwin's ~189 k an epoch, so 15 epochs is a different dose on each — and first
-   against an artifact fitted on real text. The ratio between the two says nothing about model
-   size: λ does not port, even within a family.
+   15 epochs, and the rung best on both axes was λ = 1,000,000 (§9). For Qwen3-0.6B, on the same
+   Darwin text, no rung was best on both and the fallback picked the same 1,000,000
+   ([recipes.md](recipes.md#how-λ-was-chosen)). Two models, one corpus, one seed: that is not
+   evidence that λ is independent of model size, and λ does not port, even within a family.
 6. **The dose curve**: no new run. From the chosen rung's validation curve, record the epoch with
    the lowest validation perplexity and the value at the last epoch, beside the controls' curves.
    At the recipe dose the chosen rung's curve should not climb in the late epochs the way the
@@ -853,15 +852,15 @@ perplexity on the 10 % that `train` holds out of the training text.
   19,291 MiB is about 18.8 GiB (20.2 GB): more than a 16 GB card holds.
 * **The recipe.** The bundled `qwen3-1.7b` recipe (`lfa/recipes/qwen3-1.7b.yaml`): `lambda_qkv` =
   `lambda_mlp` = 1,000,000; every other field as `qwen3-0.6b`, including `stage2_lambda_multiplier`
-  3.0 and 15 epochs, which the runs above support on this model. That λ is ten times the Qwen3-0.6B
-  recipe's 100,000, but the two were calibrated on different corpora (about 10× apart in size),
-  doses and artifacts, so the ratio says nothing about model size.
+  3.0 and 15 epochs, which the runs above support on this model. The Qwen3-0.6B recipe was
+  calibrated the same way on the same Darwin text and landed on the same λ; two models, one corpus, one
+  seed, so that is not evidence that λ is independent of model size.
 
 **What differed from Qwen3-0.6B**, in short: nothing in the layout or the tokenizer; twice the
 `Σ d²`, and a GPU smoke whose `nvidia-smi` memory.used sat mostly at 8.5–9 GiB (maximum 14,781 MiB,
 against Qwen3-0.6B's 10,235 MiB); a model that writes two-fifths of its unprompted text in Chinese,
-which a word-counting filter could not read; and a calibrated λ of 1,000,000, not comparable with
-the Qwen3-0.6B recipe's 100,000, which was calibrated on a different corpus, dose and artifact.
+which a word-counting filter could not read. The calibrated λ, 1,000,000, is the one the same
+procedure gave Qwen3-0.6B on the same Darwin text.
 
 ## 10. Extending to multimodal models (image and audio) — general advice, untested
 

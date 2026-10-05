@@ -62,10 +62,12 @@ refusal.
   than the whole of the rest of the corpus, so the run is at least as much a fine-tune on that one
   document. The warning names the document and its share. Split it at its own section boundaries.
 * **More epochs than the text can carry.** Under 500,000 training tokens (~2 MB of English) at more
-  than five epochs. The shipped 15 were tuned on about 6.6 MB; the two-domain walkthrough, at 164 k
-  tokens a stage, reached its held-out minimum at epoch 4 and was worse by epoch 8. Start nearer
-  five, keep `val_fraction` above 0, and let the held-out curve pick the dose — the trainer names
-  the epoch it bottomed at when the run ends.
+  than five epochs. At the bundled recipes' λ (1,000,000, both models) the two-domain walkthrough's
+  Darwin text (~189 k training tokens an epoch) carried all 15 — its held-out perplexity lowest at
+  epoch 10 (Qwen3-0.6B) or 11 (Qwen3-1.7B) and ending within 3 % of it — while at λ = 100,000 the
+  same text turned by epoch 4–5. If λ is lowered or the corpus is smaller still, keep
+  `val_fraction` above 0 and let the held-out curve pick the dose — the trainer names the epoch it
+  bottomed at when the run ends.
 
 A sound corpus produces none of them. To read them without starting a run,
 `ChunkedCorpus.shape_warnings(batch_size=…, epochs=…)` returns them as a list of strings.

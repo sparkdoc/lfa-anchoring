@@ -3,8 +3,8 @@
 The recorded frame: 2,500 raw documents of up to 2,048 tokens started from the model's bare
 document-start token at temperature 1.0 and top-p 1.0, **unfiltered**, seed 42, and nothing else.
 The artifact fitted on it at 600k samples per site, K=32, matched an artifact fitted on real text
-at every lambda tried and was at least as good at the recipe's lambda -- one model (Qwen3-0.6B),
-one seed, one domain.
+at every lambda tried and was at least as good at the paper's operating point -- one model
+(Qwen3-0.6B), one seed, one domain.
 
 The chat-format share (``n_chat`` documents started from the bare user-turn header, header kept,
 seed 43) is an option outside that frame and off by default: the launcher intended 250 such

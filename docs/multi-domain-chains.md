@@ -115,7 +115,11 @@ perplexity.
 `N ≥ 2`. It is a **level, not a compounding factor**: stage 3 anchors at the same multiple as stage
 2, not at the square of it.
 
-The shipped 3.0 is a starting default rather than a calibrated constant. λ is coupled to the corpus
+The shipped 3.0 was measured on one pair of domains (the walkthrough's Darwin, then cookery; one
+seed, perplexity), where for both bundled models it was ahead of 1× on retention and on general
+text and at least level on the new domain ([recipes.md](recipes.md)).
+
+λ is coupled to the corpus
 ([recipes.md](recipes.md)), so a chain over your own pair of domains re-tunes it — judged on the
 same two axes, on the domain the stage is learning and on what it is supposed to be keeping.
 

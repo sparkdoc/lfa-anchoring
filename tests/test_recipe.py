@@ -20,7 +20,7 @@ from lfa.recipe import BUNDLED_DIR, RECORDED_SELF_GENERATED_FRAME, SELF_GENERATE
 SHIPPED = dict(
     name="qwen3-0.6b", model_id="Qwen/Qwen3-0.6B", artifact="self-generated",
     lora_rank=32, lora_alpha=64, freeze_embed=True, full_weight=False,
-    lambda_qkv=100000.0, lambda_mlp=100000.0, mu=0.05,
+    lambda_qkv=1000000.0, lambda_mlp=1000000.0, mu=0.05,
     anchor_end_ratio=0.1, anchor_schedule="cosine", n_anchor_samples=16,
     epochs=15, checkpoint_mode="rolling", checkpoint_every=5,
     learning_rate=3e-4, lr_schedule="cosine", batch_size=6, gradient_accumulation_steps=1,
@@ -39,7 +39,8 @@ def test_bundled_recipe_is_the_published_operating_point():
     assert dataclasses.asdict(recipe) == SHIPPED
 
 
-#: The Qwen3-1.7B point: the 0.6B recipe's frame with this model's own measured lambda.
+#: The Qwen3-1.7B point: the 0.6B recipe's frame, and a lambda measured on this model that came out
+#: at the 0.6B recipe's value.
 SHIPPED_1_7B = dict(SHIPPED, name="qwen3-1.7b", model_id="Qwen/Qwen3-1.7B",
                     lambda_qkv=1000000.0, lambda_mlp=1000000.0)
 
@@ -72,7 +73,7 @@ def test_the_qwen3_1_7b_header_says_how_its_lambda_was_chosen_and_that_it_does_n
 def test_bundled_recipe_is_found_from_the_package_not_the_working_directory(tmp_path, monkeypatch):
     """`load` resolves against the installed package, so a wheel and a `cd` both work."""
     monkeypatch.chdir(tmp_path)
-    assert Recipe.load("qwen3-0.6b").lambda_qkv == 100000
+    assert Recipe.load("qwen3-0.6b").lambda_qkv == 1000000
     assert BUNDLED_DIR.is_dir() and (BUNDLED_DIR / "qwen3-0.6b.yaml").is_file()
 
 
@@ -114,7 +115,7 @@ def test_yaml_says_what_keep_short_whole_chooses_between():
 def test_stage_one_config_carries_the_recipe_verbatim(tmp_path):
     config = Recipe.load("qwen3-0.6b").to_train_config(1, tmp_path / "stats.pt")
 
-    assert config.lambda_qkv == 100000 and config.lambda_mlp == 100000
+    assert config.lambda_qkv == 1000000 and config.lambda_mlp == 1000000
     assert config.model_id == "Qwen/Qwen3-0.6B"
     assert config.artifact_path == str(tmp_path / "stats.pt")
     assert (config.mu, config.n_anchor_samples) == (0.05, 16)
@@ -141,14 +142,14 @@ def test_checkpointing_leaves_a_run_resumable(tmp_path):
 
 def test_stage_two_multiplies_lambda(tmp_path):
     config = Recipe.load("qwen3-0.6b").to_train_config(2, tmp_path / "stats.pt")
-    assert config.lambda_qkv == 300000
-    assert config.lambda_mlp == 300000
+    assert config.lambda_qkv == 3000000
+    assert config.lambda_mlp == 3000000
 
 
 def test_the_stage_two_lift_is_a_level_not_a_compounding_factor(tmp_path):
     """Stage 3 anchors like stage 2: the multiplier says "a later stage", not "per stage"."""
     recipe = Recipe.load("qwen3-0.6b")
-    assert recipe.to_train_config(3, tmp_path / "s.pt").lambda_qkv == 300000
+    assert recipe.to_train_config(3, tmp_path / "s.pt").lambda_qkv == 3000000
 
 
 def test_stage_below_one_is_rejected(tmp_path):
@@ -191,22 +192,23 @@ def test_a_different_rank_warns_that_lambda_must_be_retuned():
 
 
 def test_the_rank_warning_quotes_qwen3_0_6b_s_measured_range_only_for_qwen3_0_6b():
-    """The rank-16 range was measured on Qwen3-0.6B; another model's recipe is told to
-    re-calibrate, not handed a range that was never measured for it."""
+    """The rank-16 range was measured on Qwen3-0.6B (research corpus); another model's recipe is
+    told to re-calibrate, not handed a range that was never measured for it."""
     [small] = Recipe.load("qwen3-0.6b").warnings(16, "self-generated:abc",
                                                  _selfgen_meta("Qwen/Qwen3-0.6B"))
-    assert "Qwen3-0.6B" in small and "2e4-5e4" in small
+    assert "Qwen3-0.6B" in small and "a fifth to a half" in small
+    assert "research corpus" in small
     [large] = Recipe.load("qwen3-1.7b").warnings(16, "self-generated:abc",
                                                  _selfgen_meta("Qwen/Qwen3-1.7B"))
     assert "calibrated at rank 32" in large and "re-tune" in large.lower()
     assert "model-integration-cookbook.md" in large and "§5" in large
-    assert "2e4" not in large and "Qwen3-0.6B" not in large
+    assert "a fifth" not in large and "Qwen3-0.6B" not in large
 
 
 def test_the_rank_warning_quotes_both_lambdas_when_they_differ():
     recipe = dataclasses.replace(Recipe.load("qwen3-0.6b"), lambda_mlp=50000.0)
     [warning] = recipe.warnings(16, "self-generated:abc", _selfgen_meta("Qwen/Qwen3-0.6B"))
-    assert "100000" in warning and "50000" in warning
+    assert "qkv 1e+06" in warning and "mlp 50000" in warning
 
 
 def test_a_different_artifact_warns_on_its_own():
@@ -229,7 +231,7 @@ def test_a_full_weight_recipe_adds_its_own_note():
 def test_the_full_weight_note_quotes_qwen3_0_6b_s_range_only_for_qwen3_0_6b():
     small = dataclasses.replace(Recipe.load("qwen3-0.6b"), full_weight=True)
     [note] = small.warnings(32, "self-generated:abc", _selfgen_meta("Qwen/Qwen3-0.6B"))
-    assert "Qwen3-0.6B" in note and "50,000-100,000" in note
+    assert "Qwen3-0.6B" in note and "50,000-100,000" in note and "research corpus" in note
     large = dataclasses.replace(Recipe.load("qwen3-1.7b"), full_weight=True)
     [note] = large.warnings(32, "self-generated:abc", _selfgen_meta("Qwen/Qwen3-1.7B"))
     assert "unvalidated" in note and "LoRA" in note
@@ -253,7 +255,7 @@ def test_a_saved_recipe_is_plain_readable_yaml(tmp_path):
     path = tmp_path / "probe.yaml"
     Recipe.load("qwen3-0.6b").save(path)
     loaded = yaml.safe_load(path.read_text())
-    assert loaded["lambda_qkv"] == 100000 and loaded["lr_schedule"] == "cosine"
+    assert loaded["lambda_qkv"] == 1000000 and loaded["lr_schedule"] == "cosine"
 
 
 def test_an_unknown_field_is_refused_rather_than_ignored(tmp_path):

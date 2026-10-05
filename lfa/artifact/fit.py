@@ -10,8 +10,8 @@ The ladder the sampler walks (diagonal -> PCA -> GMM) is built here, in that ord
    diagonal covariances: in PCA coordinates the axes are already decorrelated globally, so a
    diagonal head buys the per-mode structure a single Gaussian misses at 1/D the parameters.
 
-Two conventions are inherited from the real-text qwen3-0.6b artifact the recipe's lambda was tuned
-against, which is the oracle for this format, and both matter to the sampler:
+Two conventions are inherited from the real-text qwen3-0.6b artifact the paper's operating point
+was tuned against, which is the oracle for this format, and both matter to the sampler:
 
 * the GMM is fitted on **un-whitened** PCA coordinates ``(h - mean) @ V`` -- not divided by
   ``sqrt(eigenvalue)`` -- so no ``gmm_whitened`` key exists and none may be written;

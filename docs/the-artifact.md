@@ -51,10 +51,10 @@ unmeasured. A model without a chat template gets no chat-format share even when 
 for one; the log says so.
 
 **What it is worth.** On Qwen3-0.6B an artifact fitted on the model's own text at this frame
-matched an artifact fitted on real text at every λ tried, and was at least as good at the recipe's
-λ — one model, one seed, one domain. That real-text artifact is the one the `qwen3-0.6b` recipe's
-λ was first tuned against ([below](#advanced-an-artifact-fitted-on-real-text)); the comparison has
-been made on that model only. Each bundled recipe is calibrated against its own model's
+matched an artifact fitted on real text at every λ tried, and was at least as good at the paper's
+operating point — one model, one seed, one domain. That real-text artifact is the one the paper's
+operating point was first tuned against ([below](#advanced-an-artifact-fitted-on-real-text)); the
+comparison has been made on that model only. Each bundled recipe is calibrated against its own model's
 self-generated artifact at this frame, and warns about nothing when a workspace over that model
 uses it. On a model with no bundled recipe the route gives a first artifact, and λ is calibrated
 against it ([model-integration-cookbook.md](model-integration-cookbook.md)).
@@ -328,7 +328,7 @@ without them is refused.
 `build-artifact` writes blockwise-int8 by default (`--no-quantize` for full precision, which
 doubles the file). Quantization is a storage format: it is applied to a shallow copy on save and
 reconstructed on load, so nothing downstream knows whether the file was quantized. The real-text
-Qwen3-0.6B artifact the `qwen3-0.6b` recipe's λ was tuned against is ~108 MB int8 against ~226 MB in fp16.
+Qwen3-0.6B artifact the paper's operating point was tuned against is ~108 MB int8 against ~226 MB in fp16.
 
 ⚠ **The fp16 reservoir has no range guard.** An activation above 65,504 would be stored as `inf`
 and poison that site's fit. Nothing checks for it. If a model is suspected of large activations,
@@ -422,8 +422,8 @@ One witness per model, one RTX 3090, 2026-10-03/04. Qwen3-1.7B's LEVEL read abou
 
 ## Advanced: an artifact fitted on real text
 
-The route the `qwen3-0.6b` recipe's λ was first tuned on: a downloaded seed corpus, then the same
-fit.
+The route the paper's Qwen3-0.6B operating point was first tuned on: a downloaded seed corpus,
+then the same fit.
 
 ```bash
 lfa prepare-seed-corpus --out data/seed_corpus_10to1.jsonl
@@ -455,7 +455,7 @@ levels of number are involved and they are not the same:
 
 * **Download targets** — `--n-pretraining 12000` (a per-source cap of 2,000) and
   `--n-instruction 20000`. These are what you ask for.
-* **The realised corpus** — the composition the `qwen3-0.6b` recipe's λ was tuned on, which that real-text
+* **The realised corpus** — the composition the paper's Qwen3-0.6B operating point was tuned on, which that real-text
   artifact (1,543,040 vectors per site) was estimated from: **9,663 pretraining documents and 966
   instruction pairs**, which is `SHIPPED_COMPOSITION` in `lfa/seed_corpus.py`:
 
@@ -511,7 +511,7 @@ The research code accumulates its running variance with `old_mean` computed **af
 already been folded into the running sum (`self.sum_x +=` and only then
 `old_mean = self.sum_x / self.n`), so its `std` is slightly off. This package's accumulator takes
 `old_mean` before folding, which is the correct Chan update. The consequence is small but real: the
-real-text artifact the `qwen3-0.6b` recipe's λ was tuned against was built by the research code, so an artifact
+real-text artifact the paper's operating point was tuned against was built by the research code, so an artifact
 built here over the same corpus has slightly different `std` values, and `std` enters the sample
 stream through the off-basis residual term. It is a correction, not a divergence — but it is why
 an artifact built here is not bit-identical to one the research code built, and why a λ

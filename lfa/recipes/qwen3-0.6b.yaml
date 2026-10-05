@@ -1,32 +1,68 @@
 # The Layerwise Function Anchoring (LFA) operating point for Qwen3-0.6B.
 #
 # What this is: rank-32 LoRA (alpha 64, embedding and LM head frozen) over a p(h) artifact fitted
-# on the model's own text (see `self_generated_frame` below), anchored at lambda = 100,000 on both
-# site families with mu = 0.05 as the uniform weight backstop, n = 16 anchor samples per step, the anchor's layer schedule decaying to 0.1 of
-# layer 0 on a cosine. Adam at 3e-4, batch 6 x 512 tokens, 50 warmup steps then cosine decay to
-# zero over the fifteen epochs trained. It adapts a 0.6B model to a book-sized corpus in about an
-# hour and a half on one 24 GB card.
+# on the model's own text (see `self_generated_frame` below), anchored at lambda = 1,000,000 on
+# both site families with mu = 0.05 as the uniform weight backstop, n = 16 anchor samples per step,
+# the anchor's layer schedule decaying to 0.1 of layer 0 on a cosine. Adam at 3e-4, batch 6 x 512
+# tokens, 50 warmup steps then cosine decay to zero over the fifteen epochs trained. Fifteen epochs
+# over the walkthrough's Darwin text (about 189 k tokens) took about 25 minutes on one 24 GB card.
+#
+# How lambda was chosen (Qwen3-0.6B; its self-generated artifact at the recorded frame; the
+# Darwin text of the two-domain walkthrough, about 189 k training tokens an epoch, with the
+# model's own question-and-answer supplement at 0.13; one seed; perplexity; RTX 3090;
+# 2026-10-05). Each rung trained the recipe's 15 epochs and was scored on WikiText-2 (100 windows,
+# 51,200 tokens) and on held-out Darwin; base 17.93 and 30.12. The unanchored control over-trains
+# at 15 epochs (held-out Darwin +507 %, WikiText-2 +1469 %), so lambda was chosen on the 15-epoch
+# frontier by the qwen3-1.7b recipe's rule (docs/model-integration-cookbook.md §5), extending the
+# ladder until it turned over:
+#
+#   lambda 50k / 100k / 200k / 500k / 1M / 2.5M / 5M; held-out Darwin against base:
+#   +34.4 / +7.2 / -17.9 / -34.4 / -38.8 / -38.0 / -35.0 %; WikiText-2 against base:
+#   +26.1 / +9.2 / -0.4 / -5.2 / -7.5 / -7.8 / -7.1 %.
+#
+# No rung is best on both axes (2.5M's WikiText-2 is 0.4 % below 1M's), so the rule's fallback
+# applies: the lowest held-out Darwin among the rungs within 1 % of the lowest WikiText-2 (1M, 2.5M,
+# 5M). That is 1,000,000: WikiText-2 16.60 (-7.5 %), held-out Darwin 18.43 (-38.8 %), the
+# ladder's turnover and the qwen3-1.7b recipe's value on the same Darwin text. Two models, one corpus,
+# one seed: that is not evidence that lambda is independent of model size. The full table is in
+# docs/recipes.md.
+#
+# The dose at this lambda. The per-epoch validation perplexity (the training split's own 10 %)
+# fell from 20.45 after epoch 1 to its lowest, 17.62, at epoch 10 and ended at 18.09. At lambda =
+# 100,000 the same corpus bottomed at epoch 4 (16.63) and ended at 31.68, worse than the base
+# model on both axes. An unanchored 4-epoch run reaches held-out Darwin 18.73 with WikiText-2
+# 26.80 (+49.4 %). One seed, one corpus: on your own corpus, read the per-epoch held-out column
+# and set the dose from it (docs/recipes.md).
+#
+# The stage-2 multiplier. A two-stage chain (Darwin, then the walkthrough's cookery text, 15
+# epochs each) at lambda = 1,000,000: 3x beat 1x on cookery (-34.0 % against -30.3 %), on Darwin
+# retention (held-out Darwin +7.2 % against +17.6 % over stage 2) and on WikiText-2 (100 windows,
+# -0.5 % against +1.9 %); for the qwen3-1.7b recipe it was ahead on the last two and matched 1x
+# on cookery. One seed, one pair of domains, perplexity.
+#
+# The paper's operating point is a different one: lambda = 100,000, calibrated in the research
+# code on a corpus about ten times larger (about 1,700 documents, ~1.8 M training tokens), first
+# against an artifact fitted on real text. It is the paper's point, and not this recipe's.
 #
 # This is a JOINT point: the values were tuned together, and lambda in particular does not travel
 # on its own. It is coupled to three things:
 #
 #   * LoRA RANK. Lambda constrains motion inside the rank-r update subspace, so the same value
-#     binds far harder at a lower rank. Lower rank => lower lambda: at rank 16 the measured
-#     frontier on a corpus like this sits at roughly 2e4-5e4, not 1e5. Re-tune rather than port,
-#     and diagnose against held-out DOMAIN perplexity -- over-anchoring makes general-text
-#     perplexity look its best while domain quality collapses.
+#     binds far harder at a lower rank. Lower rank => lower lambda: on the research corpus, at
+#     the paper's point, rank 16's frontier sat at roughly a fifth to a half of rank 32's lambda.
+#     This recipe was measured at rank 32 only. Re-tune rather than port, and diagnose against
+#     held-out DOMAIN perplexity -- over-anchoring makes general-text perplexity look its best
+#     while domain quality collapses.
 #   * The p(h) ARTIFACT. `calibrated_artifact` below records what these lambdas are priced
-#     against. They were tuned against an artifact fitted on real text (a 10:1
-#     pretraining-to-instruction seed corpus, 1.54 M hidden vectors per site); an artifact fitted
-#     on the model's own text at `self_generated_frame` matched it at every lambda tried and was at
-#     least as good at this lambda -- one model, one seed, one domain -- and it is the one this
-#     package builds. Any other artifact is a re-tune.
+#     against: this model's self-generated artifact at `self_generated_frame`. Any other artifact
+#     is a re-tune.
 #   * The CORPUS COMPOSITION. A corpus with a different share of chat-formatted Q&A, or of short
-#     documents, is a different regularization problem; re-tune there too.
+#     documents, or a much larger one, is a different regularization problem; re-tune there too.
 #
-# Full-weight training (`full_weight: true`) is outside the validated envelope: every LFA result
-# behind this point is LoRA. If you go there, calibrate lambda in 50,000-100,000 and check
-# held-out domain perplexity.
+# Full-weight training (`full_weight: true`) is outside the validated envelope: every measurement
+# behind this point is LoRA. If you go there, calibrate lambda and check held-out domain
+# perplexity. The research code's starting range for full weight, on the research corpus at
+# the paper's point, was 50,000-100,000; it is not a measurement on this recipe's corpus.
 
 name: qwen3-0.6b
 model_id: Qwen/Qwen3-0.6B
@@ -39,8 +75,8 @@ freeze_embed: true
 full_weight: false
 
 # -- anchoring: lambda (function anchor) and mu (the uniform weight backstop)
-lambda_qkv: 100000.0
-lambda_mlp: 100000.0
+lambda_qkv: 1000000.0
+lambda_mlp: 1000000.0
 mu: 0.05
 anchor_end_ratio: 0.1
 anchor_schedule: cosine
@@ -73,9 +109,8 @@ keep_short_whole: true
 # measurement rather than a fit
 val_fraction: 0.1
 
-# -- later stages of a chain. A starting default, not a calibrated constant: stage 2 anchors a
-# model that already carries a domain, and 3x lambda is where to begin re-tuning for YOUR pair of
-# domains, judged on the same two axes.
+# -- later stages of a chain: lambda x 3 from stage 2 on, measured on one pair of domains (above);
+# for YOUR pair of domains it is where to begin re-tuning, judged on the same two axes.
 stage2_lambda_multiplier: 3.0
 
 # -- what this point was calibrated at (the couplings above are checked against these)
