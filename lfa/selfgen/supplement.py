@@ -11,7 +11,8 @@ reasoning); keeping skills is the anchor's job. One model (Qwen3-0.6B), one seed
 Two deliberate deviations from the research frame. First, the template's wording is domain-neutral
 where the research one was written for philosophy texts: it says "about a text on {domain}"
 where that said "about a philosophy text", its rule against exam-style questions no longer
-names thought experiments, and its third-person example names "Smith" rather than "Chalmers".
+names thought experiments, and it gives no named example of a third-person answer (the
+research one named "Chalmers"; a small writer copies whatever name the example gives).
 The measured result above was on the research wording. Second, there is no contamination
 screen against an evaluation set (a user has none). The comparison-only `--enforce-spec`
 reminder and the reasoning/instruction modes are not ported.
@@ -47,7 +48,7 @@ exam-style questions that only make sense with the passage in hand (avoid "How d
 author use the example of X to argue Y"). Prefer "What is...", "Why does...", "What is \
 the relationship between...", "What does the author mean by...".
 - ANSWERS: written in the THIRD PERSON as a knowledgeable assistant, referring to the author by \
-name where the passage names them (e.g., "Smith argues that..."). NEVER answer in the first \
+name where the passage names them. NEVER answer in the first \
 person as the author ("I argue..."). Ground every answer strictly in the passage; do not invent. \
 Keep answers to 2-5 sentences.
 - Vary the difficulty and type.

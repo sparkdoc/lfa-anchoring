@@ -140,8 +140,9 @@ shipped λ was tuned at; every earlier companion run trained at 0), `prepare-sup
 `regenerate-artifact` and the chain's `artifact: regenerate` route. Two recorded deviations
 from the research frame: the template's wording is domain-neutral (it says "about a text on
 <domain>" where the research one said "a philosophy text", its rule against exam-style
-questions no longer names thought experiments, and its third-person example is "Smith", not
-"Chalmers"), and the contamination screen against an evaluation set is not ported. The measured
+questions no longer names thought experiments, and it drops the research example "Chalmers
+argues that..." without naming another, since a small writer copies the example's name),
+and the contamination screen against an evaluation set is not ported. The measured
 supplement result was on the research wording. The default domain description skips a generic
 directory name for the nearest named ancestor (`data/darwin/train` → `darwin`). The toolchain
 check is a warning. Recipe fields `supplement_fraction`, `self_generated_frame`; artifact meta

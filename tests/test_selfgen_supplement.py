@@ -67,7 +67,7 @@ def test_the_template_names_the_domain_and_keeps_the_rules():
     assert "Keep answers to 2-5 sentences" in prompt and "PASSAGE" in prompt
     assert "philosophy" not in prompt
     assert "Chalmers" not in prompt and "thought experiment" not in prompt
-    assert '"Smith argues that..."' in prompt
+    assert "e.g." not in prompt and "argues that" not in prompt   # no example for a small writer to copy
 
 
 class _Tok:
