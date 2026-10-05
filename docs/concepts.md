@@ -236,4 +236,5 @@ the recipe and the chain, ported and checked against that code
 ([verification.md](verification.md)), with the research-only scaffolding left behind.
 
 Citation: *Layerwise Function Anchoring: Preserving Sub-Module Functions on Sampled Hidden States
-for Continual Domain Adaptation* — the LFA paper (2026), authors withheld for review.
+for Continual Domain Adaptation* — the LFA paper, submitted to ICLR 2027; authors anonymous during
+review. On OpenReview: <https://openreview.net/forum?id=68rQ2UBOOC>.

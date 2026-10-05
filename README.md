@@ -218,7 +218,7 @@ pytest tests/test_gpu_smoke.py -m gpu -q     # one stage on the card
 
 ## Provenance
 
-This package is the method behind the LFA paper, ported from the research code and checked
+This package is the method behind the [LFA paper](https://openreview.net/forum?id=68rQ2UBOOC), ported from the research code and checked
 against it: the sampler's draws replayed bit-for-bit, every anchor block bit-identical, and one
 full run of the bundled recipe agreeing with the research run on every deterministic series
 (per-epoch content loss within 0.191 %). [docs/verification.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/verification.md)
@@ -237,6 +237,7 @@ what survived, ported, tested and documented.
 ## Citing
 
 *Layerwise Function Anchoring: Preserving Sub-Module Functions on Sampled Hidden States for
-Continual Domain Adaptation* — the LFA paper (2026); authors withheld for review.
+Continual Domain Adaptation* — the LFA paper, submitted to ICLR 2027; authors anonymous during
+review. On OpenReview: <https://openreview.net/forum?id=68rQ2UBOOC>.
 
 Licensed under Apache-2.0 (see [LICENSE](https://github.com/sparkdoc/lfa-anchoring/blob/main/LICENSE)).
