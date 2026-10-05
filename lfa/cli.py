@@ -330,7 +330,7 @@ def build_parser() -> argparse.ArgumentParser:
                       help="a Hub id or a local checkpoint path")
     init.add_argument("--artifact", required=True, metavar="self-generated|PATH",
                       help="`self-generated` to have the model write its own corpus and fit "
-                           "p(h) on it (about 3 h 40 min for Qwen3-0.6B on an RTX 3090, once per "
+                           "p(h) on it (about 3 h 51 min for Qwen3-0.6B on an RTX 3090, once per "
                            "model: it is kept in the local store, ~/.cache/lfa/artifacts or "
                            "$LFA_ARTIFACT_STORE, and reused; when the store has none, a "
                            "published artifact for this exact model and frame, pinned in the "

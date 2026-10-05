@@ -50,7 +50,7 @@ model id is the one you pass.
 The builds are the full recorded frame from a cold store, on one RTX 3090 (24 GB) in a host with 125
 GiB of RAM, 2026-10-03/04. The Qwen3-0.6B build ran alone on the host; the Qwen3-1.7B build shared
 it for most of its run with a second Qwen3-1.7B build (at 1.5 M samples per site). The last column
-is the GPU pipeline test on the same card (2026-10-03: a trial-frame artifact build with the model
+is the GPU pipeline test on an RTX 3090 (2026-10-03: a trial-frame artifact build with the model
 in float32, the supplement, one epoch at batch 6 × 512, evaluate, fuse), by `nvidia-smi` sampled
 every 5 s over the whole test. It is not a training run's peak: [the
 FAQ](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/faq.md#how-much-gpu-memory-does-a-run-need)

@@ -209,8 +209,8 @@ of the student's own LoRA base with the adapters switched off):
 
 Measured anchors (RTX 3090, 24 GB): Qwen3-0.6B at the shipped recipe peaked at 8.63 GiB allocated
 (2026-09-07, with a separately loaded teacher, which the default no longer loads); an unanchored
-4-epoch Qwen3-0.6B run peaked at 7,325 MiB by `nvidia-smi` over init, train and evaluate
-(2026-10-03). For Qwen3-1.7B, §9 has the GPU smoke's peak.
+4-epoch Qwen3-0.6B run peaked at 7,325 MiB by `nvidia-smi` sampled every 10 s over init, train
+and evaluate (2026-10-03). For Qwen3-1.7B, §9 has the GPU smoke's peak.
 
 If batch 6 × 512 does not fit, keep the geometry and halve the micro-batch: `batch_size: 3`,
 `gradient_accumulation_steps: 2`. The package does not pick a batch for you, on purpose: the
@@ -234,20 +234,24 @@ On the self-generated route the build chooses the group itself (`choose_layer_gr
 starts, at least one. It logs the choice:
 
 ```
-layer_group_size=28 for Qwen/Qwen3-0.6B: ~42.7 GiB of reservoirs per group against 117.9 GiB available
+layer_group_size=28 for Qwen/Qwen3-0.6B: ~42.7 GiB of reservoirs per group against 103.9 GiB available
 ```
+
+(Qwen3-0.6B on a host with 125 GiB of RAM, RTX 3090, 2026-10-04.)
 
 Fewer layers per group means more passes over the corpus, not a different artifact: every site
 draws its reservoir from its own seeded generator, so any group size gives the same artifact at a
 fixed seed ([the-artifact.md](the-artifact.md#host-ram-the-layer-group)).
 
 **Artifact size.** The stored statistics grow with `Σ d²` over the anchored sites. Qwen3-0.6B's 84
-sites sum to 176,160,768 and its artifact is 110.3 MB (int8); Qwen3-1.7B's 84 sites, all 2,048
-wide, sum to 352,321,536, twice that.
+sites sum to 176,160,768 and its artifact is 110.0 MB (int8); Qwen3-1.7B's 84 sites, all 2,048
+wide, sum to 352,321,536, twice that, and its artifact is 243.7 MB (both built 2026-10-03/04).
 
-**Time.** On one RTX 3090 the full-frame Qwen3-0.6B build took about 80 minutes of generation and
-2 h 22 min of fitting (2026-09-30); Qwen3-1.7B's generation took 88 minutes (§9). Plan for hours,
-and see §4 on running detached.
+**Time.** On one RTX 3090 in a host with 125 GiB of RAM, the full-frame Qwen3-0.6B build took
+231 minutes (3 h 51 min) from a cold store: 83 minutes of generation, about 27 minutes collecting
+hidden states and about 2 h fitting the mixtures (2026-10-04; it ran alone on the host). Qwen3-1.7B's
+took 355.5 minutes (5 h 56 min), 87 of them generation (2026-10-03/04; §9). Plan for hours, and see
+§4 on running detached.
 
 ## 4. Build the self-generated artifact, then probe it
 
@@ -324,8 +328,8 @@ refused while the first holds its lock.
   been measured. Record the share. Watch, too, for anything in the package that counts
   whitespace-separated words: scripts written without spaces (Chinese, Japanese, Thai) are one or
   two "words" a paragraph, and a word-count filter mis-handles them (§9).
-* **The layer-group line and the collection line**, e.g. `Collected 84 sites, 603973 samples at
-  the thinnest site` (Qwen3-0.6B, one group). With several groups each logs its own: a group of
+* **The layer-group line and the collection line**, e.g. `Collected 84 sites, 603008 samples at
+  the thinnest site` (Qwen3-0.6B, one group, 2026-10-04). With several groups each logs its own: a group of
   `g` layers that includes layer 0 has `3g − 1` sites (layer 0's `pre_qkv` is an exact embedding
   lookup, not a fitted site), and the last group adds `pre_lm_head`.
 * **The store entry**: `lfa list-artifacts` shows `built <date>` for a finished entry.
@@ -413,7 +417,7 @@ lfa probe-artifact --model your/model --artifact runs/your-model \
 
 **The witness adapter must come from an unanchored run.** An adapter trained anchored against an
 artifact drifts into the directions that artifact underprices, so it makes the artifact look worse
-than it is. Measured on Qwen3-0.6B's self-generated artifact (one artifact, RTX 3090,
+than it is. Measured on a Qwen3-0.6B self-generated artifact (one artifact, RTX 3090,
 2026-10-03): with an adapter trained anchored at λ = 100,000 against a sibling build of the same
 corpus, the median SHAPE read 0.238 (linear sites) and 0.606 (MLP sites); with an unanchored
 adapter, 0.056 and 0.108. The probe reads each adapter's run `config.json` and says when a witness
@@ -439,24 +443,27 @@ work, **measured with the same witness recipe**. The recorded reference:
 
 | Qwen3-0.6B, self-generated artifact at the recorded frame | floor | artifact | diagonal reference |
 |---|---:|---:|---:|
-| median SHAPE, linear sites (9) | 0.018 | 0.056 (3.1× floor) | 0.139 (7.8×) |
-| median SHAPE, MLP sites (5) | 0.017 | 0.108 (6.5× floor) | 0.064 (3.9×) |
+| median SHAPE, linear sites (9) | 0.018 | 0.055 (3.1× floor) | 0.139 (7.8×) |
+| median SHAPE, MLP sites (5) | 0.017 | 0.106 (6.4× floor) | 0.064 (3.9×) |
 
 Witness recipe: one adapter from an unanchored run (λ = μ = 0) on the walkthrough's Darwin training
 text, 4 epochs, the `qwen3-0.6b` recipe otherwise. Probe settings: WikiText-2 truth, `--n-real
-30000 --n-model 30000 --n-random 4`, layers 0, 7, 14, 20, 27. One witness, one seed, RTX 3090,
-2026-10-03; the probe took 17 s and peaked at 4,691 MiB by `nvidia-smi`.
+30000 --n-model 30000 --n-random 4`, layers 0, 7, 14, 20, 27, probe seed 0. One witness, one seed,
+RTX 3090, 2026-10-04; the probe took 15 s. Over probe seeds 1 and 2 the artifact read 0.055 and
+0.053 (linear) and 0.102 and 0.095 (MLP). The same probe on Qwen3-0.6B peaked at 4,691 MiB by
+`nvidia-smi` (2026-10-03). §9 has Qwen3-1.7B's numbers at the same witness recipe.
 
 * **A collapsed artifact** (a point mass, a degenerate corpus) shows as SHAPE many times these.
 * **A scale or layer error** (the wrong model's artifact, layers out of order) shows in LEVEL,
   far from 1, and SHAPE may look ordinary.
 * **The artifact against the diagonal reference is not a pass mark.** On the table above the MLP
   class reads *above* its diagonal reference. With a second unanchored adapter — from a different
-  run, 20 epochs on another domain, probed over 3 seeds — the same artifact read 0.044 (linear) and
-  0.034 (MLP) against references of 0.087 and 0.093, MLP now *below*. A comparison that flips with
+  run, 20 epochs on another domain — another build of the Qwen3-0.6B artifact at the same frame
+  read 0.044 (linear) and 0.034 (MLP) against references of 0.087 and 0.093, MLP now *below*
+  (mean of 3 probe seeds, RTX 3090, 2026-10-03). A comparison that flips with
   the witness says nothing on its own. More adapters (repeat `--adapter`) steady the medians.
-* Pricing fidelity and preserved behaviour have been seen to come apart. The probe catches a
-  broken artifact; it does not show that a sound one anchors well. Only §5 shows that.
+* The probe catches a broken artifact; it does not show that a sound one anchors well. Only §5
+  shows that.
 
 ## 5. Calibrate λ
 
@@ -637,7 +644,8 @@ scope; it does not mean passed against a threshold.
 ## 9. Worked example: Qwen3-1.7B
 
 What integrating Qwen3-1.7B (`Qwen/Qwen3-1.7B`) took, step by step. Everything measured here is one
-model, one seed, on an RTX 3090 (24 GB) in a host with 125 GiB of RAM, on 2026-10-03.
+model, one seed, on an RTX 3090 (24 GB) in a host with 125 GiB of RAM, on 2026-10-03 and
+2026-10-04.
 
 **The model.** Family Qwen3, `model_type` `qwen3` (`Qwen3ForCausalLM`) — the same family as the
 bundled Qwen3-0.6B. Hidden size 2,048; 28 layers; 16 query and 8 key-value heads of width 128, so
@@ -673,22 +681,41 @@ trial build. Batch 6 × 512 did not run out of memory.
   text in Chinese, where a whole paragraph is one or two such words. The fix (in
   `passes_filters`, `lfa/selfgen/generate.py`): a text with fewer than eight words has no 8-gram,
   so nothing in it repeats and only the length floor can reject it. The smoke passed after it.
-* **The corpus language.** The full-frame corpus holds 2,500 documents and 5,058,082 tokens (median
-  2,048 tokens a document, mean 2,023, minimum 72; 47 documents, 1.9 %, under 2,000 tokens; mean
-  5,885 characters). **1,038 documents (41.5 %) are mostly CJK** (more than 30 % of characters in
-  U+4E00–U+9FFF), against 6.2 % in Qwen3-0.6B's stored corpus. In the first 1,019 documents,
-  22.9 % of the 128-token document heads had fewer than eight whitespace words, against 3.1 % over
-  Qwen3-0.6B's whole corpus. So about two-fifths of this artifact's mass describes the model
-  writing Chinese. That is what the model does from a bare document start; what it means for
-  anchoring on an English domain has not been measured.
-* **Generation** took 88 minutes for the 2,500 documents (for about 15 of those minutes, the GPU
-  smoke runs shared the host on the other card), against about 80 minutes for Qwen3-0.6B.
-* **The layer group.** With another job holding part of the host's memory, the build logged
-  `layer_group_size=22 for Qwen/Qwen3-1.7B: ~50.4 GiB of reservoirs per group against 102.3 GiB available`
-  — two corpus passes, of 22 layers and of 6 — and the first pass logged
-  `Collected 65 sites, 600087 samples at the thinnest site` (22 layers × 3 sites, less layer 0's
-  `pre_qkv`). At 118 GiB available the same arithmetic gives 25 (pinned in
-  `tests/test_model_families.py`).
+* **The corpus.** The full-frame corpus the artifact was fitted on holds 2,500 documents and
+  5,054,024 tokens (median 2,048 tokens a document, mean 2,022, minimum 3; 49 documents, 2.0 %,
+  under 2,000 tokens; mean 5,865 characters), against Qwen3-0.6B's 5,060,966 tokens (median
+  2,048, mean 2,024, minimum 3; 54 documents, 2.2 %, under 2,000 tokens; mean 7,684 characters).
+  **1,043 of the 2,500 (41.7 %) are mostly CJK** (more than 30 % of characters in
+  U+4E00–U+9FFF), against 154 (6.2 %) in Qwen3-0.6B's. All counted 2026-10-04, with each model's
+  own tokenizer. So about two-fifths of this artifact's mass describes the model writing Chinese.
+  That is what the model does from a bare document start; what it means for anchoring on an
+  English domain has not been measured.
+* **The build.** The build behind the stored artifact took 355.5 minutes (5 h 56 min) from a cold
+  store and wrote 243.7 MB: generation 87 minutes for the 2,500 documents, none of them empty,
+  against 83 minutes for Qwen3-0.6B; then the collection and fit, with 25 of the 28 layers in a
+  group at 115.0 GiB available, two corpus passes (2026-10-03/04). It shared the host for most of
+  its run with a second Qwen3-1.7B build, the 1.5 M-sample adequacy build below.
+* **The layer group.** The build logged
+  `layer_group_size=25 for Qwen/Qwen3-1.7B: ~57.2 GiB of reservoirs per group against 115.0 GiB available`
+  (2026-10-03) — two corpus passes, of 25 layers and of 3 — and the passes logged
+  `Collected 74 sites, 600087 samples at the thinnest site` (25 layers × 3 sites, less layer 0's
+  `pre_qkv`) and `Collected 10 sites, …` (3 layers × 3 sites, plus `pre_lm_head`). At 118 GiB
+  available the same arithmetic gives 25 as well (pinned in `tests/test_model_families.py`).
+* **The probe.** The witness followed §4's recipe on this model: one adapter from an unanchored
+  run (λ = μ = 0) on the walkthrough's Darwin training text, 4 epochs, the `qwen3-0.6b` recipe's
+  other fields (rank 32, batch 6 × 512). Over probe seeds 0, 1 and 2, at the probe's defaults, the
+  stored artifact's median SHAPE read 0.058–0.067 (linear sites) and 0.137–0.139 (MLP sites),
+  against floors of about 0.03 and 0.02 and diagonal references of about 0.14 and 0.06; LEVEL read
+  about 0.97 (linear) and 0.76 (MLP). One witness, RTX 3090, 2026-10-04.
+* **Sample adequacy.** A second build over the same corpus at 1.5 M samples per site (thinnest site
+  1.28 M) priced no better than the 600k build at either class: 0.060–0.064 (linear) and
+  0.136–0.141 (MLP) over the same three probe seeds and witness (RTX 3090, 2026-10-04). The
+  recorded frame's 600k samples per site stands for this model.
+* **Qwen3-0.6B, built twice.** The Qwen3-0.6B artifact of §4's table (231 minutes, 110.0 MB)
+  and a second build of that model at the recorded frame, whose corpus was written under the
+  word filter this section's first bullet replaced, read the same at that model's witness:
+  median SHAPE 0.055 / 0.106, 0.055 / 0.102 and 0.053 / 0.095 (linear / MLP) at probe seeds 0, 1
+  and 2, against 0.056 / 0.108, 0.056 / 0.105 and 0.053 / 0.096 (RTX 3090, 2026-10-04).
 * **The trial recipe.** Before calibration the model ran on a copy of the `qwen3-0.6b` recipe naming
   `Qwen/Qwen3-1.7B` with `calibrated_artifact: uncalibrated`, and `train` said so at every stage.
 

@@ -36,8 +36,8 @@ site, for a family of witness directions, beside a real-vs-real floor and a diag
 **Reading it.** The probe gives no verdict. Read a new model's numbers against numbers recorded
 for a model known to work. A gross failure (a collapsed artifact) shows as SHAPE many times
 those; a scale or layer error shows in LEVEL. The numbers describe pricing on these witnesses and
-this text, not the behaviour a model trained against the artifact keeps: pricing fidelity and
-preserved behaviour have been seen to come apart.
+this text, not the behaviour a model trained against the artifact keeps: the probe catches a
+broken artifact; it does not show that a sound one anchors well.
 """
 
 from __future__ import annotations

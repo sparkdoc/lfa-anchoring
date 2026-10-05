@@ -128,8 +128,8 @@ it — and logs the choice. On a 28-layer Qwen3-0.6B at the 200,000-vector reser
 (about 10.7 GiB of reservoirs per group against about 24 GiB available) on the machine this was
 written on, and a host with less free memory chooses a smaller group. On a host with 125 GiB of
 RAM it was 28, every layer in one pass, logged as
-`layer_group_size=28 for Qwen/Qwen3-0.6B: ~42.7 GiB of reservoirs per group against 117.9 GiB available`
-and followed by `Collected 84 sites, 603973 samples at the thinnest site` (2026-09-30).
+`layer_group_size=28 for Qwen/Qwen3-0.6B: ~42.7 GiB of reservoirs per group against 103.9 GiB available`
+and followed by `Collected 84 sites, 603008 samples at the thinnest site` (2026-10-04).
 
 Qwen3-1.7B's sites are all 2,048 wide, so a layer's reservoirs cost about 2.3 GiB:
 `layer_group_size=22 for Qwen/Qwen3-1.7B: ~50.4 GiB of reservoirs per group against 102.3 GiB available`
