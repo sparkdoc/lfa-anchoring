@@ -36,12 +36,13 @@ Example::
 epochs, which on real corpora is a day of GPU time rather than a few minutes. From an installed
 wheel the same script is ``python -m lfa.examples.chain_three_domains``.
 
-``--artifact self-generated`` has the model write its own text and fits p(h) on it: hours
-once per model, and every later run over the same model reuses the finished artifact from the
-local store (``~/.cache/lfa/artifacts``, or ``$LFA_ARTIFACT_STORE``). ``--artifact`` also takes
-the path to an artifact this package built, which is copied in instead of building one. Either
-way the step between two domains extends the workspace's own copy; the stored artifact is never
-modified.
+``--artifact self-generated`` gives the model its p(h) artifact: for Qwen3-0.6B and Qwen3-1.7B the
+package pins a published one, downloaded and verified on first use (132 MB / 265 MB); any other
+model writes its own text and p(h) is fitted on it, which takes hours. Either way it happens once
+per model, and every later run over the same model reuses the artifact from the local store
+(``~/.cache/lfa/artifacts``, or ``$LFA_ARTIFACT_STORE``). ``--artifact`` also takes the path to an
+artifact this package built, which is copied in instead. However it arrives, the step between two
+domains extends the workspace's own copy; the stored artifact is never modified.
 """
 
 from __future__ import annotations

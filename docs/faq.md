@@ -84,6 +84,18 @@ The two things that *do* cost real memory are the artifact build (host RAM, tens
 self-generated route, and so under `regenerate-artifact`, the build sizes itself to the RAM it finds
 — below) and the continual extension (below).
 
+## Why does a LoRA run load only one model?
+
+Because under LoRA the frozen teacher is the student's own base. PEFT keeps the base weight of
+every module it adapts frozen, so a run loads no second copy of the model and reads the teacher out
+of the student with its adapters switched off. That is bit-identical to holding a separate
+teacher, and 1.11 GiB cheaper on Qwen3-0.6B ([above](#how-much-gpu-memory-does-a-run-need)).
+`--teacher-mode` chooses where the teacher comes from: `auto`, the default, is `adapter_disabled`
+for a LoRA run and `separate` for `--full-weight`. Full-weight training moves the base weights, so
+there a real teacher is loaded, and `--teacher-mode adapter_disabled` is refused. The choice is
+memory, not results, which is why it is not a recipe field
+([recipes.md](recipes.md#per-run-overrides)).
+
 ## Why does a chain's `extend` need so much RAM?
 
 It holds `--need` activations per site in float32 on the host before fitting. For a Qwen3-0.6B
@@ -353,6 +365,23 @@ held-out curve at all, the corpus had nothing held out to choose the dose by.
 [recipes.md](recipes.md#run-length-and-checkpointing) has the rule and the one measured re-run
 behind it; the stage's entry in the workspace's `history.json` keeps the same reading under
 `held_out`.
+
+## Loading the fused model warns about "an incorrect regex pattern". Is its tokenizer broken?
+
+No. With transformers 4.57.6, loading the tokenizer `lfa fuse` exported prints *"The tokenizer you
+are loading from '…' with an incorrect regex pattern: … This will lead to incorrect tokenization.
+You should set the `fix_mistral_regex=True` flag …"*. On a Qwen3-0.6B export (2026-10-05) the
+exported tokenizer gave the same token ids as `Qwen/Qwen3-0.6B`'s own on a 20,000-character
+sample of the corpus it was trained on (4,383 tokens), with the flag and without it. To check an
+export of your own on your own text:
+
+```python
+from transformers import AutoTokenizer
+exported = AutoTokenizer.from_pretrained("runs/world_history/models/stage1_fused_export")
+base = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
+text = open("data/world_history/world_history-0001.txt").read()
+assert exported(text)["input_ids"] == base(text)["input_ids"]
+```
 
 ## Is the learning-rate schedule exactly restored when I `--resume`?
 

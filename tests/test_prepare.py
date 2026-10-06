@@ -169,7 +169,8 @@ def test_a_missing_extra_is_a_refusal_rather_than_a_traceback(tmp_path, monkeypa
     page = tmp_path / "page.html"
     page.write_text("<html><body><p>anchoring</p></body></html>", encoding="utf-8")
 
-    with pytest.raises(MissingExtra, match=r"lfa-anchoring\[html\]") as refusal:
+    hint = r"pip install -c constraints-tested\.txt -e '\.\[html\]'"
+    with pytest.raises(MissingExtra, match=hint) as refusal:
         extract_html(page)
     assert isinstance(refusal.value, ImportError)             # a caller's `except ImportError`
     assert issubclass(MissingExtra, USER_FACING_ERRORS)       # ...and the CLI's own list

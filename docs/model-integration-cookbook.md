@@ -480,7 +480,11 @@ self-generated artifact at the recorded frame, and means nothing elsewhere
 ([concepts.md](concepts.md) has why λ is coupled).
 
 The protocol below picks λ by a stated rule, so the pick is not a guess. It uses perplexity only —
-held-out domain perplexity and WikiText-2 — and the public text of the walkthrough notebook.
+held-out domain perplexity and WikiText-2 — and the public text of the walkthrough notebook. It is
+for a **new model**. A bundled model on your own corpus needs less: [tuning.md](tuning.md) sets the
+epochs from the held-out curve and tries λ either side of the recipe's on your text, picking by step
+5's rule for a control that over-trains (its second paragraph), which is the usual case there
+because the unanchored curve turns much sooner than the anchored one.
 
 1. **Make the uncalibrated recipe.** Start from a copy of the bundled recipe with `model_id` and
    `calibrated_rank` set to your point ([recipes.md](recipes.md#writing-your-own)). Set
@@ -547,6 +551,10 @@ held-out domain perplexity and WikiText-2 — and the public text of the walkthr
    lfa train    --workspace runs/lam1e6 --corpus data/darwin/train --epochs 15
    lfa evaluate --workspace runs/lam1e6 --corpus data/darwin/heldout
    ```
+
+   A rung can also share step 1's copy and set its λ for the run with `lfa train … --lambda
+   1000000`, and a control with `--lambda 0 --mu 0` ([recipes.md](recipes.md#trying-another-λ));
+   the run records the λ it used, and its recipe file stays the uncalibrated copy.
 
 5. **The selection rule.** First read the long control. If it improves the held-out domain over
    the base model: among the ladder runs whose held-out domain improvement over the base model (the

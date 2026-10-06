@@ -7,7 +7,7 @@ question-and-answer **supplement** the model writes over the corpus before train
 ## From your files to a corpus
 
 ```bash
-lfa prepare-domain ~/papers ~/notes.md --out data/my_domain
+lfa prepare-domain ~/history ~/notes.md --out data/world_history
 ```
 
 `prepare-domain` takes files and directories (a directory is searched, subdirectories included,
@@ -15,8 +15,9 @@ for the formats below; anything else in it is ignored) and writes one cleaned `.
 document into `--out`:
 
 * `.txt` and `.md` pass straight through;
-* `.html` / `.htm` need the `[html]` extra (`pip install 'lfa-anchoring[html]'`);
-* `.pdf` needs the `[pdf]` extra (`pip install 'lfa-anchoring[pdf]'`).
+* `.html` / `.htm` need the `[html]` extra (from the checkout, `pip install -c
+  constraints-tested.txt -e '.[html]'`);
+* `.pdf` needs the `[pdf]` extra (`pip install -c constraints-tested.txt -e '.[pdf]'`).
 
 A missing extra is refused, naming the file and the extra, rather than skipped: a corpus is never
 quietly half-prepared.
@@ -36,7 +37,7 @@ measurement. `--split-chars` cuts every
 file into documents of about that many characters at paragraph boundaries:
 
 ```bash
-lfa prepare-domain book.txt --out data/my_domain --split-chars 3500
+lfa prepare-domain book.txt --out data/world_history --split-chars 3500
 ```
 
 The documents are written as `book-0001.txt`, `book-0002.txt`, …. 3,500 characters (about 850
@@ -50,9 +51,12 @@ characters: the trainer drops a whole document under ten tokens without a word, 
 characters or more no prose document is that short. (Like any document, each one can still lose
 a final piece under ten tokens where the chunker's cut leaves one.)
 `--min-length` applies to the whole file, before it is split. A corpus with fewer documents than a
-held-out split needs is warned about, with this fix named — and refused before anything is written
-under `--supplement` (below); when the input files cannot make enough documents however they
-extract, it is refused before any of them is read.
+held-out split needs is warned about, with this fix named, and refused wherever a supplement would
+be written for it: `prepare-domain --supplement` refuses it before anything is written (below),
+and `train`, `prepare-supplement` and their Python counterparts refuse it before writing any pairs
+(`train --no-supplement` trains it as it is, with no held-out curve). When the input files cannot
+make enough documents however they extract, `prepare-domain --supplement` refuses before any of
+them is read.
 
 **Strip the boilerplate first.** Cleaning removes markup, not content: a Project Gutenberg
 licence, a table of contents or an index is trained on like the text around it, and the supplement
@@ -79,10 +83,11 @@ that two sources both carry, which is the boilerplate above to strip.
 **`--combine`** writes one combined file instead of one per input, headed and separated by
 source. Use it to read the cleaned text, not to train on: the loader would read the whole corpus as
 a single document, which nothing can be held out of. `prepare-domain` warns that it is one
-document (and refuses it under `--supplement`); it does not go with `--split-chars`.
+document, and everything that would write a supplement for it refuses it (above); it does not go
+with `--split-chars`.
 
-**Point `--corpus` at the corpus directory itself** (`data/my_domain`), never at its parent. A
-supplement prepared with the data sits beside the corpus in `data/my_domain.supplement/`, and a
+**Point `--corpus` at the corpus directory itself** (`data/world_history`), never at its parent. A
+supplement prepared with the data sits beside the corpus in `data/world_history.supplement/`, and a
 `--corpus data/` would read its `.jsonl` and manifest as documents.
 
 **Host RAM.** The whole corpus is tokenized eagerly and held in host RAM at **about eight times
@@ -145,16 +150,16 @@ is a raw-text measurement whether or not a supplement was mixed in.
 ### Preparing it with the data
 
 ```bash
-lfa prepare-domain ~/papers --out data/my_domain --supplement --model Qwen/Qwen3-0.6B
-lfa prepare-supplement --corpus data/my_domain --model Qwen/Qwen3-0.6B    # a corpus you already have
+lfa prepare-domain ~/history --out data/world_history --supplement --model Qwen/Qwen3-0.6B
+lfa prepare-supplement --corpus data/world_history --model Qwen/Qwen3-0.6B    # a corpus you already have
 ```
 
 Both have the model write the supplement for the corpus and print the path of the file, with
 its manifest beside it:
 
 ```
-data/my_domain.supplement/<hash>/supplement.jsonl
-data/my_domain.supplement/<hash>/supplement.jsonl.manifest.json
+data/world_history.supplement/<hash>/supplement.jsonl
+data/world_history.supplement/<hash>/supplement.jsonl.manifest.json
 ```
 
 `<hash>` is the first twelve hex digits of the training side's sha256. The pairs are written from
@@ -164,8 +169,8 @@ otherwise the bundled recipe that names `--model`; with neither, the command is 
 anything is written. `--supplement` without `--model` is refused the same way, and so is a corpus
 with too few documents for the recipe's held-out split (one file without `--split-chars`): the
 supplement is minutes of generation, and the pairs would be written from text the trainer cannot
-hold anything out of. The refusal names the fix and writes nothing, so the same command re-run
-with `--split-chars 3500` starts clean.
+hold anything out of. The refusal names the fix and writes nothing, so the same `prepare-domain`
+command re-run with `--split-chars 3500` starts clean.
 
 **Reading it.** `supplement.jsonl` holds one pair per line, `{"prompt": …, "response": …}`, in
 the order they were written. The manifest says who wrote it and from what: the writer's model id
@@ -181,7 +186,7 @@ as it is. A chain's later stage starts from a fused model, a different writer, s
 own into the workspace rather than training on pairs the base model wrote.
 
 **`--domain-description`** is what the template says the text is on. The default is the corpus
-directory's name with `_` and `-` read as spaces (`data/my_domain` → `my domain`). A generic
+directory's name with `_` and `-` read as spaces (`data/world_history` → `world history`). A generic
 container name — `train`, `test`, `val`, `data`, `corpus`, `texts`, `raw` and the like — says
 nothing about the domain, so the nearest enclosing directory with a real name is used instead
 (`data/darwin/train` → `darwin`), looking no higher than your home directory, whose name is
@@ -189,15 +194,15 @@ yours rather than the domain's; `the domain` if there is none. If you pass
 one when preparing, pass the same one to `train`, or `train` sees a different description and
 writes its own. `--force` rewrites a supplement that already exists.
 
-Inside a workspace, `lfa prepare-supplement --corpus data/my_domain` (without `--model`) has the
+Inside a workspace, `lfa prepare-supplement --corpus data/world_history` (without `--model`) has the
 workspace's current model write the file into the workspace's `supplements/` instead —
 `--workspace` defaults to the current directory. That is the file `train` would write, written
-ahead of time to inspect.
+ahead of time to inspect, and it is refused for a corpus with nothing to hold out, as above.
 
 ### Bringing your own
 
 ```bash
-lfa train --workspace runs/my_domain --corpus data/my_domain --supplement my_pairs.jsonl
+lfa train --workspace runs/world_history --corpus data/world_history --supplement my_pairs.jsonl
 ```
 
 A file of your own is one JSON object per line with a `prompt` and a `response`; a line without a
@@ -211,10 +216,11 @@ document.
 ### Training without one
 
 ```bash
-lfa train --workspace runs/my_domain --corpus data/my_domain --no-supplement
+lfa train --workspace runs/world_history --corpus data/world_history --no-supplement
 ```
 
-The run trains on the raw corpus alone and warns that it is off the frame λ was tuned at:
+The run trains on the raw corpus alone and warns that it is off the frame λ was tuned at (it is
+also how a corpus with nothing to hold out trains at all):
 *"Training on the raw corpus alone: this recipe's lambda was calibrated at supplement_fraction
 0.13 and this run mixes none."* A recipe that sets `supplement_fraction: 0.0` has opted out at the
 recipe level and is not warned.

@@ -5,8 +5,8 @@ this is the part that makes it a recipe rather than a bag of defaults — *what 
 that a run departing from that point can be told λ no longer means what it meant.
 
 ```bash
-lfa train --workspace runs/my_domain --recipe qwen3-0.6b       # a bundled name
-lfa train --workspace runs/my_domain --recipe my_point.yaml    # or a path
+lfa train --workspace runs/world_history --corpus data/world_history --recipe qwen3-0.6b     # a bundled name
+lfa train --workspace runs/world_history --corpus data/world_history --recipe my_point.yaml  # or a path
 ```
 
 ```python
@@ -112,6 +112,8 @@ two.
 > epochs of fifteen). The same reading — verdict, lowest epoch and value, final value, gap — is
 > kept in the stage's entry in the workspace's `history.json`, under `held_out`. Re-tuning the dose
 > does not re-tune λ: they are separate knobs, and λ's couplings are below.
+> [tuning.md](tuning.md) puts the dose, the control and λ together as one procedure for your
+> corpus.
 >
 > **Where the re-run goes.** In the same workspace, before `lfa extend`, `lfa train --corpus <the
 > same corpus> --epochs 8` is a second run of the stage, not an overwrite (after `extend`, the same
@@ -382,10 +384,11 @@ its best while domain quality collapses, so the general axis alone cannot tell y
 ## Trying another λ
 
 λ is coupled to the corpus as well as to the rank and the artifact, so the recipe's value is where
-to start on your text, not a promise about it. To try another, set it for one run:
+to start on your text, not a promise about it. [tuning.md](tuning.md) says when another is worth
+trying, which values, and how to pick between them. To try one, set it for one run:
 
 ```bash
-lfa train --workspace runs/my_ws --corpus data/my_domain --lambda 2500000
+lfa train --workspace runs/world_history --corpus data/world_history --lambda 2500000
 ```
 
 `--lambda X` is the stage's λ **exactly**: both `lambda_qkv` and `lambda_mlp`, with no stage

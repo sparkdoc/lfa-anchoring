@@ -14,104 +14,83 @@ L = L_content  +  λ · E_{h ~ p(h)} ‖f_student(h) − f_teacher(h)‖²  +  �
 
 The preservation signal comes from a statistic plus the frozen teacher, never from stored text:
 LFA is **data-free at adaptation time**, and in a chain of domains no earlier domain is ever
-revisited. Under LoRA that frozen teacher is the student's own base — PEFT keeps it frozen, so a
-run loads no second copy of the model and reads the teacher out of the student with its adapters
-switched off, which is bit-identical to holding a separate one and 1.11 GB cheaper on Qwen3-0.6B
-(`--teacher-mode`; full-weight training moves the base, so there a real teacher is loaded). The
-statistic is a per-site mean, covariance and mixture — no text, no token ids, nothing
-sequence-shaped. Everything runs locally: no judge, no API key.
+revisited. The statistic is a per-site mean, covariance and mixture — no text, no token ids,
+nothing sequence-shaped. What comes out is a plain Hugging Face checkpoint adapted to your
+documents. Everything runs locally on one CUDA card: no judge, no API key.
 
 ## Install
 
 ```bash
-pip install lfa-anchoring                       # once published; see RELEASING.md
-pip install -e '.[dev]'                         # from a checkout, with the test tools
+git clone https://github.com/sparkdoc/lfa-anchoring
+cd lfa-anchoring
+pip install -c constraints-tested.txt -e .     # '.[html]' / '.[pdf]' for those formats, '.[dev]' for the tests
 ```
 
-Add `[html]` or `[pdf]` if your documents arrive in those formats. Needs Python ≥ 3.11 and a CUDA
-card. Tested at torch 2.10.0+cu128, transformers 4.57.6, accelerate 1.14.0, peft 0.18.1
-(`pip install -c constraints-tested.txt lfa-anchoring` holds to those exactly).
+Needs Python ≥ 3.11 and a CUDA card; the install takes a few minutes and a few GB. The constraints
+file holds the tested stack (torch 2.10.0+cu128, transformers 4.57.6, accelerate 1.14.0, peft
+0.18.1). The package is not on PyPI yet; publication is pending.
 
 > Some torch paths compile a small CUDA shim on the first kernel launch and need your `python3`'s
 > development headers (`python3-dev` + `build-essential` on Debian; uv- and conda-managed
 > interpreters ship them). The package's own paths do not, so `lfa` warns once if the headers are
 > missing and proceeds.
 
-## Models
-
-Two models have a bundled recipe. `--model` picks it: `init` uses the bundled recipe whose own
-model id is the one you pass.
-
-| model (`--model`) | recipe | licence | artifact build, one RTX 3090 | artifact | GPU pipeline test, `nvidia-smi` maximum | training, `nvidia-smi` maximum |
-|---|---|---|---|---:|---:|---:|
-| `Qwen/Qwen3-0.6B` | `qwen3-0.6b` | Apache-2.0 | 3 h 51 min, 83 min of it generation | 110.0 MB | 10,235 MiB | 13,971 MiB (unanchored, 4 epochs) |
-| `Qwen/Qwen3-1.7B` | `qwen3-1.7b` | Apache-2.0 | 5 h 56 min, 87 min of it generation | 243.7 MB | 14,781 MiB (brief; mostly 8.5–9 GiB) | 13,056 MiB (anchored, 15 epochs); **19,291 MiB** in a chain's second stage |
-
-The builds are the full recorded frame from a cold store, on one RTX 3090 (24 GB) in a host with 125
-GiB of RAM, 2026-10-03/04. The Qwen3-0.6B build ran alone on the host; the Qwen3-1.7B build shared
-it for most of its run with a second Qwen3-1.7B build (at 1.5 M samples per site). The column
-before last is the GPU pipeline test on an RTX 3090 (2026-10-03: a trial-frame artifact build with
-the model in float32, the supplement, one epoch at batch 6 × 512, evaluate, fuse): the highest
-`nvidia-smi` memory.used sampled every 5 s over the whole test. The last column is training at
-batch 6 × 512 on an RTX 3090 (2026-10-03 to 2026-10-05; one seed; Darwin, and cookery for a chain's
-second stage): the highest memory.used sampled every 10 s. A Qwen3-1.7B chain's second stage, at
-the bundled recipe's point, reached 19,291 MiB (about 18.8 GiB, 20.2 GB), more than a 16 GB card
-holds. memory.used includes what PyTorch's caching allocator holds, so it is an upper bound on
-need, and it does not order the two models by size. Per run, and PyTorch's allocated figure: [the
-FAQ](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/faq.md#how-much-gpu-memory-does-a-run-need).
-The licence is the model's own, from its Hub card. Build detail per model: [the
-artifact](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/the-artifact.md#what-it-costs).
-
-When the package pins a published artifact for the model's exact checkpoint and the recorded
-frame, `init` downloads that instead of building ([the artifact](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/the-artifact.md#published-artifacts)).
-Any other model needs an adapter check, an artifact and a λ calibration of its own:
-[docs/model-integration-cookbook.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/model-integration-cookbook.md)
-is the procedure, with Qwen3-1.7B worked through.
-
 ## The pipeline
 
 ```bash
-lfa init runs/my_domain --model Qwen/Qwen3-0.6B --artifact self-generated   # once per model
-lfa prepare-domain ~/papers ~/notes.md --out data/my_domain \
-    --supplement --model Qwen/Qwen3-0.6B                                     # your documents
-lfa train    --workspace runs/my_domain --corpus data/my_domain
-lfa evaluate --workspace runs/my_domain
-lfa fuse     --workspace runs/my_domain
+lfa init runs/world_history --model Qwen/Qwen3-0.6B --artifact self-generated
+lfa prepare-domain ~/history --out data/world_history \
+    --supplement --model Qwen/Qwen3-0.6B             # one long file? add --split-chars 3500
+lfa train    --workspace runs/world_history --corpus data/world_history
+lfa evaluate --workspace runs/world_history
+lfa fuse     --workspace runs/world_history
 ```
 
-**`init`** creates the workspace and puts its p(h) artifact in place: the model writes 2,500
-documents of its own and p(h) is fitted on them — hours on one RTX 3090 (24 GB), per model in
-[Models](#models); an 8 GB card has not been measured. The result is kept in a local store, so
-every later workspace over the same model reuses it (`lfa list-artifacts` shows what is there),
-and a build that was interrupted resumes when the same command is run again. When the package
-pins a published artifact for exactly this model and frame, `init` downloads and verifies that
-instead of building, and `--rebuild` builds here anyway
-([the artifact](docs/the-artifact.md#published-artifacts)). `--artifact` also takes a path, but
-only to an artifact this package built: another workspace's `artifacts/v1.pt`, or what
-`lfa build-artifact` wrote.
+**`init`** creates the workspace and puts its p(h) artifact in place. For `Qwen/Qwen3-0.6B` and
+`Qwen/Qwen3-1.7B` that is a download of the published artifact, verified by hash: 132 MB / 265 MB
+with its corpus, seconds to a minute. Any other model writes 2,500 documents of its own and p(h)
+is fitted on them, which takes hours on one GPU, and needs an adapter check and a λ of its own
+([the cookbook](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/model-integration-cookbook.md)).
+Either way the artifact is kept in a local store and reused by every later workspace over the same
+model. `init` ends by printing the next two commands.
 
-**`prepare-domain`** turns text, Markdown, HTML or PDF into the corpus, a flat directory of `.txt`
-files. With `--supplement`, the model then writes question-and-answer pairs over the corpus, which
-make the domain's knowledge answerable when the model is asked about it; they do not protect
-skills, which is the anchor's job. Without `--supplement`, `train` writes the same pairs itself
-before the first epoch.
+**`prepare-domain`** turns text, Markdown, HTML or PDF into the corpus, one `.txt` file per
+document; an input file that cleans to under 1,000 characters is dropped (`--min-length`). Training
+holds out whole documents, so **one long file — a book, a report — needs `--split-chars 3500`**,
+which cuts it into documents at paragraph boundaries. Cut boilerplate such as a Project Gutenberg
+licence, a table of contents or an index out of the file first. With `--supplement`, the model then
+writes question-and-answer pairs over the corpus, which make the domain's knowledge answerable when
+the model is asked about it; they do not protect skills, which is the anchor's job. Without
+`--supplement`, `train` writes the same pairs itself before the first epoch. A corpus with nothing
+to hold out is refused before any pairs are written, by either command, with the fix in the
+message (`train --no-supplement` trains it as it is, with no held-out curve).
 
-**`train`** adapts the model with the anchor on. It holds a tenth of the documents out, scores them
-after every epoch, and warns at the end if that curve turned around — on a small corpus re-run with
-`--epochs <the epoch it bottomed at>`.
+**`train`** adapts the model with the anchor on. It holds a tenth of the documents out, scores
+them after every epoch, and ends with one line that reads that curve: `Held-out perplexity: lowest
+X at epoch k of n; final Y (+z % over the lowest).` `final_model` is the last epoch, so when the
+curve turned the run advises a re-run with `--epochs k`: with a warning when it ended 10 % or more
+above its lowest, as "likely to ship a better model" from 1 % to 10 %, and as optional under 1 %.
+When the curve was still falling at the last epoch, more epochs may lower it. A re-run in the same
+workspace writes `runs/stage1_run2`, and `evaluate` and `fuse` then read that run.
 
-**`evaluate`** reads the stage on both axes against the model it started from:
+**`evaluate`** reads the stage on both axes against the model it started from. The before and
+after columns of the walkthrough's stage 1 (Qwen3-0.6B on Darwin, a 4-epoch demo where the recipe
+trains 15; 200 WikiText-2 windows; recorded 2026-10-05):
 
 ```
 | metric               | before | after |     Δ% |
 | -------------------- | -----: | ----: | -----: |
-| general (WikiText-2) |  18.18 | 16.69 |  -8.2% |
-| domain               |  23.30 | 12.78 | -45.1% |
+| general (WikiText-2) |  17.80 | 16.06 |  -9.8% |
+| domain               |  30.12 | 19.25 | -36.1% |
 ```
 
-That table is this package's own verification run on Qwen3-0.6B (2026-09-07), which predates 0.2.0
-and so trained on the raw corpus alone. Add `--compare-unanchored` for the λ = μ = 0 control as a
-third column, and `--n-windows none` offline (the general axis reads WikiText-2 from the Hub).
+Lower is better. **The domain number should fall and WikiText-2 should hold.** A WikiText-2
+number below the base model's, as here, is not by itself evidence that anything was kept
+([concepts.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/concepts.md#reading-a-run-two-axes-never-one)).
+`--compare-unanchored` adds the λ = μ = 0 control as a third column, at the cost of a second
+training run. It trains at the anchored run's epochs; when its own curve turned earlier, part of
+its gap is dose, and `evaluate` prints the commands that train it at its own best epoch.
+`--n-windows none` skips the general axis offline (it reads WikiText-2 from the Hub).
 
 **`fuse`** writes a plain checkpoint with the adapter merged in; it loads with
 `AutoModelForCausalLM.from_pretrained` like any other model.
@@ -123,10 +102,10 @@ from lfa import Workspace
 from lfa.prepare_domain import prepare_domain
 from lfa.supplements import prepare_supplement
 
-ws = Workspace.init("runs/my_domain", "Qwen/Qwen3-0.6B", artifact="self-generated")
-prepare_domain(["papers", "notes.md"], "data/my_domain")      # .txt/.md/.html/.pdf -> .txt files
-prepare_supplement("data/my_domain", "Qwen/Qwen3-0.6B")       # optional: train writes it otherwise
-ws.train("data/my_domain")            # holds a tenth of the documents out; watch that number
+ws = Workspace.init("runs/world_history", "Qwen/Qwen3-0.6B", artifact="self-generated")
+prepare_domain(["history"], "data/world_history")           # split_chars=3500 for one long file
+prepare_supplement("data/world_history", "Qwen/Qwen3-0.6B")  # optional: train writes it otherwise
+ws.train("data/world_history")        # ends with the held-out curve's verdict
 print(ws.evaluate()["table"])         # both axes, against the model the stage started from
 ws.fuse()                             # a plain checkpoint: AutoModelForCausalLM.from_pretrained
 ```
@@ -136,6 +115,33 @@ Every step, with what it costs and what can go wrong:
 Python flow as a script:
 [`examples/quickstart.py`](https://github.com/sparkdoc/lfa-anchoring/blob/main/examples/quickstart.py).
 
+## Tuning on your own corpus
+
+The recipe's 15 epochs and λ = 1,000,000 were calibrated on one text.
+[docs/tuning.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/tuning.md) is how to set
+the epochs from the held-out curve, read the control at its own dose, try another λ with `lfa
+train --lambda`, and tell a real difference from run-to-run noise, each step with its command and
+its cost on one card.
+
+## Models
+
+| model (`--model`) | recipe | licence | artifact download | GPU memory to train |
+|---|---|---|---:|---:|
+| `Qwen/Qwen3-0.6B` | `qwen3-0.6b` | Apache-2.0 | 132 MB | 14.2 GiB |
+| `Qwen/Qwen3-1.7B` | `qwen3-1.7b` | Apache-2.0 | 265 MB | 18.8 GiB |
+
+`--model` picks the recipe: `init` uses the bundled recipe whose own model id is the one you pass.
+Both are λ = 1,000,000, 15 epochs, rank 32. The download is the artifact with the corpus it was
+fitted on. GPU memory is the highest `nvidia-smi` reading over a two-stage chain on an RTX 3090, an
+upper bound on what a run needs; a single stage read 13.6 GiB (Qwen3-0.6B, an unanchored 4-epoch
+run) and 12.7 GiB (Qwen3-1.7B, anchored), a caching effect of the measure that does not order the
+two models by size, and a Qwen3-1.7B chain has only been run on 24 GB cards. Per run, and the
+settings for an 8 GB card: [the
+FAQ](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/faq.md#how-much-gpu-memory-does-a-run-need).
+The licence is the model's own, from its Hub card. Any other model:
+[docs/model-integration-cookbook.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/model-integration-cookbook.md),
+with Qwen3-1.7B worked through.
+
 ## A second domain, and a chain
 
 One extra step between domains. `extend` merges the finished stage into the model and folds the
@@ -144,14 +150,14 @@ only the *new* domain — so the next stage adapts the right model and anchors a
 that describes it.
 
 ```bash
-lfa extend   --workspace runs/my_domain
-lfa train    --workspace runs/my_domain --corpus data/second_domain
-lfa evaluate --workspace runs/my_domain
-lfa fuse     --workspace runs/my_domain
+lfa extend   --workspace runs/world_history
+lfa train    --workspace runs/world_history --corpus data/second_domain
+lfa evaluate --workspace runs/world_history
+lfa fuse     --workspace runs/world_history
 ```
 
 ```python
-ws = Workspace.open("runs/my_domain")
+ws = Workspace.open("runs/world_history")
 ws.extend()
 ws.train("data/second_domain"); print(ws.evaluate()["table"]); ws.fuse()
 ```
@@ -169,8 +175,10 @@ domains:
   - {name: archaeology,  corpus: data/domain_c}
 ```
 
-λ from stage 2 on is the recipe's value times its `stage2_lambda_multiplier`; you do not set it
-per domain. Details:
+λ from stage 2 on is the recipe's value times its `stage2_lambda_multiplier`. A chain spec takes no
+per-domain λ; a single stage takes one with `lfa train --lambda`
+([recipes.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/recipes.md#trying-another-λ)).
+Details:
 [docs/multi-domain-chains.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/multi-domain-chains.md).
 
 ## The walkthrough notebooks
@@ -197,19 +205,21 @@ answers, at this scale, mostly do not show that difference.
 | | |
 |---|---|
 | [docs/quickstart.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/quickstart.md) | the full pipeline, step by step |
-| [docs/preparing-your-data.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/preparing-your-data.md) | formats, cleaning, corpus shapes, the supplement |
-| [docs/the-artifact.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/the-artifact.md) | the self-generated build, the store, and a real-text artifact |
+| [docs/preparing-your-data.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/preparing-your-data.md) | formats, cleaning, splitting a long file, corpus shapes, the supplement |
+| [docs/tuning.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/tuning.md) | tuning the epochs and λ on your own corpus |
+| [docs/the-artifact.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/the-artifact.md) | the self-generated build, the store, published artifacts, and a real-text artifact |
 | [docs/concepts.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/concepts.md) | the building blocks, what the anchor does, what λ and μ are, how a run is read |
-| [docs/recipes.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/recipes.md) | the shipped operating point field by field, and its couplings |
+| [docs/recipes.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/recipes.md) | the shipped operating point field by field, its couplings, and trying another λ (`--lambda`) |
 | [docs/multi-domain-chains.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/multi-domain-chains.md) | second and third domains; what `extend` does, and the `regenerate` route |
 | [docs/model-integration-cookbook.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/model-integration-cookbook.md) | a model with no bundled recipe: adapter, artifact, probe, λ |
-| [docs/faq.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/faq.md) | GPU memory (8 GB cards included), self-generation cost, full weights, reading the general axis, what is not shipped |
+| [docs/faq.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/faq.md) | GPU memory (8 GB cards included), self-generation cost, the teacher, full weights, reading the general axis, what is not shipped |
 | [`examples/two_domain_walkthrough.ipynb`](https://github.com/sparkdoc/lfa-anchoring/blob/main/examples/two_domain_walkthrough.ipynb) | the runnable how-to: two domains one after the other, each stage repeated with the anchor off |
 | [`examples/what_the_anchor_does.ipynb`](https://github.com/sparkdoc/lfa-anchoring/blob/main/examples/what_the_anchor_does.ipynb) | optional, continues from it: the controls at their own best dose, and what the models say |
 
 ## Tests
 
-From a checkout (the wheel ships the package and the examples, not the tests):
+From the checkout, with the test tools installed (`pip install -c constraints-tested.txt -e
+'.[dev]'`):
 
 ```bash
 pytest -q                                    # no GPU, no corpus, no network

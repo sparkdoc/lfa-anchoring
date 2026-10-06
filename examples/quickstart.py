@@ -19,26 +19,32 @@ Every number this prints is a perplexity computed locally. Nothing calls out to 
 
 Example::
 
-    lfa prepare-domain ~/papers --out data/my_domain --supplement --model Qwen/Qwen3-0.6B
+    lfa prepare-domain ~/history --out data/world_history --supplement --model Qwen/Qwen3-0.6B
     python examples/quickstart.py \\
         --model Qwen/Qwen3-0.6B \\
         --artifact self-generated \\
-        --corpus data/my_domain \\
-        --out runs/my_domain
+        --corpus data/world_history \\
+        --out runs/world_history
 
 The first line turns your documents into a corpus of ``.txt`` files and has the model write the
-question-and-answer supplement beside it, in ``data/my_domain.supplement/``, where training finds
-it (``docs/preparing-your-data.md``). ``--artifact self-generated`` has the model write its own
-text and fits p(h) on it; that costs hours once per model, and every later run over the same
-model reuses the finished artifact from the local store (``~/.cache/lfa/artifacts``, or
+question-and-answer supplement beside it, in ``data/world_history.supplement/``, where training
+finds it (``docs/preparing-your-data.md``). For one long file -- a book, a report -- add
+``--split-chars 3500``, so that training has documents to hold out. ``--artifact self-generated``
+gives the model its p(h) artifact: for Qwen3-0.6B and Qwen3-1.7B the package pins a published one,
+downloaded and verified on first use (132 MB / 265 MB); any other model writes its own text and
+p(h) is fitted on it, which takes hours. Either way it happens once per model, and every later run
+over the same model reuses the artifact from the local store (``~/.cache/lfa/artifacts``, or
 ``$LFA_ARTIFACT_STORE``). ``--artifact`` also takes the path to an artifact this package built --
-another workspace's ``artifacts/v1.pt``, say -- which is copied in instead of building one.
+another workspace's ``artifacts/v1.pt``, say -- which is copied in instead.
 
 From an installed wheel, where there is no checkout to run a path from, the same script is
 ``python -m lfa.examples.quickstart``.
 
 Add ``--compare-unanchored`` to train the control that says what the anchor bought: the same run
-with lambda = mu = 0. It costs a second training run.
+with lambda = mu = 0. It costs a second training run, at this run's epochs; when the control's
+own held-out curve turned earlier, a note beneath the table gives the commands that train it at
+its own best epoch. ``docs/tuning.md`` says how to read it, and how to set the epochs and lambda
+on your own corpus.
 """
 
 from __future__ import annotations

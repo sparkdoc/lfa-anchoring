@@ -372,14 +372,16 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--model", required=True, metavar="ID",
                       help="a Hub id or a local checkpoint path")
     init.add_argument("--artifact", required=True, metavar="self-generated|PATH",
-                      help="`self-generated` to have the model write its own corpus and fit "
-                           "p(h) on it (about 3 h 51 min for Qwen3-0.6B on an RTX 3090, once per "
-                           "model: it is kept in the local store, ~/.cache/lfa/artifacts or "
-                           "$LFA_ARTIFACT_STORE, and reused; when the store has none, a "
-                           "published artifact for this exact model and frame, pinned in the "
-                           "package, is downloaded and verified instead, and anything else is "
-                           "built), or the path to an artifact this package built: another "
-                           "workspace's artifacts/v1.pt, or what `lfa build-artifact` wrote")
+                      help="`self-generated` for the model's own p(h) artifact. For a model with "
+                           "a published artifact pinned in the package for this exact model and "
+                           "frame (Qwen/Qwen3-0.6B and Qwen/Qwen3-1.7B at the default frame), it "
+                           "is downloaded and verified: 132 MB / 265 MB with its corpus. Any "
+                           "other model writes its own corpus and p(h) is fitted on it, which "
+                           "takes hours (a build of Qwen3-0.6B's took 3 h 51 min on an RTX "
+                           "3090). Either way once per model: it is kept in the local store, "
+                           "~/.cache/lfa/artifacts or $LFA_ARTIFACT_STORE, and reused. Or the "
+                           "path to an artifact this package built: another workspace's "
+                           "artifacts/v1.pt, or what `lfa build-artifact` wrote")
     init.add_argument("--rebuild", action="store_true",
                       help="with --artifact self-generated: build afresh here even when the "
                            "store has a matching artifact (the old entry is moved aside, not "
