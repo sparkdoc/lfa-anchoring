@@ -135,7 +135,7 @@ def _download(pin: dict, name: str, dest: Path) -> None:
     """Stream the pin's ``name`` file to ``dest``, checking its size and sha256 against the pin."""
     url, expected = pin[f"{name}_url"], pin[f"{name}_size_bytes"]
     pinned = pin[f"{name}_file_sha256"]
-    logger.info("Downloading %s (%.1f MB) from %s", name, expected / 2**20, url)
+    logger.info("Downloading %s (%.1f MB) from %s", name, expected / 1e6, url)
     request = urllib.request.Request(url, headers={"User-Agent": f"lfa-anchoring/{__version__}"})
     digest = hashlib.sha256()
     received = 0
@@ -154,8 +154,8 @@ def _download(pin: dict, name: str, dest: Path) -> None:
                 out.write(block)
                 percent = received * 100 // expected
                 if expected > _REPORT_ABOVE and percent >= next_report:
-                    logger.info("Downloaded %d%% (%.0f of %.0f MB)", percent, received / 2**20,
-                                expected / 2**20)
+                    logger.info("Downloaded %d%% (%.0f of %.0f MB)", percent, received / 1e6,
+                                expected / 1e6)
                     next_report = (percent // 10 + 1) * 10
     except urllib.error.HTTPError as error:
         error.close()
@@ -257,7 +257,7 @@ def fetch_published(pin: dict, staged: dict[str, Path], model_id: str,
     """
     logger.info("Downloading the published self-generated artifact for %s (%.0f MB with its "
                 "corpus)", model_id,
-                sum(pin[f"{name}_size_bytes"] for name in FILES) / 2**20)
+                sum(pin[f"{name}_size_bytes"] for name in FILES) / 1e6)
     try:
         for name in FILES:
             _download(pin, name, staged[name])

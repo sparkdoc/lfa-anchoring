@@ -385,7 +385,7 @@ def _entry_size_mb(entry: Path) -> int:
             total += f.stat().st_size if f.is_file() else 0
         except FileNotFoundError:    # a running build renamed it away
             pass
-    return round(total / 2**20)
+    return round(total / 1e6)      # decimal MB, as every size the package prints
 
 
 def _state(entry: Path, record: dict) -> str:

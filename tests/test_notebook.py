@@ -4,7 +4,7 @@ A notebook rots differently from library code: an `ImportError` in cell 12 does 
 prose reading correctly, and the reader who finds out is the one who set aside an afternoon for
 it. There are two notebooks and two layers of checking.
 
-`examples/two_domain_walkthrough.ipynb` is the **how-to**: build or reuse the self-generated
+`examples/two_domain_walkthrough.ipynb` is the **how-to**: download, build or reuse the self-generated
 artifact, two domains one after the other, an unanchored control beside each stage, a plain
 checkpoint at the end. `examples/what_the_anchor_does.ipynb` is **optional** and continues from
 the workspace the walkthrough leaves on disk: each control re-run at its own best number of epochs, and the fixed
@@ -17,15 +17,15 @@ binds, that the walkthrough still says its settings are demo scale, that it hand
 to the companion and the companion points back, and that the documents which point a reader at
 them still do. None of that needs a GPU, a network or a minute.
 
-The **`notebook` marker** actually executes them, with nothing stubbed: it builds or reuses the
-self-generated artifact, downloads the two books, trains, and writes a checkpoint. That is the only
-thing that can say the walkthrough still works, and it costs what the walkthrough costs. When
-they were recorded (2026-10-05, one RTX 3090, the self-generated artifact at the recorded frame
-already in the store, the supplement on) the walkthrough took 35.4 minutes and the companion 19.3
-(two more training runs and 54 generations); add roughly 1.4 GB of downloads on a cold cache,
-and on a cold store the published artifact's download (126 MB with its corpus). The companion's
-test executes the walkthrough again before itself, so the tier took 1 h 29 min (5362.85 s) on
-that card. The default `addopts` deselects it, like `gpu` and `slow`::
+The **`notebook` marker** actually executes them, with nothing stubbed: it fetches, builds or
+reuses the self-generated artifact, downloads the two books, trains, and writes a checkpoint. That
+is the only thing that can say the walkthrough still works, and it costs what the walkthrough
+costs. When they were recorded (2026-10-05, one RTX 3090, the self-generated artifact at the
+recorded frame already in the store, the supplement on) the walkthrough took 35.4 minutes and the
+companion 19.3 (two more training runs and 54 generations); add roughly 1.4 GB of downloads on a
+cold cache, and on a cold store the published artifact's download (132 MB with its corpus). The
+companion's test executes the walkthrough again before itself, so the tier took 1 h 29 min
+(5362.85 s) on that card. The default `addopts` deselects it, like `gpu` and `slow`::
 
     pytest tests/test_notebook.py -m notebook -q
 
