@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 import lfa.supplements as supplements
+from lfa.selfgen.supplement import filters_sha256
 from conftest import make_corpus, tiny_recipe
 
 
@@ -16,7 +17,7 @@ def _fake_writer(calls):
         out_path.write_text(json.dumps({"prompt": "q", "response": "a"}) + "\n")
         manifest = {"corpus_sha256": corpus_sha256, "writer_id": model_id,
                     "writer_sha256": f"sha-of-{model_id}", "template_sha256": "t" * 64,
-                    "domain_description": domain_description}
+                    "filters_sha256": filters_sha256(), "domain_description": domain_description}
         (out_path.parent / (out_path.name + ".manifest.json")).write_text(json.dumps(manifest))
         return manifest
     return write
@@ -69,6 +70,31 @@ def test_a_different_domain_description_writes_again(tmp_path, base_dir, patched
     supplements.prepare_supplement(corpus, "base", recipe=recipe,
                                    domain_description="Victorian cookery")
     assert len(patched) == 2
+
+
+@pytest.mark.parametrize("recorded", [None, "0" * 64], ids=["written-before-the-field",
+                                                          "other-filters"])
+def test_a_supplement_written_under_other_filters_is_written_again(tmp_path, base_dir, patched,
+                                                                   recorded):
+    """A supplement whose pairs were kept by other filters -- one written before leaked-JSON
+    pairs were dropped, say -- is not the one these filters would write: not a match."""
+    corpus = make_corpus(tmp_path / "my_domain", "cookery")
+    recipe = tiny_recipe(base_dir, val_fraction=0.1)
+    first = supplements.prepare_supplement(corpus, "base", recipe=recipe)
+    manifest_path = Path(str(first) + ".manifest.json")
+    manifest = json.loads(manifest_path.read_text())
+    if recorded is None:
+        del manifest["filters_sha256"]
+    else:
+        manifest["filters_sha256"] = recorded
+    manifest_path.write_text(json.dumps(manifest))
+
+    again = supplements.prepare_supplement(corpus, "base", recipe=recipe)
+
+    assert len(patched) == 2 and again == first                       # rewritten in place
+    assert json.loads(manifest_path.read_text())["filters_sha256"] == filters_sha256()
+    supplements.prepare_supplement(corpus, "base", recipe=recipe)
+    assert len(patched) == 2                                          # and now reused
 
 
 def test_no_recipe_anywhere_is_refused(tmp_path, patched):

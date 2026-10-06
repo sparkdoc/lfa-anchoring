@@ -1350,6 +1350,8 @@ def test_init_self_generated_rollback_keeps_files_it_did_not_write(tmp_path, bas
 # ------------------------------------------------------------------------- the supplement step
 
 def _fake_supplement_writer(calls, writer_hash):
+    from lfa.selfgen.supplement import filters_sha256
+
     def write(model_id, documents, out_path, *, domain_description, options, corpus_sha256,
               generate=None, writer=None, device="cuda:0"):
         calls.append(dict(model_id=model_id, n_docs=len(documents), domain=domain_description,
@@ -1358,8 +1360,9 @@ def _fake_supplement_writer(calls, writer_hash):
         Path(out_path).write_text('{"prompt": "q?", "response": "%s", "source_index": 0}\n'
                                   % ("an answer " * 8) * 6)
         manifest = {"writer_sha256": writer_hash(model_id), "corpus_sha256": corpus_sha256,
-                    "template_sha256": "t" * 64, "domain_description": domain_description,
-                    "n_pairs": 6, "lfa_version": "0.2.0"}
+                    "template_sha256": "t" * 64, "filters_sha256": filters_sha256(),
+                    "domain_description": domain_description, "n_pairs": 6,
+                    "lfa_version": "0.2.0"}
         Path(str(out_path) + ".manifest.json").write_text(json.dumps(manifest))
         return manifest
     return write
@@ -1847,7 +1850,7 @@ def test_a_control_that_did_not_turn_gets_no_note(tmp_path, base_dir, corpus_a, 
     result = ws.evaluate(compare_unanchored=True, n_windows=None, device="cpu")
 
     assert result["unanchored_held_out"]["verdict"] == "still_falling"
-    assert "dose" not in result["table"] and "control-e" not in result["table"]
+    assert "unanchored control" not in result["table"] and "control-e" not in result["table"]
 
 
 def test_the_control_commands_name_the_stages_supplement_and_its_frame(tmp_path, base_dir,
@@ -1914,7 +1917,7 @@ def test_a_control_that_turned_by_less_than_the_rerun_gap_gets_no_note(tmp_path,
 
     assert result["unanchored_held_out"]["verdict"] == "turned"
     assert result["unanchored_held_out"]["gap"] < 0.01
-    assert "dose" not in result["table"] and "control-e" not in result["table"]
+    assert "unanchored control" not in result["table"] and "control-e" not in result["table"]
 
 
 def test_a_lambda_spelt_as_a_string_from_python_is_read_as_its_number(tmp_path, base_dir,
@@ -2060,3 +2063,111 @@ def test_the_control_commands_name_absolute_paths_and_run_from_another_directory
     monkeypatch.chdir(elsewhere)
     for argv in commands:
         assert main(argv[1:]) == 0, argv
+
+
+# ------------------------------------------- evaluate restates the run's own held-out verdict
+
+def _with_curve(ws, summary):
+    """Record ``summary`` as the latest stage's held-out verdict, as `train` would have."""
+    ws.history[-1]["held_out"] = summary.to_dict()
+    ws._save_history()
+
+
+def _own_line(table):
+    """The run's own paragraph beneath the table, its wrapped lines joined back into one."""
+    [block] = [b for b in table.split("\n\n") if b.startswith("This run's held-out curve")]
+    assert all(len(line) <= 100 for line in block.splitlines())      # wrapped like the note
+    return " ".join(block.splitlines())
+
+
+@pytest.mark.parametrize("summary, says", [
+    # turned, 10 % or more above its lowest: the warning's words
+    (("turned", 2, 6.67, 15, 16.88, 16.88 / 6.67 - 1),
+     ["lowest 6.670 at epoch 2 of 15; final 16.880 (+153.1 % over the lowest).",
+      "This run trained past its own optimum", "re-run with --epochs 2",
+      "no best checkpoint is kept"]),
+    # turned, 1-10 %: likely
+    (("turned", 8, 27.021, 15, 28.668, 28.668 / 27.021 - 1),
+     ["lowest 27.021 at epoch 8 of 15; final 28.668 (+6.1 % over the lowest).",
+      "a re-run with --epochs 8 is likely to ship a better model on this domain"]),
+    # turned, under 1 %: optional
+    (("turned", 3, 7.0, 4, 7.05, 7.05 / 7.0 - 1),
+     ["(+0.7 % over the lowest).", "ended under 1 % above its lowest, so a re-run with "
+      "--epochs 3 is optional."]),
+    (("still_falling", 4, 18.683, 4, 18.683, 0.0),
+     ["lowest 18.683 at epoch 4 of 4; final 18.683 (+0.0 % over the lowest).",
+      "had not turned by the last epoch, so more epochs may lower it further"]),
+    (("diverged", 2, 8.0, 5, None, None),
+     ["lowest 8.000 at epoch 2 of 5; final not finite.", "this run diverged",
+      "Re-run with --epochs 2 (where it was lowest)"]),
+    (("diverged", None, None, 3, None, None),
+     ["no finite value at any epoch up to epoch 3.", "this run diverged"]),
+    (("no_curve", None, None, None, None, None),
+     ["none was measured", "nothing to choose its dose by", "--split-chars 3500"]),
+], ids=["turned-warned", "turned-likely", "turned-optional", "still-falling", "diverged",
+        "diverged-never-finite", "no-curve"])
+def test_evaluate_restates_the_runs_own_held_out_verdict(tmp_path, base_dir, corpus_a, summary,
+                                                         says):
+    from lfa.train import HeldOutSummary, held_out_messages
+
+    ws = new_workspace(tmp_path, base_dir)
+    ws.train(corpus_a, recipe=tiny_recipe(base_dir), device="cpu")
+    summary = HeldOutSummary(*summary)
+    _with_curve(ws, summary)
+
+    table = Workspace.open(ws.path).evaluate(n_windows=None, device="cpu")["table"]
+
+    line = _own_line(table)
+    for words in says:
+        assert words in line, words
+    # The train log's words, not a second wording of them.
+    (_, curve), *advice = held_out_messages(summary)
+    assert line == " ".join([f"This run's held-out curve: {curve}", *(m for _, m in advice)])
+
+
+def test_the_wells_runs_line_reads_as_train_said_it(tmp_path, base_dir, corpus_a):
+    from lfa.train import HeldOutSummary
+
+    ws = new_workspace(tmp_path, base_dir)
+    ws.train(corpus_a, recipe=tiny_recipe(base_dir), device="cpu")
+    _with_curve(ws, HeldOutSummary("turned", 8, 27.021, 15, 28.668, 28.668 / 27.021 - 1))
+
+    table = ws.evaluate(n_windows=None, device="cpu")["table"]
+
+    assert _own_line(table).startswith(
+        "This run's held-out curve: lowest 27.021 at epoch 8 of 15; final 28.668 (+6.1 % over the "
+        "lowest). The held-out curve turned at epoch 8: a re-run with --epochs 8 is likely to "
+        "ship a better model on this domain than this one. `final_model` is the LAST epoch")
+    assert table.startswith("| metric")                          # the table first, the line after
+
+
+def test_a_stage_recorded_without_a_held_out_summary_adds_no_line(tmp_path, base_dir, corpus_a):
+    """A workspace trained before stages recorded their verdict: nothing extra, and no crash."""
+    ws = new_workspace(tmp_path, base_dir)
+    ws.train(corpus_a, recipe=tiny_recipe(base_dir), device="cpu")
+    history = json.loads((ws.path / "history.json").read_text())
+    del history[0]["held_out"]
+    (ws.path / "history.json").write_text(json.dumps(history))
+
+    result = Workspace.open(ws.path).evaluate(n_windows=None, device="cpu")
+
+    assert "held-out curve" not in result["table"]
+    # The table alone: with the general axis skipped it ends on the line saying so.
+    assert result["table"].endswith("not measured (before, after)")
+
+
+def test_the_runs_own_line_comes_before_the_control_note(tmp_path, base_dir, corpus_a,
+                                                         monkeypatch):
+    from lfa.train import HeldOutSummary
+
+    ws = new_workspace(tmp_path, base_dir)
+    ws.train(corpus_a, recipe=tiny_recipe(base_dir, epochs=3), device="cpu")
+    _with_curve(ws, HeldOutSummary("turned", 2, 27.0, 3, 28.0, 28.0 / 27.0 - 1))
+    _control_turns(monkeypatch, [25.59, 60.0, 433.78])
+
+    table = ws.evaluate(compare_unanchored=True, n_windows=None, device="cpu")["table"]
+
+    own = table.index("\n\nThis run's held-out curve: lowest 27.000 at epoch 2 of 3")
+    note = table.index("\n\nThe unanchored control's held-out perplexity")
+    assert table.index("not measured (before, after, unanchored)") < own < note
+    assert table.count("This run's held-out curve") == 1

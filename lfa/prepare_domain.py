@@ -6,10 +6,13 @@ arrives as, :func:`prepare_domain` turns it into the flat directory of ``.txt`` 
 
 Extraction is per format -- ``.txt``/``.md`` pass straight through, ``.html``/``.htm`` go through
 BeautifulSoup + markdownify, ``.pdf`` through marker -- and every document then goes through the
-same :func:`clean_text` pass, which removes the markup artifacts both extractors leave behind
-(footnote wrappers, link targets, image references) and unwraps mid-paragraph line breaks so a
-paragraph is one line. A document shorter than ``min_length`` *characters after cleaning* is
-dropped: a page that extracted to a nav bar and a cookie notice is not training data.
+same :func:`clean_text` pass, which normalises the characters every text shares (line ends,
+invisible and control characters, space variants, Unicode NFC), removes the markup artifacts both
+extractors leave behind (footnote wrappers, link targets, image references) and unwraps
+mid-paragraph line breaks so a paragraph is one line. It never judges content: a licence, a table
+of contents or an index stays unless the user cuts it. A document shorter than ``min_length``
+*characters after cleaning* is dropped: a page that extracted to a nav bar and a cookie notice is
+not training data.
 
 A file is one document unless ``split_chars`` is given, and the trainer holds out whole
 documents: one downloaded book prepared as it stands is a corpus nothing can be held out of. With
@@ -28,6 +31,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import unicodedata
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -166,15 +170,68 @@ def _is_structural(line: str) -> bool:
     )
 
 
-def clean_text(text: str) -> str:
-    """Strip extraction artifacts and unwrap paragraphs.
+#: Characters that print as nothing and carry no content: the byte-order mark, the zero-width
+#: space, non-joiner and joiner, the word joiner, and the soft hyphen (a hyphenation hint).
+_INVISIBLE = frozenset("\ufeff\u200b\u200c\u200d\u2060\u00ad")
 
-    Removes residual HTML tags, footnote wrappers, editorial brackets, link targets (keeping the
-    link text), image references and horizontal rules; joins consecutive prose lines into one
-    paragraph line (markdownify preserves the source HTML's own wrapping, which would otherwise
-    train the model on line breaks that mean nothing); and collapses runs of blank lines and
-    spaces.
+#: The characters that break a line without being a newline: the vertical tab, the form feed
+#: (a page end, as ``pdftotext`` writes one), the file, group and record separators, the next-line
+#: control (NEL), and the line and paragraph separators. Each becomes a newline rather than
+#: nothing, so the text on either side of one stays two words.
+_LINE_BREAKS = frozenset(map(chr, (0x0B, 0x0C, 0x1C, 0x1D, 0x1E, 0x85, 0x2028, 0x2029)))
+
+#: The ``str.translate`` table of :func:`_normalise_characters`: every line break in
+#: :data:`_LINE_BREAKS` to a newline; a tab and every space separator (``Zs``) to a plain space;
+#: every invisible and every other control character (``Cc``) but the newline to nothing. All of
+#: them lie in the Basic Multilingual Plane, so the table is built over that plane alone.
+_CHARACTER_MAP: dict[int, str | None] = {}
+for _code in range(0x10000):
+    _char = chr(_code)
+    if _char in ("\n", " "):
+        continue
+    if _char in _LINE_BREAKS:
+        _CHARACTER_MAP[_code] = "\n"
+    elif _char == "\t" or unicodedata.category(_char) == "Zs":
+        _CHARACTER_MAP[_code] = " "
+    elif _char in _INVISIBLE or unicodedata.category(_char) == "Cc":
+        _CHARACTER_MAP[_code] = None
+del _code, _char
+
+
+def _normalise_characters(text: str) -> str:
+    """The cleaning every text needs whatever its source: line ends, invisibles, spaces, NFC.
+
+    CRLF and a lone CR become LF, and so does every other line break (:data:`_LINE_BREAKS`: a form
+    feed, a vertical tab, NEL, a line or paragraph separator); the characters in
+    :data:`_INVISIBLE` and every other control character (Unicode category ``Cc``) but the newline
+    are removed; a tab and every Unicode space
+    separator (category ``Zs``: the no-break space, the en and em spaces, the narrow no-break
+    space, the ideographic space, ...) become a plain space; and the text is put in Unicode
+    normal form NFC, so an accent typed as a letter plus a combining mark and the same accent as
+    one code point are the same text. NFC comes last because removing an invisible can leave a
+    letter beside a combining mark it was kept apart from; the four steps together are
+    idempotent. Nothing here reads content: no character with a visible glyph is removed.
     """
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    return unicodedata.normalize("NFC", text.translate(_CHARACTER_MAP))
+
+
+def clean_text(text: str) -> str:
+    """Normalise the characters, strip extraction artifacts and unwrap paragraphs.
+
+    First the cleaning every text shares (:func:`_normalise_characters`: line ends, invisible
+    and control characters, space variants, Unicode NFC). Then removes residual HTML tags,
+    footnote wrappers, editorial brackets, link targets (keeping the link text), image references
+    and horizontal rules; joins consecutive prose lines into one paragraph line (markdownify
+    preserves the source HTML's own wrapping, which would otherwise train the model on line
+    breaks that mean nothing); and collapses runs of blank lines and spaces. Content is never
+    judged: a licence, a table of contents or an index is the user's to cut. The result is put in
+    NFC once more at the end: a tag removed from between a letter and its combining mark leaves
+    the two side by side, and only a second normalisation composes them, so cleaning a cleaned
+    text changes nothing.
+    """
+    text = _normalise_characters(text)
+
     # Residual HTML from marker (sup/sub footnotes, span wrappers).
     text = re.sub(r"<sup>(.*?)</sup>", r"\1", text)
     text = re.sub(r"<sub>(.*?)</sub>", r"\1", text)
@@ -208,7 +265,7 @@ def clean_text(text: str) -> str:
 
     text = re.sub(r"\n{3,}", "\n\n", text)
     text = re.sub(r" {2,}", " ", text)
-    return text.strip()
+    return unicodedata.normalize("NFC", text.strip())
 
 
 # ----------------------------------------------------------------------------------------------
@@ -356,9 +413,13 @@ def _sentences(text: str) -> list[str]:
     A sentence ends where :func:`split_into_documents` would cut one (:data:`_SENTENCE_END`) or at
     a paragraph break, so a sentence of a text is a sentence of every split of it: the splitter
     cuts only at paragraph breaks and sentence ends, bar a sentence longer than the split size.
+    The characters are normalised first (:func:`_normalise_characters`, which :func:`clean_text`
+    also applies, so this is a no-op on a prepared input): a file already in the directory that
+    was not prepared here compares in the same form, so the same sentence typed with a decomposed
+    accent, a no-break space or a soft hyphen is still the same sentence.
     """
     sentences: list[str] = []
-    for block in re.split(r"\n\s*\n", text):
+    for block in re.split(r"\n\s*\n", _normalise_characters(text)):
         normalised = " ".join(block.split())
         start = 0
         for match in _SENTENCE_END.finditer(normalised):

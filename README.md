@@ -87,6 +87,8 @@ trains 15; 200 WikiText-2 windows; recorded 2026-10-06):
 Lower is better. **The domain number should fall and WikiText-2 should hold.** A WikiText-2
 number below the base model's, as here, is not by itself evidence that anything was kept
 ([concepts.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/concepts.md#reading-a-run-two-axes-never-one)).
+Beneath the table, `evaluate` repeats the run's own held-out verdict in the words `train` ended
+with (`This run's held-out curve: lowest X at epoch k of n; …` and its advice).
 `--compare-unanchored` adds the λ = μ = 0 control as a third column, at the cost of a second
 training run. It trains at the anchored run's epochs; when its own curve turned earlier, part of
 its gap is dose, and `evaluate` prints the commands that train it at its own best epoch.

@@ -269,13 +269,16 @@ The walkthrough's stage 1 (Qwen3-0.6B on Darwin; a 4-epoch demo where the recipe
 
 Lower is better. **The domain number should fall and WikiText-2 should hold.** A general number
 *below* the base model's, as here, is not by itself evidence that anything was kept —
-[faq.md](faq.md#wikitext-2-perplexity-came-out-below-the-base-models-is-that-a-win) says why. The
-control trains at the anchored run's epochs, which is not its own dose. When its curve turned (1 %
-or more above its lowest), `evaluate` says so beneath the table — here, "The unanchored control's
-held-out perplexity was lowest at epoch 2 (14.90) and ended at 18.24 (epoch 4, +22.4 %): it
-trained at this run's dose, past its own best, so part of the unanchored column's gap is dose, not
-the anchor." — and prints three commands that train it at its own best epoch in a fresh workspace
-(`lfa train … --lambda 0 --mu 0 --epochs <its best>`); read it there too.
+[faq.md](faq.md#wikitext-2-perplexity-came-out-below-the-base-models-is-that-a-win) says why.
+Beneath the table, `evaluate` repeats the run's own held-out verdict — the lines `train` ended
+with, as one paragraph opening `This run's held-out curve:` — so the dose advice is on the screen
+you read the numbers from. The control trains at the anchored run's epochs, which is not its own
+dose. When its curve turned (1 % or more above its lowest), `evaluate` says so after that — here,
+"The unanchored control's held-out perplexity was lowest at epoch 2 (14.90) and ended at 18.24
+(epoch 4, +22.4 %): it trained at this run's dose, past its own best, so part of the unanchored
+column's gap is dose, not the anchor." — and prints three commands that train it at its own best
+epoch in a fresh workspace (`lfa train … --lambda 0 --mu 0 --epochs <its best>`); read it there
+too.
 [tuning.md](tuning.md#3-read-both-axes-and-the-control-at-its-own-dose) says what that showed on
 one book.
 

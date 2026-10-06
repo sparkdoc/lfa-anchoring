@@ -248,3 +248,121 @@ def test_a_template_with_no_turn_end_stops_at_eos_alone(tmp_path, monkeypatch, t
                      options=SupplementOptions(min_passage_chars=10), corpus_sha256="b" * 64,
                      generate=generate, writer=(_Model(), tokenizer))
     assert stops == [[1]]
+
+
+# ------------------------------------------------------------ pairs carrying the writer's JSON
+
+#: Three pairs from the two-domain walkthrough's Darwin supplement (Qwen3-0.6B writer,
+#: ~/lfa-verify/models/data/darwin/train.supplement/d88afff85e82/supplement.jsonl, rows 1235,
+#: 1427 and 1430 of 1,549; 12 of its pairs have this shape), and one from an earlier Darwin
+#: supplement whose leak sits in the question: the writer's next field, and the next object,
+#: parsed into this one.
+LEAKED = [
+    {"question": "What is the relationship between larger groups and their descendants?",
+     "answer": "Larger groups tend to conquer smaller ones, reducing their numbers and leading to "
+               "fewer variations and improvements. This process results in a decrease in the "
+               "number of descendants.\", \"answer\": \"..."},
+    {"question": "What is the relationship between the principle of natural selection and the "
+                 "architectural powers of the hive-bee?",
+     "answer": "The principle of gradation, which states that organisms evolve through "
+               "successive, slight modifications, explains how the hive-bee's architectural "
+               "powers develop. This principle shows how complex structures can emerge from "
+               "simpler ones.\", \"answer\": \"..."},
+    {"question": "How do the crossed offspring of acknowledged varieties behave in terms of "
+                 "resemblance?",
+     "answer": "The crossed offspring of acknowledged varieties follow the same complex laws in "
+               "their resemblance to their parents, showing how genetic inheritance and selection "
+               "influence their traits over time.\", \"answer\": \"..."},
+    {"question": "Why does the passage mention the 'Himalaya' glaciers?', \"answer\": \"The "
+                 "passage notes that Himalaya's glaciers are crucial for its flora and fauna, "
+                 "reflecting the region's climatic and geological importance.\"}, {\"question\": "
+                 "\"What is the role of 'Hewitt' in the passage?",
+     "answer": "Hewitt, Mr., discusses the sterility of first crosses in plant populations, "
+               "emphasizing their impact on genetic diversity."},
+]
+
+#: Pairs a domain can carry legitimately: quotations, braces in code and recipes, a JSON
+#: example with other field names, and the words "question" and "answer" in quotes.
+CLEAN = [
+    {"question": "What does Mr. C. Noble say of his hybrid stocks?",
+     "answer": 'He writes that the hybrids "seed as freely as it is possible to imagine", which '
+               "the passage takes as evidence of their fertility."},
+    {"question": "How is a Python dictionary written?",
+     "answer": 'With braces around key-value pairs, as in {"name": "Ada", "year": 1843}; the '
+               "keys are usually strings."},
+    {"question": "What does the recipe for {Seed Cake} ask for?",
+     "answer": "A pound of flour, {half a pound} of butter and an ounce of caraway seeds, beaten "
+               "together for an hour."},
+    {"question": 'Why does the author put the word "answer" in quotes?',
+     "answer": 'Because the "answer" given by the critics was, in the author\'s view, no answer '
+               'at all, and a "question" left open is better than one closed falsely.'},
+    {"question": "What JSON does the API return?",
+     "answer": 'An object such as {"status": "ok", "items": []}, with the items listed in the '
+               "order they were created."},
+]
+
+
+@pytest.mark.parametrize("pair", LEAKED, ids=["darwin-1235", "darwin-1427", "darwin-1430",
+                                              "leak-in-the-question"])
+def test_a_pair_carrying_the_writers_json_syntax_is_caught(pair):
+    from lfa.selfgen.supplement import leaks_json
+    assert leaks_json(pair)
+
+
+@pytest.mark.parametrize("pair", CLEAN, ids=["quotation", "code-braces", "recipe-braces",
+                                             "quoted-field-words", "other-json"])
+def test_braces_and_quotes_alone_are_ordinary_text(pair):
+    from lfa.selfgen.supplement import leaks_json
+    assert not leaks_json(pair)
+
+
+def _as_writer_output(pairs):
+    """A writer's JSON array whose parse gives back exactly ``pairs``."""
+    return "[" + ", ".join('{"question": "%s", "answer": "%s"}' % (p["question"], p["answer"])
+                           for p in pairs) + "]<|im_end|>"
+
+
+def test_leaked_pairs_are_dropped_and_counted(tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr("lfa.selfgen.supplement.checkpoint_sha256", lambda m: "a" * 64)
+    # The second passage repeats a leaked pair: counted as leaked, not as a duplicate.
+    outputs = iter([_as_writer_output(LEAKED[:3] + CLEAN[:2]),
+                    _as_writer_output([LEAKED[0]] + CLEAN[2:])])
+
+    def generate(model, tokenizer, prompts, **kwargs):
+        return [next(outputs) for _ in prompts]
+
+    assert parse_qa_pairs(_as_writer_output(LEAKED[:3])) == LEAKED[:3]   # as the writer's were
+    with caplog.at_level("INFO", logger="lfa.selfgen.supplement"):
+        manifest = write_supplement("stub", ["one " * 60, "two " * 60], tmp_path / "s.jsonl",
+                                    domain_description="d",
+                                    options=SupplementOptions(min_passage_chars=10),
+                                    corpus_sha256="b" * 64, generate=generate,
+                                    writer=(_Model(), _Tok()))
+
+    rows = [json.loads(l) for l in (tmp_path / "s.jsonl").read_text().splitlines()]
+    assert [r["prompt"] for r in rows] == [p["question"] for p in CLEAN]
+    assert manifest["rejected"] == {"unparseable_passage": 0, "leaked_json": 4, "short_answer": 0,
+                                    "long_answer": 0, "duplicate": 0}
+    assert manifest["n_pairs"] == 5
+    [line] = [r.getMessage() for r in caplog.records
+              if r.getMessage().startswith("supplement: 5 pairs from 2 passages written to ")]
+    assert line.endswith("; rejected: unparseable_passage 0, leaked_json 4, short_answer 0, "
+                         "long_answer 0, duplicate 0")
+    assert "Himalaya" not in caplog.text and "descendants" not in caplog.text   # no samples
+
+
+def test_the_manifest_records_the_filters_it_was_written_under(tmp_path, monkeypatch):
+    from lfa.selfgen.supplement import REJECTION_REASONS, filters_sha256
+    monkeypatch.setattr("lfa.selfgen.supplement.checkpoint_sha256", lambda m: "a" * 64)
+
+    def generate(model, tokenizer, prompts, **kwargs):
+        return [_as_writer_output(CLEAN)] * len(prompts)
+
+    manifest = write_supplement("stub", ["text " * 100], tmp_path / "s.jsonl",
+                                domain_description="d",
+                                options=SupplementOptions(min_passage_chars=10),
+                                corpus_sha256="b" * 64, generate=generate,
+                                writer=(_Model(), _Tok()))
+    assert manifest["filters_sha256"] == filters_sha256() and len(filters_sha256()) == 64
+    assert tuple(manifest["rejected"]) == REJECTION_REASONS
+    assert "leaked_json" in REJECTION_REASONS

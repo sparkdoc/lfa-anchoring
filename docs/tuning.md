@@ -92,6 +92,8 @@ lfa evaluate --workspace runs/world_history
 That is the Wells book's 8-epoch run. The domain number should fall and WikiText-2 should hold. A
 WikiText-2 number *below* the base model's, as here, is not by itself evidence that anything was
 kept ([faq.md](faq.md#wikitext-2-perplexity-came-out-below-the-base-models-is-that-a-win)).
+Beneath the table, `evaluate` repeats the run's own held-out verdict from step 2
+(`This run's held-out curve: …`, with the same advice), read from the run's `history.json` entry.
 
 **The control.** `lfa evaluate --compare-unanchored` trains the same stage again with λ = μ = 0 and
 adds it as a third column. It trains at the anchored run's epochs, and without the anchor a corpus

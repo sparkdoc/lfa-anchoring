@@ -4,9 +4,10 @@ found is the right one.
 A supplement is the entry model's own question-and-answer pairs over the training side of a
 corpus; its measured effect is on whether the domain's knowledge can be reached when the model is
 asked about it, not on protecting skills. It is keyed on the training side's hash, the writer
-checkpoint's hash, the template's hash and the domain description, so it is reused only when all
-four match. A supplement prepared with the data (``lfa prepare-domain --supplement --model ...``)
-sits beside the corpus; one written by ``train`` sits in the workspace; ``train`` looks in both.
+checkpoint's hash, the template's hash, the pair filters' hash and the domain description, so it
+is reused only when all five match. A supplement prepared with the data (``lfa prepare-domain
+--supplement --model ...``) sits beside the corpus; one written by ``train`` sits in the
+workspace; ``train`` looks in both.
 """
 
 from __future__ import annotations
@@ -21,7 +22,8 @@ from .corpus import min_documents_for_held_out, split_documents
 from .prepare_domain import SUGGESTED_SPLIT_CHARS
 from .recipe import Recipe
 from .selfgen.generate import checkpoint_sha256, sha256_text
-from .selfgen.supplement import SupplementOptions, template_sha256, write_supplement
+from .selfgen.supplement import (SupplementOptions, filters_sha256, template_sha256,
+                                 write_supplement)
 
 logger = logging.getLogger(__name__)
 
@@ -101,11 +103,13 @@ def supplement_for(corpus_path: Path, writer_id: str, recipe: Recipe, *, write_r
 
     Each of ``search_roots`` is looked in, in order, for ``<corpus hash[:12]>/supplement.jsonl``
     whose manifest matches the training side's hash, the writer checkpoint's hash, the template's
-    hash and the domain description (explicit, or derived from the corpus path) -- so a different
-    writer or a different ``domain_description`` writes a new one rather than being silently
-    ignored. When none matches (or ``force``), the writer writes into ``write_root``. The training
-    side is the recipe's: its held-out fraction and seed decide which documents the pairs may
-    come from, so held-out text never reaches the supplement.
+    hash, the pair filters' hash (:func:`lfa.selfgen.supplement.filters_sha256`) and the domain
+    description (explicit, or derived from the corpus path) -- so a different writer, a different
+    ``domain_description``, or a supplement written before a filter changed what is kept writes a
+    new one rather than being silently ignored or reused. When none matches (or ``force``), the
+    writer writes into ``write_root``. The training side is the recipe's: its held-out fraction
+    and seed decide which documents the pairs may come from, so held-out text never reaches the
+    supplement.
 
     Every route to the writer comes through here -- ``lfa train``, ``lfa prepare-supplement``,
     ``lfa prepare-domain --supplement`` and their Python calls -- so this is where a corpus with
@@ -136,6 +140,7 @@ def supplement_for(corpus_path: Path, writer_id: str, recipe: Recipe, *, write_r
                 if (manifest.get("corpus_sha256") == corpus_hash
                         and manifest.get("writer_sha256") == writer_hash
                         and manifest.get("template_sha256") == template_sha256()
+                        and manifest.get("filters_sha256") == filters_sha256()
                         and manifest.get("domain_description") == description):
                     logger.info("Supplement reused: %s", out)
                     return out, manifest

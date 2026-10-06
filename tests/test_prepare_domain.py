@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 from pathlib import Path
 
 import pytest
@@ -28,6 +29,7 @@ from lfa.prepare_domain import (
     OVERLAP_MIN_SENTENCE_CHARS,
     REPREPARATION_SHARE,
     SUGGESTED_SPLIT_CHARS,
+    clean_text,
     held_out_shortfall,
     prepare_domain,
     split_into_documents,
@@ -525,3 +527,121 @@ def test_a_rerun_against_an_earlier_small_split_is_refused(tmp_path, rerun_chars
     share = int(re.search(r": (\d+)% of its sentence text", str(refusal.value)).group(1))
     assert share >= 98
     assert sorted(out.iterdir()) == sorted(first)
+
+
+# ------------------------------------------------------- the cleaning every text shares
+
+@pytest.mark.parametrize("raw, cleaned", [
+    ("one\r\ntwo\r\n\r\nthree", "one two\n\nthree"),                  # CRLF: a line end
+    ("one\rtwo\r\rthree", "one two\n\nthree"),                        # a lone CR: a line end
+], ids=["crlf", "lone-cr"])
+def test_line_ends_become_newlines(raw, cleaned):
+    assert clean_text(raw) == cleaned
+
+
+def test_a_decomposed_accent_is_composed():
+    decomposed = "Cafe\u0301 and nai\u0308ve"
+    assert clean_text(decomposed) == "Caf\u00e9 and na\u00efve"
+    assert clean_text(decomposed) == clean_text("Caf\u00e9 and na\u00efve")
+
+
+@pytest.mark.parametrize("invisible", ["\ufeff", "\u200b", "\u200c", "\u200d", "\u2060", "\u00ad",
+                                       "\x00", "\x07", "\x1b", "\x7f", "\x9f"])
+def test_invisible_and_control_characters_are_removed(invisible):
+    assert clean_text(f"{invisible}hyphen{invisible}ation") == "hyphenation"
+
+
+@pytest.mark.parametrize("space", ["\t", "\u00a0", "\u1680", "\u2000", "\u2002", "\u2003",
+                                   "\u2009", "\u200a", "\u202f", "\u205f", "\u3000"])
+def test_space_variants_become_one_plain_space(space):
+    assert clean_text(f"one{space}two{space}{space} three") == "one two three"
+
+
+@pytest.mark.parametrize("brk", ["\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028",
+                                 "\u2029"])
+def test_a_line_breaking_control_keeps_the_words_apart(brk):
+    """A form feed (a page end), a vertical tab, NEL, a separator: a line break, not nothing."""
+    assert clean_text(f"page{brk}break") == "page break"
+    assert clean_text(f"one paragraph.{brk}{brk}Another.") == "one paragraph.\n\nAnother."
+
+
+def test_newlines_survive_as_paragraph_breaks():
+    """Only the newline is spared of the control characters: paragraphs stay paragraphs."""
+    text = "first paragraph\n\nsecond paragraph"
+    assert clean_text(text) == text
+
+
+def test_ordinary_text_is_unchanged_byte_for_byte():
+    """Prose already in its final form -- accents composed, curly quotes, dashes, symbols, other
+    scripts -- passes through exactly."""
+    text = ("Darwin\u2019s \u201cOrigin\u201d \u2014 1859, \u00a75: na\u00efve caf\u00e9 r\u00f4le "
+            "\u00b1 3 \u00b0C; \u00fcber \u0141\u00f3d\u017a, \u65e5\u672c\u8a9e, \u0420\u043e"
+            "\u0441\u0441\u0438\u044f, \u05e2\u05d1\u05e8\u05d9\u05ea, emoji \U0001f600.\n\n"
+            "# A heading\n\n- a list item\n- another item")
+    assert clean_text(text) == text
+    assert clean_text(text).encode("utf-8") == text.encode("utf-8")
+
+
+@pytest.mark.parametrize("raw", [
+    "\ufeffA title\r\n\r\nCafe\u0301\u00a0text with soft\u00adhy\u00adphens\tand\u200b more.\r\n",
+    "e\u200d\u0301 a letter kept apart from its accent by a joiner",   # composed only after removal
+    "\u2001\u3000  spaced\u2003out \u00a0 text\x0b\x0c\r\r\r\rend",
+    "e<sup>\u0301</sup> and e<span>\u0308</span>: markup between a letter and its accent",
+    "page\x0cbreak\x0b and\u2028more",
+    "# Title\nA sentence with a <sup>3</sup> footnote and a [link](https://example.com).\n"
+    "Continued.\n\n![alt](figure.png)\n\n- a list item\n- another item\n",
+])
+def test_cleaning_is_idempotent(raw):
+    once = clean_text(raw)
+    assert clean_text(once) == once
+
+
+def test_an_accent_split_from_its_letter_by_markup_is_composed():
+    assert clean_text("e<sup>\u0301</sup>") == "\u00e9"
+
+
+def test_a_file_with_every_artifact_prepares_to_clean_text(tmp_path):
+    """End to end: CRLF, a BOM, no-break spaces, soft hyphens and decomposed accents, as a file
+    from a Windows editor or a PDF converter carries them."""
+    body = "\r\n\r\n".join(
+        f"Paragraph {i}: the cafe\u0301 on the\u00a0corner was a fa\u00advour\u00adite of the "
+        f"nai\u0308ve\u00a0students, said the narrator, and so it remained for {i} years."
+        for i in range(40))
+    raw = tmp_path / "windows.txt"
+    raw.write_bytes(("\ufeff" + body + "\r\n").encode("utf-8"))
+
+    [written] = prepare_domain(raw, tmp_path / "out")
+
+    text = written.read_text(encoding="utf-8")
+    assert text.startswith("Paragraph 0: the caf\u00e9 on the corner was a favourite of the ")
+    for absent in ("\r", "\ufeff", "\u00a0", "\u00ad", "\u0301", "\u0308"):
+        assert absent not in text
+    assert text.count("\n\n") == 39                                   # paragraphs kept
+    assert unicodedata.is_normalized("NFC", text)
+
+
+def test_an_nfc_equivalent_text_counts_as_the_same_text(tmp_path):
+    """The re-preparation check compares cleaned text, so the same book with its accents
+    decomposed -- and the same book with no-break spaces and soft hyphens -- is the same book."""
+    paragraphs = [paragraph(i).replace("words", "caf\u00e9 words") for i in range(30)]
+    out = tmp_path / "out"
+    prepare_domain(write(tmp_path / "composed.txt", paragraphs), out)
+    (tmp_path / "again").mkdir()
+    variant = [p.replace("caf\u00e9", "cafe\u0301").replace(" ", "\u00a0", 3)
+               .replace("Sentence", "Sen\u00adtence") for p in paragraphs]
+    with pytest.raises(ValueError, match="100% of its sentence text"):
+        prepare_domain(write(tmp_path / "again" / "decomposed.txt", variant), out,
+                       split_chars=3500)
+
+
+def test_a_file_already_in_out_is_compared_in_the_same_normal_form(tmp_path):
+    """A file put into --out by hand, never cleaned, still counts: the check normalises both
+    sides."""
+    paragraphs = [paragraph(i).replace("words", "caf\u00e9 words") for i in range(30)]
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "by_hand.txt").write_text(
+        "\r\n\r\n".join(p.replace("caf\u00e9", "cafe\u0301") for p in paragraphs),
+        encoding="utf-8")
+    with pytest.raises(ValueError, match="100% of its sentence text"):
+        prepare_domain(write(tmp_path / "composed.txt", paragraphs), out)

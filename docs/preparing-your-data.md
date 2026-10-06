@@ -22,11 +22,24 @@ document into `--out`:
 A missing extra is refused, naming the file and the extra, rather than skipped: a corpus is never
 quietly half-prepared.
 
-**Cleaning.** Every document goes through the same pass: the markup the extractors leave behind
-(footnote wrappers, link targets, image references, stray tags) is removed and mid-paragraph line
-breaks are unwrapped, so a paragraph is one line. A document that cleans down to less than
-`--min-length` characters (default 1000) is dropped — a page that extracted to a nav bar and a
-cookie notice is not training data.
+**Cleaning.** Every document goes through the same pass, and it is deliberately minimal: only
+what every text shares, whatever its source.
+
+* Line ends: CRLF, a lone CR and the other line breaks (a form feed at a page end, a vertical tab,
+  a Unicode line or paragraph separator) become a newline.
+* Invisible characters removed: the byte-order mark, zero-width spaces and joiners, soft hyphens,
+  and every other control character but the newline.
+* Space variants — a tab, a no-break space, the other Unicode spaces — become a plain space, and a
+  run of spaces becomes one.
+* Last, the characters are put in Unicode normal form NFC, so an accent typed as a letter plus a
+  combining mark and the same accent as one character are the same text.
+* Markup the extractors leave behind (footnote wrappers, link targets, image references, stray
+  tags) is removed, and mid-paragraph line breaks are unwrapped, so a paragraph is one line.
+
+What it does not touch is content: a licence, a table of contents, an index, page headers, a
+transcriber's note are text like any other, and cutting them is yours to do (below). A document
+that cleans down to less than `--min-length` characters (default 1000) is dropped — a page that
+extracted to a nav bar and a cookie notice is not training data.
 
 **One long file — a book, a report — split it.** A file is one document, and training holds out
 whole documents (a tenth of them, at the bundled recipes' `val_fraction` 0.1), so a corpus needs at
@@ -58,9 +71,9 @@ and `train`, `prepare-supplement` and their Python counterparts refuse it before
 make enough documents however they extract, `prepare-domain --supplement` refuses before any of
 them is read.
 
-**Strip the boilerplate first.** Cleaning removes markup, not content: a Project Gutenberg
-licence, a table of contents or an index is trained on like the text around it, and the supplement
-writes questions about it. Cut them out of the file before preparing it.
+**Strip the boilerplate first.** A Project Gutenberg licence, a table of contents or an index
+left in the file is trained on like the text around it, and the supplement writes questions about
+it. Cut them out of the file before preparing it.
 
 **The layout.** The output is a flat directory of `.txt` files, and the loader reads each file as
 one document. A directory of `.txt` or `.md` files you already have is a corpus as it stands.
@@ -176,11 +189,18 @@ command re-run with `--split-chars 3500` starts clean.
 the order they were written. The manifest says who wrote it and from what: the writer's model id
 and checkpoint sha256, the training side's sha256, the domain description and the template it was
 rendered into, the decoding settings, and how many passages and pairs there were, with what it
-rejected counted by reason (an answer too short or too long, a duplicate, an unparseable passage).
+rejected counted by reason: a passage whose output held no parseable pair (`unparseable_passage`),
+a pair whose question or answer carries the writer's own JSON field syntax — `"answer": …` or
+`{"question"` inside the text, where the writer botched an object's quoting and the next field ran
+into this one (`leaked_json`; braces and quotes alone are kept) — an answer too short or too long
+(`short_answer`, `long_answer`), and a question already written (`duplicate`). The same counts end
+the log of a write; no pair is printed.
 
 **When `train` reuses it.** `train` looks for a supplement first in the workspace's
-`supplements/`, then beside the corpus, and reuses one only when four things match: the training
-side's hash, the writer checkpoint's hash, the template's hash and the domain description. So a
+`supplements/`, then beside the corpus, and reuses one only when five things match: the training
+side's hash, the writer checkpoint's hash, the template's hash, the pair filters' hash (which
+reasons drop a pair, and how leaked JSON is matched) and the domain description. A supplement
+written under other filters is written again rather than trained on. So a
 supplement prepared with the model a workspace starts from is used by that workspace's first stage
 as it is. A chain's later stage starts from a fused model, a different writer, so it writes its
 own into the workspace rather than training on pairs the base model wrote.

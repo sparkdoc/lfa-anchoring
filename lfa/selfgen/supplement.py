@@ -32,9 +32,10 @@ from .generate import chat_turn_end, checkpoint_sha256, generate_texts, load_wri
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["GENERATE_TEMPLATE", "SupplementOptions", "NoPairsWritten", "render_template",
-           "template_sha256", "chunk_document", "chunk_passages", "parse_assistant_turn",
-           "parse_qa_pairs", "write_supplement"]
+__all__ = ["GENERATE_TEMPLATE", "REJECTION_REASONS", "SupplementOptions", "NoPairsWritten",
+           "render_template", "template_sha256", "filters_sha256", "leaks_json",
+           "chunk_document", "chunk_passages", "parse_assistant_turn", "parse_qa_pairs",
+           "write_supplement"]
 
 # The research code's template, made domain-neutral as recorded in the module docstring.
 GENERATE_TEMPLATE = """You are creating training data that teaches a small language model to \
@@ -59,6 +60,18 @@ Passage:
 \"\"\"
 
 Return ONLY a JSON array of objects: [{{"question": "...", "answer": "..."}}, ...]"""
+
+#: The writer's own JSON field syntax -- ``"question":`` / ``"answer":``, or an object opening
+#: on one of those names -- inside a parsed question or answer. It is there when the writer
+#: botched an object's quoting and the parser's field ran on into the next field or object
+#: (``... the answer.", "answer": "..."``). Field-name syntax only: a brace or a quote alone is
+#: ordinary text (a recipe, a code snippet, a quotation), and is kept.
+_LEAKED_JSON = re.compile(r'"(?:question|answer)"\s*:|\{\s*"(?:question|answer)"')
+
+#: Every reason a pair, or a whole passage's output, is dropped; the manifest's ``rejected``
+#: counts each.
+REJECTION_REASONS = ("unparseable_passage", "leaked_json", "short_answer", "long_answer",
+                     "duplicate")
 
 _OBJ = re.compile(r'\{\s*"question"\s*:\s*"(.*?)"\s*,\s*"answer"\s*:\s*"(.*?)"\s*\}', re.S)
 _MARK = re.compile(r'(?:^|\n)\s*(?:Question|Q)\s*[:.\)]\s*(.+?)\n\s*(?:Answer|A)\s*[:.\)]\s*(.+?)'
@@ -91,6 +104,24 @@ def render_template(domain_description: str, n: int, passage: str) -> str:
 
 def template_sha256() -> str:
     return hashlib.sha256(GENERATE_TEMPLATE.encode("utf-8")).hexdigest()
+
+
+def filters_sha256() -> str:
+    """The hash of what decides which parsed pairs are kept: the rejection reasons, in the order
+    they are tried, and the leaked-JSON pattern.
+
+    Recorded in the manifest and compared before a supplement is reused
+    (:func:`lfa.supplements.supplement_for`), so a supplement written under other filters --
+    one that kept pairs these drop -- is written again rather than trained on. The lengths
+    are :class:`SupplementOptions` fields, recorded beside it.
+    """
+    return hashlib.sha256(json.dumps({"reasons": REJECTION_REASONS,
+                                      "leaked_json": _LEAKED_JSON.pattern}).encode()).hexdigest()
+
+
+def leaks_json(pair: dict) -> bool:
+    """Whether a parsed pair's question or answer carries the writer's JSON field syntax."""
+    return bool(_LEAKED_JSON.search(pair["question"]) or _LEAKED_JSON.search(pair["answer"]))
 
 
 def chunk_document(text: str, target_chars: int) -> list[str]:
@@ -175,8 +206,7 @@ def write_supplement(model_id: str, documents: list[str], out_path, *, domain_de
         if isinstance(end_id, int) and end_id >= 0 and end_id not in stop:
             stop.append(end_id)
 
-    rows, rejected, seen = [], {"short_answer": 0, "long_answer": 0, "duplicate": 0,
-                                "unparseable_passage": 0}, set()
+    rows, rejected, seen = [], dict.fromkeys(REJECTION_REASONS, 0), set()
     for batch_index in range(0, len(passages), options.batch_size):
         batch = passages[batch_index:batch_index + options.batch_size]
         prompts = [_prompt_for(tokenizer, passage, options.pairs_per_passage, domain_description,
@@ -190,6 +220,10 @@ def write_supplement(model_id: str, documents: list[str], out_path, *, domain_de
             if not pairs:
                 rejected["unparseable_passage"] += 1
             for pair in pairs:
+                # First: a leaked field's text is the writer's syntax, whatever its length.
+                if leaks_json(pair):
+                    rejected["leaked_json"] += 1
+                    continue
                 length = len(pair["answer"])
                 if length < options.min_answer_chars:
                     rejected["short_answer"] += 1
@@ -224,6 +258,7 @@ def write_supplement(model_id: str, documents: list[str], out_path, *, domain_de
         "domain_description": domain_description,
         "template": render_template(domain_description, options.pairs_per_passage, "{passage}"),
         "template_sha256": template_sha256(),
+        "filters_sha256": filters_sha256(),
         "chat_template_applied": chat_template,
         "options": asdict(options),
         "decoding": {"temperature": options.temperature, "top_p": options.top_p, "top_k": 0,
@@ -235,4 +270,7 @@ def write_supplement(model_id: str, documents: list[str], out_path, *, domain_de
         "lfa_version": __version__,
     }
     Path(str(out_path) + ".manifest.json").write_text(json.dumps(manifest, indent=2))
+    logger.info("supplement: %d pairs from %d passages written to %s; rejected: %s", len(rows),
+                len(passages), out_path,
+                ", ".join(f"{reason} {count}" for reason, count in rejected.items()))
     return manifest

@@ -178,8 +178,8 @@ MB. An 8 GB card has not been measured at the full frame. A supplement costs one
 4,000-character passage of the training side (the default batch is 16 passages), once per corpus and
 writer: it is cached under `<workspace>/supplements/<corpus sha256[:12]>/` (or beside the corpus, in
 `<corpus>.supplement/<corpus sha256[:12]>/`, when it was prepared with the data) and reused while
-the training side's hash, the writer checkpoint's hash, the template's hash and the domain
-description all match. `lfa prepare-supplement --force` rewrites it.
+the training side's hash, the writer checkpoint's hash, the template's hash, the pair filters' hash
+and the domain description all match. `lfa prepare-supplement --force` rewrites it.
 
 ## Why does the chunk count change from epoch to epoch?
 

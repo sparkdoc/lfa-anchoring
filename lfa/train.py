@@ -71,6 +71,7 @@ __all__ = [
     "OVERTRAINING_RATIO",
     "HeldOutSummary",
     "held_out_summary",
+    "held_out_messages",
     "train",
 ]
 
@@ -592,77 +593,82 @@ _LAST_EPOCH_BY_DESIGN = (
 )
 
 
-def _log_held_out_summary(summary: HeldOutSummary, run_logger: logging.Logger) -> None:
-    """Say, at the end of every run, what its held-out curve says about its dose.
+def held_out_messages(summary: HeldOutSummary) -> list[tuple[int, str]]:
+    """What a run's held-out curve says about its dose, as ``[(logging level, sentence), ...]``.
 
-    One summary line always, then one line by verdict: a WARNING when the run diverged, or when
-    the curve turned and ended at least :data:`OVERTRAINING_RATIO` above its minimum, otherwise
-    INFO. The messages carry no
-    measured evidence -- the docs do (docs/recipes.md, "Run length and checkpointing").
+    The first message is the curve itself, worded to follow a label (the trainer logs it after
+    ``"Held-out perplexity: "``, ``evaluate`` restates it after ``"This run's held-out curve: "``);
+    the rest is the advice for its verdict: a WARNING when the run diverged, or when the curve
+    turned and ended at least :data:`OVERTRAINING_RATIO` above its minimum, otherwise INFO. One
+    function builds the words so the train log and ``evaluate`` can never say two things about
+    the same run. The messages carry no measured evidence -- the docs do (docs/recipes.md, "Run
+    length and checkpointing").
     """
     if summary.verdict == "no_curve":
-        run_logger.info(
-            "Held-out perplexity: none was measured (val_fraction is 0, or the corpus had too "
-            "few documents to hold any out), so this run had nothing to choose its dose by. To "
-            "get a curve, keep the recipe's val_fraction above 0 and give the corpus more than "
-            f"one document -- split a single long file with `lfa prepare-domain --split-chars "
-            f"{SUGGESTED_SPLIT_CHARS}` into a fresh directory."
-        )
-        return
+        return [(logging.INFO,
+                 "none was measured (val_fraction is 0, or the corpus had too few documents to "
+                 "hold any out), so this run had nothing to choose its dose by. To get a curve, "
+                 "keep the recipe's val_fraction above 0 and give the corpus more than one "
+                 "document -- split a single long file with `lfa prepare-domain --split-chars "
+                 f"{SUGGESTED_SPLIT_CHARS}` into a fresh directory.")]
 
     if summary.verdict == "diverged":
         if summary.best_epoch is None:
-            run_logger.info("Held-out perplexity: no finite value at any epoch up to epoch %d.",
-                            summary.final_epoch)
+            curve = f"no finite value at any epoch up to epoch {summary.final_epoch}."
             retry = "Re-run with a stronger anchor or a lower learning rate."
         else:
-            run_logger.info("Held-out perplexity: lowest %.3f at epoch %d of %d; final not "
-                            "finite.", summary.best, summary.best_epoch, summary.final_epoch)
+            curve = (f"lowest {summary.best:.3f} at epoch {summary.best_epoch} of "
+                     f"{summary.final_epoch}; final not finite.")
             retry = (f"Re-run with --epochs {summary.best_epoch} (where it was lowest), or with "
                      f"a stronger anchor or a lower learning rate.")
-        run_logger.warning(
-            "The held-out perplexity at the last epoch (%d) was not finite: this run diverged, "
-            "and its final_model should not be shipped. %s", summary.final_epoch, retry,
-        )
-        return
+        return [(logging.INFO, curve),
+                (logging.WARNING,
+                 f"The held-out perplexity at the last epoch ({summary.final_epoch}) was not "
+                 f"finite: this run diverged, and its final_model should not be shipped. {retry}")]
 
-    run_logger.info("Held-out perplexity: lowest %.3f at epoch %d of %d; final %.3f "
-                    "(%s over the lowest).", summary.best, summary.best_epoch,
-                    summary.final_epoch, summary.final, _format_gap(summary.gap))
+    curve = (f"lowest {summary.best:.3f} at epoch {summary.best_epoch} of {summary.final_epoch}; "
+             f"final {summary.final:.3f} ({_format_gap(summary.gap)} over the lowest).")
 
     if summary.verdict == "still_falling":
-        run_logger.info(
-            "The held-out curve had not turned by the last epoch, so more epochs may lower it "
-            "further: the dose can be raised with a re-run at a larger --epochs."
-        )
-        return
+        return [(logging.INFO, curve),
+                (logging.INFO,
+                 "The held-out curve had not turned by the last epoch, so more epochs may lower "
+                 "it further: the dose can be raised with a re-run at a larger --epochs.")]
 
     advice = _LAST_EPOCH_BY_DESIGN.format(epoch=summary.best_epoch)
     if summary.final >= summary.best * OVERTRAINING_RATIO:
-        run_logger.warning(
-            "This run trained past its own optimum: held-out perplexity was lowest at epoch %d "
-            "(%.3f) and ended at %.3f, epoch %d. How many epochs a corpus carries depends on its "
-            "size and on lambda: a smaller corpus, or a weaker anchor, reaches its minimum "
-            "sooner. To ship the better model, re-run with --epochs %d. %s",
-            summary.best_epoch, summary.best, summary.final, summary.final_epoch,
-            summary.best_epoch, advice,
-        )
-        return
+        return [(logging.INFO, curve),
+                (logging.WARNING,
+                 f"This run trained past its own optimum: held-out perplexity was lowest at "
+                 f"epoch {summary.best_epoch} ({summary.best:.3f}) and ended at "
+                 f"{summary.final:.3f}, epoch {summary.final_epoch}. How many epochs a corpus "
+                 f"carries depends on its size and on lambda: a smaller corpus, or a weaker "
+                 f"anchor, reaches its minimum sooner. To ship the better model, re-run with "
+                 f"--epochs {summary.best_epoch}. {advice}")]
 
-    # Decided on the rounded figure the summary line printed, so a gap shown as "+1.0 %" is
+    # Decided on the rounded figure the curve sentence printed, so a gap shown as "+1.0 %" is
     # never called "under 1 %".
     if round(summary.gap * 100, 1) < OPTIONAL_RERUN_GAP * 100:
-        run_logger.info(
-            "The held-out curve turned at epoch %d but ended under 1 %% above its lowest, so a "
-            "re-run with --epochs %d is optional.", summary.best_epoch, summary.best_epoch,
-        )
-        return
+        return [(logging.INFO, curve),
+                (logging.INFO,
+                 f"The held-out curve turned at epoch {summary.best_epoch} but ended under 1 % "
+                 f"above its lowest, so a re-run with --epochs {summary.best_epoch} is "
+                 f"optional.")]
 
-    run_logger.info(
-        "The held-out curve turned at epoch %d: a re-run with --epochs %d is likely to ship a "
-        "better model on this domain than this one. %s",
-        summary.best_epoch, summary.best_epoch, advice,
-    )
+    return [(logging.INFO, curve),
+            (logging.INFO,
+             f"The held-out curve turned at epoch {summary.best_epoch}: a re-run with --epochs "
+             f"{summary.best_epoch} is likely to ship a better model on this domain than this "
+             f"one. {advice}")]
+
+
+def _log_held_out_summary(summary: HeldOutSummary, run_logger: logging.Logger) -> None:
+    """Say, at the end of every run, what its held-out curve says about its dose
+    (:func:`held_out_messages`, the curve labelled ``"Held-out perplexity: "``)."""
+    (level, curve), *advice = held_out_messages(summary)
+    run_logger.log(level, "Held-out perplexity: %s", curve)
+    for level, message in advice:
+        run_logger.log(level, "%s", message)
 
 
 def _format_gap(gap: float) -> str:

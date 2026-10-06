@@ -75,7 +75,7 @@ from .recipe import BUNDLED_DIR, Recipe, check_anchor_weight
 from .sampler import Sampler
 from .selfgen.artifact_corpus import SelfGenOptions
 from .supplements import beside_corpus, supplement_for
-from .train import OPTIONAL_RERUN_GAP, HeldOutSummary, held_out_summary
+from .train import OPTIONAL_RERUN_GAP, HeldOutSummary, held_out_messages, held_out_summary
 from .train import train as run_training
 
 logger = logging.getLogger("lfa.workspace")
@@ -283,6 +283,29 @@ def _anchor_in_words(entry: dict) -> str:
     mu_source = "set by --mu" if entry.get("mu_override") is not None else "the recipe's"
     mu = entry.get("mu_applied", entry["recipe"]["mu"])
     return f"{lam} ({lam_source}), μ {mu:g} ({mu_source}), {entry['epochs']} epochs"
+
+
+def _held_out_line(entry: dict) -> str | None:
+    """The run's own held-out verdict, restated beneath ``evaluate``'s table.
+
+    The words are :func:`lfa.train.held_out_messages` of the summary the stage recorded
+    (``entry["held_out"]``), so the line says what the train log said at the end of the run --
+    the curve, then the advice for its verdict -- where a user reading only the table would see
+    it -- one paragraph, wrapped like the control's note (:func:`_wrap_note`). ``None`` when the
+    entry records no summary.
+    """
+    record = entry.get("held_out")
+    if record is None:
+        return None
+    (_, curve), *advice = held_out_messages(HeldOutSummary(**record))
+    return _wrap_note(" ".join([f"This run's held-out curve: {curve}",
+                                *(message for _, message in advice)]))
+
+
+def _wrap_note(prose: str) -> str:
+    """A paragraph beneath ``evaluate``'s table, wrapped at 100 columns. Never at a hyphen, so a
+    flag such as ``--epochs 8`` stays whole on its line."""
+    return "\n".join(textwrap.wrap(prose, width=100, break_on_hyphens=False))
 
 
 def control_at_epoch_commands(workspace: "Workspace", entry: dict, epochs: int, *,
@@ -1200,8 +1223,8 @@ class Workspace:
         Looked for in the workspace's ``supplements/`` first, then beside the corpus (where
         ``lfa prepare-domain --supplement`` and ``lfa prepare-supplement --model`` put one), and
         written into the workspace when neither matches. A match is the training side's corpus
-        hash, the writer checkpoint's hash, the template's hash and the domain description
-        (explicit, or derived from the corpus path), so a different ``domain_description``
+        hash, the writer checkpoint's hash, the template's hash, the pair filters' hash and the
+        domain description (explicit, or derived from the corpus path), so a different ``domain_description``
         rewrites rather than being silently ignored (:func:`lfa.supplements.supplement_for`).
         The writer is the workspace's CURRENT model -- the stage's entry model -- so in a chain
         the fused model writes the next domain's pairs (each stage's pairs come from the model
@@ -1450,8 +1473,10 @@ class Workspace:
             ``{"before": {...}, "after": {...}, "unanchored": {...} | None,
             "unanchored_held_out": {...} | None, "table": str}``, each axis dict keyed
             ``"general"`` and ``"domain"``. ``unanchored_held_out`` is the control's held-out
-            curve read as :func:`lfa.train.held_out_summary` reads it. ``table`` carries the
-            control's dose note beneath it when there is one. The read stage is the latest
+            curve read as :func:`lfa.train.held_out_summary` reads it. ``table`` carries,
+            beneath it, one line restating the run's own held-out verdict as ``train`` gave it
+            (:func:`_held_out_line`; none for a history entry that does not record one), then
+            the control's dose note when there is one. The read stage is the latest
             run in the history -- after a repeat of a stage, its latest run -- and the log names
             its directory, lambda and mu. The numbers are written into that history entry under
             ``"perplexity"`` (and the control's curve under ``"unanchored"``).
@@ -1496,6 +1521,9 @@ class Workspace:
                                    "held_out": control.to_dict()}
 
         table = _table(before, after, unanchored)
+        own_curve = _held_out_line(entry)
+        if own_curve is not None:
+            table += "\n\n" + own_curve
         # A turn under OPTIONAL_RERUN_GAP (a tie included) is no dose worth a second run.
         if (control is not None and control.verdict == "turned"
                 and control.gap >= OPTIONAL_RERUN_GAP):
@@ -1530,8 +1558,7 @@ class Workspace:
             f"workspace and set its `after` column beside this run's. `lfa init` ends with its own "
             f"Next: and Then: suggestions{later}; none of them applies to this lambda-0 control: "
             f"run the `lfa train` and `lfa evaluate` lines below.")
-        return "\n".join([*textwrap.wrap(prose, width=100),
-                          *(f"  {command}" for command in commands)])
+        return "\n".join([_wrap_note(prose), *(f"  {command}" for command in commands)])
 
     def _score(self, base_model, adapter_dir, tokenizer, heldout, n_windows, placement, dtype):
         """One column of the table: general and domain perplexity for one model."""
