@@ -43,6 +43,9 @@ HAVE_BS4 = importlib.util.find_spec("bs4") is not None and importlib.util.find_s
 HAVE_MARKER = importlib.util.find_spec("marker") is not None
 
 PARAGRAPH = "Anchoring prices the function a sub-module computes on the states it actually sees. "
+#: A second text for tests that prepare two files in one call: `prepare_domain` refuses an input
+#: whose sentence text an earlier input already holds (the same text twice in one corpus).
+OTHER_PARAGRAPH = "Training on a new domain moves the model's function on states it rarely visits. "
 
 
 # ==============================================================================================
@@ -58,7 +61,7 @@ def test_prepare_domain_writes_one_txt_per_input(tmp_path):
     src, out = tmp_path / "src", tmp_path / "out"
     src.mkdir()
     _write(src / "a.txt", PARAGRAPH * 20)
-    _write(src / "b.md", "# Heading\n\n" + PARAGRAPH * 20)
+    _write(src / "b.md", "# Heading\n\n" + OTHER_PARAGRAPH * 20)
 
     written = prepare_domain([src], out)
 
@@ -71,7 +74,7 @@ def test_prepare_domain_writes_one_txt_per_input(tmp_path):
 def test_prepare_domain_accepts_explicit_files_and_a_bare_path(tmp_path):
     out = tmp_path / "out"
     a = _write(tmp_path / "a.txt", PARAGRAPH * 20)
-    b = _write(tmp_path / "b.md", PARAGRAPH * 20)
+    b = _write(tmp_path / "b.md", OTHER_PARAGRAPH * 20)
 
     assert len(prepare_domain([a, b], out)) == 2
     assert len(prepare_domain(a, tmp_path / "out2")) == 1
@@ -106,7 +109,7 @@ def test_prepare_domain_combine_writes_one_file(tmp_path):
     src, out = tmp_path / "src", tmp_path / "out"
     src.mkdir()
     _write(src / "a.txt", PARAGRAPH * 20)
-    _write(src / "b.md", PARAGRAPH * 20)
+    _write(src / "b.md", OTHER_PARAGRAPH * 20)
 
     written = prepare_domain([src], out, combine=True)
 
@@ -178,7 +181,7 @@ def test_prepare_domain_recursive_flag(tmp_path):
     src, out = tmp_path / "src", tmp_path / "out"
     (src / "nested").mkdir(parents=True)
     _write(src / "top.txt", PARAGRAPH * 20)
-    _write(src / "nested" / "deep.txt", PARAGRAPH * 20)
+    _write(src / "nested" / "deep.txt", OTHER_PARAGRAPH * 20)
 
     assert len(prepare_domain([src], out, recursive=True)) == 2
     assert [p.name for p in prepare_domain([src], tmp_path / "out2", recursive=False)] == ["top.txt"]
@@ -188,7 +191,7 @@ def test_prepare_domain_disambiguates_duplicate_stems(tmp_path):
     src, out = tmp_path / "src", tmp_path / "out"
     (src / "nested").mkdir(parents=True)
     _write(src / "doc.txt", PARAGRAPH * 20)
-    _write(src / "nested" / "doc.md", PARAGRAPH * 20)
+    _write(src / "nested" / "doc.md", OTHER_PARAGRAPH * 20)
 
     written = prepare_domain([src], out)
 

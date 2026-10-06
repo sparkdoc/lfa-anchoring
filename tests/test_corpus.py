@@ -426,6 +426,64 @@ def test_an_evenly_split_corpus_is_not_called_lopsided():
     assert sound_corpus().shape_warnings(batch_size=6) == []
 
 
+def test_supplement_pairs_are_not_documents_to_the_dominance_check():
+    """The user trial's one-book corpus, to the chunk: a 177,316-token book (347 chunks) and 414
+    supplement pairs (one chunk each), 761 chunks. Counted as documents, the pairs made the book
+    46 % of the corpus and the check stayed silent; it is 100 % of the DOMAIN, and fires."""
+    texts = ["177316"] + ["50"] * 414
+    flags = [False] + [True] * 414
+
+    as_documents = ChunkedCorpus(texts, ExactTokens(), max_length=512)
+    assert len(as_documents) == 761
+    assert not [n for n in as_documents.shape_warnings(batch_size=6) if "one document is" in n]
+
+    ds = ChunkedCorpus(texts, ExactTokens(), max_length=512, supplement_flags=flags)
+    note = one(ds.shape_warnings(batch_size=6), "one document is")
+    assert "100% of the domain's 347 chunk(s) (761 with the 414 supplement pair(s))" in note
+    assert "177,316 of 177,316 tokens" in note
+    assert "document 1 of 1" in note
+    assert "--split-chars 3500" in note                     # and the command that fixes it
+    # Of the DOMAIN's gradient: 347 of 761 chunks is not most of every epoch's gradient.
+    assert "most of the gradient the domain's own text gives every epoch" in note
+    assert "most of every epoch's gradient" not in note
+    assert ds.report["n_docs"] == 415 and ds.report["n_supplement_docs"] == 414
+
+
+def test_a_split_corpus_with_its_pairs_is_not_called_lopsided():
+    texts = ["2000"] * 60 + ["50"] * 293
+    flags = [False] * 60 + [True] * 293
+    ds = ChunkedCorpus(texts, ExactTokens(), max_length=512, supplement_flags=flags)
+    assert not [n for n in ds.shape_warnings(batch_size=6) if "one document is" in n]
+
+
+def test_a_lone_document_with_nothing_beside_it_is_left_to_the_split_warning():
+    ds = ChunkedCorpus(["20000"], ExactTokens(), max_length=512)
+    assert not [n for n in ds.shape_warnings(batch_size=6) if "one document is" in n]
+
+
+def test_the_document_count_reports_domain_documents_and_pairs_separately():
+    """The trial's re-run read "353 document(s)" for 60 chapters and 293 pairs."""
+    texts = ["2000"] * 60 + ["50"] * 293
+    flags = [False] * 60 + [True] * 293
+    ds = ChunkedCorpus(texts, ExactTokens(), max_length=512, supplement_flags=flags)
+    note = one(ds.shape_warnings(batch_size=6, epochs=15), "epochs over")
+    assert "60 document(s) + 293 supplement pair(s)" in note
+
+
+def test_an_empty_chunking_counts_documents_and_pairs_apart(tiny_model, caplog):
+    _, tok = tiny_model
+    with caplog.at_level("WARNING", logger="lfa.corpus"):
+        ChunkedCorpus(["tiny", "also", "pair"], tok, max_length=512,
+                      supplement_flags=[False, False, True])
+    [message] = [r.getMessage() for r in caplog.records if "chunked to 0" in r.getMessage()]
+    assert "from 2 document(s) + 1 supplement pair(s)" in message
+
+
+def test_supplement_flags_need_one_per_text():
+    with pytest.raises(ValueError, match="one per text"):
+        ChunkedCorpus(["600", "600"], ExactTokens(), max_length=512, supplement_flags=[True])
+
+
 def test_too_many_epochs_for_the_amount_of_text_is_warned_before_the_run():
     """200 k tokens at the recipe's 15 epochs -- the shape on which a weaker anchor's held-out
     curve turns, said before the run rather than after it."""
@@ -741,6 +799,41 @@ def test_a_single_document_corpus_trains_on_it_and_holds_nothing_out(tmp_path, t
     (docs / "only.txt").write_text("one long document " * 50)
     train, val = load_corpus(docs, tokenizer, max_length=64, val_fraction=0.1, seed=0)
     assert train.report["n_docs"] == 1 and val is None     # never an empty held-out corpus
+
+
+def test_the_one_document_warning_names_the_split(tmp_path, caplog):
+    docs = tmp_path / "docs"; docs.mkdir()
+    (docs / "only.txt").write_text("one long document " * 50)
+    with caplog.at_level("WARNING", logger="lfa.corpus"):
+        split_documents(docs, 0.1, seed=0)
+    [message] = [r.getMessage() for r in caplog.records if "one document" in r.getMessage()]
+    assert "prepare-domain" in message and "--split-chars 3500" in message
+
+
+def test_mixing_a_supplement_flags_the_pairs_and_keeps_the_stream(tmp_path, tiny_model):
+    """The pairs are flagged for the shape checks, and the training stream is exactly the one a
+    shuffle of the bare texts gives: the flags ride along, they do not reorder anything."""
+    import random as _random
+
+    _, tokenizer = tiny_model
+    docs = tmp_path / "docs"; docs.mkdir()
+    for i in range(6):
+        (docs / f"d{i}.txt").write_text(f"raw document {i} " * 20)
+    supp = tmp_path / "supplement.jsonl"
+    supp.write_text("".join('{"prompt": "q%d?", "response": "a%d."}\n' % (i, i)
+                            for i in range(30)))
+
+    train, _ = load_corpus(docs, tokenizer, max_length=64, val_fraction=0.0, seed=5,
+                           supplement=supp, supplement_fraction=0.2)
+    n_used = train.supplement_report["n_used"]
+    assert n_used > 0 and train.report["n_supplement_docs"] == n_used
+
+    texts, _ = split_documents(docs, 0.0, seed=5)
+    expected = texts + load_supplement(supp, tokenizer)[:n_used]
+    _random.Random(5 + 1).shuffle(expected)
+    bare = ChunkedCorpus(expected, tokenizer, max_length=64)
+    assert len(bare) == len(train)
+    assert all(torch.equal(a["input_ids"], b["input_ids"]) for a, b in zip(bare, train))
 
 
 def test_render_pair_uses_the_non_thinking_template_when_there_is_one():

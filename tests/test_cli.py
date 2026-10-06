@@ -652,9 +652,18 @@ def test_prepare_domain_with_a_supplement_needs_a_model(tmp_path, capsys):
     assert not (tmp_path / "out").exists()
 
 
+def two_sources(tmp_path) -> Path:
+    """A directory of two documents: the fewest a held-out split can be taken from, so the
+    supplement is not refused for the corpus's size."""
+    src = tmp_path / "src"
+    src.mkdir()
+    for name in ("a.txt", "b.txt"):              # distinct texts: the same one twice is refused
+        (src / name).write_text(f"{name} " + "word " * 400)
+    return src
+
+
 def test_prepare_domain_with_a_supplement_writes_both(tmp_path, monkeypatch):
-    src = tmp_path / "src.txt"
-    src.write_text("word " * 400)
+    src = two_sources(tmp_path)
     seen = {}
     monkeypatch.setattr("lfa.cli.prepare_supplement",
                         lambda corpus, model_id, **kw: seen.update(corpus=corpus, model=model_id,
@@ -722,11 +731,90 @@ def test_prepare_domain_with_a_supplement_and_no_recipe_writes_nothing(tmp_path,
 def test_prepare_domain_passes_the_resolved_recipe_on(tmp_path, monkeypatch):
     from lfa import Recipe
 
-    src = tmp_path / "src.txt"
-    src.write_text("word " * 400)
+    src = two_sources(tmp_path)
     seen = {}
     monkeypatch.setattr("lfa.cli.prepare_supplement",
                         lambda corpus, model_id, **kw: seen.update(kw) or tmp_path / "s.jsonl")
     assert main(["prepare-domain", str(src), "--out", str(tmp_path / "out"), "--supplement",
                  "--model", "Qwen/Qwen3-0.6B"]) == 0
     assert isinstance(seen["recipe"], Recipe) and seen["recipe"].name == "qwen3-0.6b"
+
+
+# ------------------------------------------------------- one long file, and --split-chars
+
+def a_book(tmp_path) -> Path:
+    """One file of forty 1,000-character paragraphs: a book, as far as the loader can tell."""
+    src = tmp_path / "book.txt"
+    src.write_text("\n\n".join((f"Paragraph {i}. " + "word " * 300)[:1000]
+                                for i in range(40)))
+    return src
+
+
+def test_one_file_with_a_supplement_is_refused_before_the_writer_is_reached(tmp_path,
+                                                                            monkeypatch, capsys):
+    """One book is one document: the trainer could hold nothing out of it, so the supplement --
+    minutes of generation -- is not written, and neither is the corpus a re-run would double."""
+    monkeypatch.setattr("lfa.cli.prepare_supplement",
+                        lambda *a, **kw: pytest.fail("the supplement writer was reached"))
+    monkeypatch.setattr("lfa.supplements.write_supplement",
+                        lambda *a, **kw: pytest.fail("the supplement writer was reached"))
+    out = tmp_path / "out"
+    assert main(["prepare-domain", str(a_book(tmp_path)), "--out", str(out), "--supplement",
+                 "--model", "Qwen/Qwen3-0.6B"]) == 2
+    lines = error_lines(capsys)
+    assert len(lines) == 1
+    assert "1 document(s)" in lines[0] and "--split-chars 3500" in lines[0]
+    assert "Nothing was read or written" in lines[0]
+    assert not out.exists()
+
+
+def test_the_up_arrow_split_rerun_into_the_same_out_is_refused(tmp_path, monkeypatch, capsys,
+                                                               caplog):
+    """The warning path, then the fix it names re-run into the same --out: the unsplit book is
+    already there, so the split pieces and their supplement would sit beside it and every held-out
+    piece would be trained on verbatim. Refused, naming the file, with nothing added."""
+    out, book = tmp_path / "out", a_book(tmp_path)
+    with caplog.at_level("WARNING", logger="lfa.prepare_domain"):
+        assert main(["prepare-domain", str(book), "--out", str(out)]) == 0
+    assert any("--split-chars 3500" in r.getMessage() for r in caplog.records)
+
+    monkeypatch.setattr("lfa.cli.prepare_supplement",
+                        lambda *a, **kw: pytest.fail("the supplement writer was reached"))
+    capsys.readouterr()
+    assert main(["prepare-domain", str(book), "--out", str(out), "--split-chars", "3500",
+                 "--supplement", "--model", "Qwen/Qwen3-0.6B"]) == 2
+    lines = error_lines(capsys)
+    assert len(lines) == 1
+    assert f"100% of its sentence text (sentences of 60 characters or more) is already in " \
+           f"{out}; the largest shares are in {out / 'book.txt'} (100%)" in lines[0]
+    assert "fresh --out directory" in lines[0]
+    assert "delete the earlier preparation of this text" in lines[0]
+    assert [p.name for p in out.iterdir()] == ["book.txt"]
+
+
+def test_the_same_book_split_writes_the_corpus_and_the_supplement(tmp_path, monkeypatch):
+    seen = {}
+    monkeypatch.setattr("lfa.cli.prepare_supplement",
+                        lambda corpus, model_id, **kw: seen.update(corpus=corpus) or "s.jsonl")
+    out = tmp_path / "out"
+    assert main(["prepare-domain", str(a_book(tmp_path)), "--out", str(out), "--supplement",
+                 "--model", "Qwen/Qwen3-0.6B", "--split-chars", "3500"]) == 0
+    assert sorted(p.name for p in out.iterdir())[:2] == ["book-0001.txt", "book-0002.txt"]
+    assert len(list(out.iterdir())) == 10                  # 40 x 1,000 characters at 3,500
+    assert seen["corpus"] == str(out)
+
+
+def test_one_file_without_a_supplement_is_written_and_warned_about(tmp_path, caplog):
+    out = tmp_path / "out"
+    with caplog.at_level("WARNING", logger="lfa.prepare_domain"):
+        assert main(["prepare-domain", str(a_book(tmp_path)), "--out", str(out)]) == 0
+    assert [p.name for p in out.iterdir()] == ["book.txt"]
+    assert any("--split-chars 3500" in r.getMessage() for r in caplog.records)
+
+
+def test_prepare_domain_help_names_split_chars_and_its_size(capsys):
+    with pytest.raises(SystemExit):
+        main(["prepare-domain", "--help"])
+    help_text = " ".join(capsys.readouterr().out.split())
+    assert "--split-chars N" in help_text and "3500" in help_text
+    assert "a book, a report" in help_text

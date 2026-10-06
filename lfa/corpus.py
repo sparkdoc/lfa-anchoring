@@ -193,6 +193,11 @@ class ChunkedCorpus(Dataset):
             and never truncated (they are chunked instead).
         max_length: chunk length in tokens.
         stride: distance between chunk starts. ``0`` means ``max_length``, i.e. no overlap.
+        supplement_flags: one flag per text, ``True`` for a written supplement pair rather than a
+            domain document (:func:`load_corpus` passes them). They change nothing about the
+            chunking; they let :meth:`shape_warnings` count the DOMAIN's documents, so a corpus
+            of one book and four hundred pairs is read as the one document it is. ``None`` means
+            every text is a domain document.
         keep_short_whole: what to do with a document that fits in a single chunk
             (``<= max_length`` tokens). Under ``True``, the default, it is trained **whole** in
             every epoch: it ignores the epoch offset entirely. A document that is already one
@@ -212,7 +217,9 @@ class ChunkedCorpus(Dataset):
 
     Attributes:
         report: counts for the *current* chunking, refreshed on construction and on every
-            :meth:`rechunk` — ``n_docs`` (documents kept), ``n_short_docs`` (documents of
+            :meth:`rechunk` — ``n_docs`` (documents kept, supplement pairs included),
+            ``n_supplement_docs`` (how many of those are supplement pairs), ``n_short_docs``
+            (documents of
             ``<= max_length`` tokens), ``n_dropped_short_chunks`` (documents that produced no
             chunk at all, which can only mean they are under the ten-token minimum), and
             ``n_chunks``. An epoch that chunks to nothing is reported here and
@@ -226,7 +233,11 @@ class ChunkedCorpus(Dataset):
         max_length: int = 512,
         stride: int = 0,
         keep_short_whole: bool = True,
+        supplement_flags: list[bool] | None = None,
     ):
+        if supplement_flags is not None and len(supplement_flags) != len(texts):
+            raise ValueError(f"supplement_flags has {len(supplement_flags)} flag(s) for "
+                             f"{len(texts)} text(s); it needs one per text")
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.stride = stride if stride > 0 else max_length
@@ -239,18 +250,23 @@ class ChunkedCorpus(Dataset):
         #: which document a lopsided corpus is lopsided towards.
         self._doc_chunks: list[int] = []
         self._excerpts: list[str] = []
+        #: Whether each kept document is a supplement pair: the shape checks read the domain's
+        #: own documents, not the pairs mixed in beside them.
+        self._is_supplement: list[bool] = []
         self.report: dict[str, int] = {}
 
         # Before anything is tokenized: this is the allocation that gets a process killed.
         _refuse_a_corpus_that_cannot_fit([t for t in texts if t.strip()])
 
-        for text in texts:
+        flags = supplement_flags if supplement_flags is not None else [False] * len(texts)
+        for text, is_supplement in zip(texts, flags):
             if not text.strip():
                 continue
             encoded = tokenizer(text, add_special_tokens=True, truncation=False,
                                 return_tensors="pt")
             self._docs.append((encoded["input_ids"][0], encoded["attention_mask"][0]))
             self._excerpts.append(" ".join(text.split())[:60])
+            self._is_supplement.append(bool(is_supplement))
 
         self._chunk_all(offset=0, epoch=0)
 
@@ -325,6 +341,7 @@ class ChunkedCorpus(Dataset):
 
         self.report = {
             "n_docs": len(self._docs),
+            "n_supplement_docs": sum(self._is_supplement),
             "n_short_docs": n_short,
             "n_dropped_short_chunks": n_dropped,
             "n_chunks": len(self.examples),
@@ -332,10 +349,10 @@ class ChunkedCorpus(Dataset):
 
         if not self.examples:
             logger.warning(
-                "Epoch %d chunked to 0 examples from %d document(s) at offset %d "
+                "Epoch %d chunked to 0 examples from %s at offset %d "
                 "(max_length=%d, stride=%d, keep_short_whole=%s). Every document is shorter than "
                 "the %d-token minimum, so this epoch trains on nothing.",
-                epoch, len(self._docs), offset, self.max_length, self.stride,
+                epoch, self._document_count(), offset, self.max_length, self.stride,
                 self.keep_short_whole, MIN_CHUNK_TOKENS,
             )
 
@@ -373,8 +390,12 @@ class ChunkedCorpus(Dataset):
            epoch each step's gradient comes from more than an eighth of the corpus, so successive
            steps are near-copies of one another.
         2. **One document dominating.** A document past :data:`DOMINANT_DOCUMENT_SHARE` of the
-           chunks contributes more gradient than the rest of the corpus together, so the run is at
-           least as much a fine-tune on that one document as on the corpus.
+           DOMAIN's chunks contributes more gradient than the rest of the domain together, so the
+           run is at least as much a fine-tune on that one document as on the corpus. Supplement
+           pairs are not counted as documents here: they are written from the domain documents,
+           so a single book with four hundred pairs beside it is still one document, and it fires
+           (a lone document with nothing beside it is left to the held-out split's own warning,
+           :func:`split_documents`).
         3. **More epochs than the text can carry.** Under :data:`SMALL_CORPUS_TOKENS` tokens more
            than :data:`SMALL_CORPUS_EPOCHS` epochs over-train unless lambda holds them (the
            bundled lambda carried the walkthrough's 15; a tenth of it did not); the trainer's
@@ -415,19 +436,30 @@ class ChunkedCorpus(Dataset):
                 f"that each document yields more chunks."
             )
 
-        # 2. one document dominating
-        if len(self._doc_chunks) > 1:
-            worst = max(range(len(self._doc_chunks)), key=self._doc_chunks.__getitem__)
-            share = self._doc_chunks[worst] / n_chunks
+        # 2. one document dominating -- among the DOMAIN's documents; supplement pairs are text
+        #    written from them, not further documents, and counting them hid the one-book case.
+        domain = [i for i, flag in enumerate(self._is_supplement) if not flag]
+        domain_chunks = sum(self._doc_chunks[i] for i in domain)
+        n_pairs = len(self._docs) - len(domain)
+        if domain_chunks and (len(domain) > 1 or n_pairs):
+            worst = max(domain, key=self._doc_chunks.__getitem__)
+            share = self._doc_chunks[worst] / domain_chunks
             if share > DOMINANT_DOCUMENT_SHARE:
+                of_what = (f"the {n_chunks:,} chunk(s)" if not n_pairs else
+                           f"the domain's {domain_chunks:,} chunk(s) ({n_chunks:,} with the "
+                           f"{n_pairs:,} supplement pair(s))")
                 notes.append(
-                    f"Corpus shape: one document is {share:.0%} of the {n_chunks:,} chunk(s) "
+                    f"Corpus shape: one document is {share:.0%} of {of_what} "
                     f"({len(self._docs[worst][0]):,} of "
-                    f"{sum(len(ids) for ids, _ in self._docs):,} tokens), so most of every "
-                    f"epoch's gradient comes from it: document {worst + 1} of "
-                    f"{len(self._docs)}, beginning {self._excerpts[worst]!r}. Split it at its "
-                    f"own section boundaries, or add documents, so that the corpus is not one "
-                    f"document with company."
+                    f"{sum(len(self._docs[i][0]) for i in domain):,} tokens), so most of the "
+                    f"gradient the domain's own text gives every epoch comes from it -- more "
+                    f"than from the rest of the domain's documents together: document "
+                    f"{domain.index(worst) + 1} of "
+                    f"{len(domain)}, beginning {self._excerpts[worst]!r}. Split it at its own "
+                    f"section boundaries -- `lfa prepare-domain <file> --out <new dir> "
+                    f"--split-chars 3500` cuts a long file into documents of about 3,500 "
+                    f"characters at paragraph boundaries -- or add documents, so that the corpus "
+                    f"is not one document with company."
                 )
 
         # 3. more epochs than the text can carry
@@ -436,7 +468,7 @@ class ChunkedCorpus(Dataset):
                 and n_tokens < SMALL_CORPUS_TOKENS):
             notes.append(
                 f"Corpus shape: {epochs} epochs over {n_tokens:,} training token(s) "
-                f"({n_chunks:,} chunk(s), {len(self._docs)} document(s)). At the bundled "
+                f"({n_chunks:,} chunk(s), {self._document_count()}). At the bundled "
                 f"recipes' lambda (1,000,000) this package's two-domain walkthrough's Darwin text "
                 f"(~189 k tokens an epoch) carried 15 epochs, its held-out minimum at epoch 10-11 "
                 f"and its last epoch within 3 % of it; at lambda = 100,000 the same text turned "
@@ -446,6 +478,14 @@ class ChunkedCorpus(Dataset):
             )
 
         return notes
+
+    def _document_count(self) -> str:
+        """``"60 document(s)"``, or ``"60 document(s) + 293 supplement pair(s)"`` when pairs are
+        mixed in: a pair is not a document of the domain, and one count of both hides how many
+        documents the domain actually has."""
+        n_pairs = sum(self._is_supplement)
+        phrase = f"{len(self._docs) - n_pairs:,} document(s)"
+        return phrase + (f" + {n_pairs:,} supplement pair(s)" if n_pairs else "")
 
     def __len__(self) -> int:
         return len(self.examples)
@@ -615,6 +655,35 @@ def load_texts(path: str | Path, tokenizer=None) -> list[str]:
     return texts
 
 
+def _n_training_documents(n_documents: int, val_fraction: float) -> int:
+    """How many of ``n_documents`` the split trains on; the rest are held out."""
+    return int(n_documents * (1 - val_fraction))
+
+
+def min_documents_for_held_out(val_fraction: float) -> int:
+    """The fewest documents :func:`split_documents` holds anything out of at ``val_fraction``.
+
+    ``1`` at ``val_fraction <= 0`` (nothing is asked to be held out, so nothing is missing). At the
+    bundled recipes' 0.1 it is ``2``: one document cannot be split, and two train on one and
+    hold out the other. A large fraction needs more, since a split that would hold out every
+    document is refused rather than taken.
+
+    Raises:
+        ValueError: ``val_fraction`` outside ``[0, 1)``, the range a recipe accepts -- at 1.0 or
+            above no number of documents leaves anything to train on.
+    """
+    if not 0.0 <= val_fraction < 1.0:
+        raise ValueError(
+            f"val_fraction must be in [0, 1), got {val_fraction}: it is the share of DOCUMENTS "
+            "held out of training, so 1.0 would leave nothing to train on")
+    if val_fraction == 0.0:
+        return 1
+    n = 2
+    while not 1 <= _n_training_documents(n, val_fraction) < n:
+        n += 1
+    return n
+
+
 def split_documents(path, val_fraction: float, seed: int) -> tuple[list[str], list[str]]:
     """The seed-shuffled raw documents, training side then held-out side.
 
@@ -636,9 +705,13 @@ def split_documents(path, val_fraction: float, seed: int) -> tuple[list[str], li
         logger.warning(
             "val_fraction=%s on the one document found in %s: a single document cannot be "
             "split, so it is trained on and nothing is held out. The domain number is then a "
-            "fit rather than a held-out measurement.", val_fraction, path)
+            "fit rather than a held-out measurement, and there is no per-epoch held-out curve "
+            "to choose the number of epochs by. A long file (a book, a report) is one document "
+            "until it is split: `lfa prepare-domain <file> --out <new dir> --split-chars 3500` "
+            "cuts it into documents of about 3,500 characters at paragraph boundaries.",
+            val_fraction, path)
         return texts, []
-    split_idx = int(len(texts) * (1 - val_fraction))
+    split_idx = _n_training_documents(len(texts), val_fraction)
     if split_idx == 0:
         raise ValueError(
             f"val_fraction={val_fraction} holds out all {len(texts)} document(s) found in "
@@ -678,7 +751,7 @@ def load_corpus(
     """
     train_texts, val_texts = split_documents(path, val_fraction, seed)
 
-    report = None
+    report, train_flags = None, None
     if supplement is not None and supplement_fraction > 0.0:
         pairs = load_supplement(supplement, tokenizer)
         raw_tokens = [len(tokenizer(t, add_special_tokens=True)["input_ids"]) for t in train_texts]
@@ -692,16 +765,21 @@ def load_corpus(
             logger.warning("Supplement pool short of the target: %d pairs give a token share of "
                            "%.3f against %.3f asked", chosen.n_used, chosen.achieved_fraction,
                            supplement_fraction)
-        train_texts = train_texts + pairs[:chosen.n_used]
-        random.Random(seed + 1).shuffle(train_texts)
+        # Shuffled as (text, is_pair) so the shape checks can tell the pairs from the domain's
+        # documents; `shuffle` permutes by length and seed alone, so the stream is the one a
+        # shuffle of the bare texts gives.
+        mixed = [(t, False) for t in train_texts] + [(t, True) for t in pairs[:chosen.n_used]]
+        random.Random(seed + 1).shuffle(mixed)
+        train_texts = [t for t, _ in mixed]
+        train_flags = [flag for _, flag in mixed]
 
-    def build(subset: list[str]) -> ChunkedCorpus:
+    def build(subset: list[str], flags: list[bool] | None = None) -> ChunkedCorpus:
         corpus = ChunkedCorpus(subset, tokenizer, max_length=max_length, stride=stride,
-                               keep_short_whole=keep_short_whole)
+                               keep_short_whole=keep_short_whole, supplement_flags=flags)
         corpus.supplement_report = None
         return corpus
 
-    train = build(train_texts)
+    train = build(train_texts, train_flags)
     train.supplement_report = report
     if not val_texts:
         return train, None

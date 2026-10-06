@@ -44,7 +44,13 @@ from .models import (
     load_teacher,
     load_tokenizer,
 )
-from .prepare_domain import MissingExtra, prepare_domain
+from .prepare_domain import (
+    DEFAULT_VAL_FRACTION,
+    MIN_SPLIT_CHARS,
+    SUGGESTED_SPLIT_CHARS,
+    MissingExtra,
+    prepare_domain,
+)
 from .probe import probe_artifact
 from .seed_corpus import SourceUnavailable, prepare_seed_corpus
 # CorpusFrameMismatch is a ValueError, so the tuple below already reports it; imported to name it.
@@ -281,7 +287,14 @@ def _prepare_domain(args) -> int:
         # rather than leaving a corpus with no supplement beside it.
         recipe = recipe_for(args.model, args.recipe)
     # No report of its own: `prepare_domain` already logs what it wrote and what it skipped.
-    prepare_domain(args.inputs, args.out, min_length=args.min_length, combine=args.combine)
+    # Under --supplement a corpus the trainer could hold nothing out of is refused before
+    # anything is written: the pairs are minutes of generation, and a one-document corpus has no
+    # held-out curve to train against. Without it, the same corpus is written and warned about.
+    prepare_domain(args.inputs, args.out, min_length=args.min_length, combine=args.combine,
+                   split_chars=args.split_chars,
+                   val_fraction=(recipe.val_fraction if recipe is not None
+                                 else DEFAULT_VAL_FRACTION),
+                   require_held_out=args.supplement)
     if args.supplement:
         print(prepare_supplement(args.out, args.model, recipe=recipe,
                                  domain_description=args.domain_description, device=args.device))
@@ -586,8 +599,15 @@ def build_parser() -> argparse.ArgumentParser:
                         help="files and/or directories to read")
     domain.add_argument("--out", required=True, metavar="DIR", help="directory to write into")
     domain.add_argument("--min-length", type=int, default=1000, metavar="N",
-                        help="drop a document shorter than this many characters after cleaning "
-                             "(default: %(default)s)")
+                        help="drop an input file shorter than this many characters after "
+                             "cleaning, before any --split-chars (default: %(default)s)")
+    domain.add_argument("--split-chars", dest="split_chars", type=int, metavar="N",
+                        help="cut every file into documents of about N characters at paragraph "
+                             "boundaries, written as <name>-0001.txt, <name>-0002.txt, ... "
+                             "Training holds out whole documents, so one long file -- a book, "
+                             "a report -- needs this to have a held-out curve at all; "
+                             f"{SUGGESTED_SPLIT_CHARS} is a good size (the walkthrough's), "
+                             f"{MIN_SPLIT_CHARS} the floor. Default: one document per file")
     domain.add_argument("--combine", action="store_true",
                         help="write one combined file instead of one file per input. The loader "
                              "reads a file as one document, so a combined corpus is a single "
@@ -596,7 +616,9 @@ def build_parser() -> argparse.ArgumentParser:
     domain.add_argument("--supplement", action="store_true",
                         help="also have --model write the question-and-answer supplement for "
                              "the prepared corpus; it makes the domain answerable when the model "
-                             "is asked about it, and `train` mixes it in")
+                             "is asked about it, and `train` mixes it in. A corpus too small to "
+                             "hold any document out (one file without --split-chars) is refused "
+                             "before anything is written")
     domain.add_argument("--model", metavar="ID",
                         help="the model that writes the supplement: the one you will train")
     domain.add_argument("--recipe", metavar="NAME|PATH",

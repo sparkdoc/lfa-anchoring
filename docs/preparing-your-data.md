@@ -27,15 +27,58 @@ breaks are unwrapped, so a paragraph is one line. A document that cleans down to
 `--min-length` characters (default 1000) is dropped — a page that extracted to a nav bar and a
 cookie notice is not training data.
 
+**One long file — a book, a report — split it.** A file is one document, and training holds out
+whole documents (a tenth of them, at the bundled recipes' `val_fraction` 0.1), so a corpus needs at
+least two documents before anything is held out. One downloaded book prepared as it stands is one
+document: nothing is held out, so there is no per-epoch held-out curve to choose the number of
+epochs by, and the domain number is a fit rather than a measurement. `--split-chars` cuts every
+file into documents of about that many characters at paragraph boundaries:
+
+```bash
+lfa prepare-domain book.txt --out data/my_domain --split-chars 3500
+```
+
+The documents are written as `book-0001.txt`, `book-0002.txt`, …. 3,500 characters (about 850
+tokens, so most documents are one or two of the trainer's 512-token chunks) is the size the
+two-domain walkthrough splits its books at. A document closes at the first paragraph end past
+the size; a single paragraph longer than twice the size is cut inside it, at a sentence end where
+there is one and at whitespace where there is not; a remainder at the end of a file shorter than
+half the size joins the document before it, so splitting drops no text and every document is at
+least half the size (a file shorter than that stays one document). The size has a floor of 500
+characters: the trainer drops a whole document under ten tokens without a word, and at 250
+characters or more no prose document is that short. (Like any document, each one can still lose
+a final piece under ten tokens where the chunker's cut leaves one.)
+`--min-length` applies to the whole file, before it is split. A corpus with fewer documents than a
+held-out split needs is warned about, with this fix named — and refused before anything is written
+under `--supplement` (below); when the input files cannot make enough documents however they
+extract, it is refused before any of them is read.
+
+**Strip the boilerplate first.** Cleaning removes markup, not content: a Project Gutenberg
+licence, a table of contents or an index is trained on like the text around it, and the supplement
+writes questions about it. Cut them out of the file before preparing it.
+
 **The layout.** The output is a flat directory of `.txt` files, and the loader reads each file as
 one document. A directory of `.txt` or `.md` files you already have is a corpus as it stands.
 `prepare-domain` never overwrites: a name that is already taken gets a `_1`, `_2`, … suffix, so a
 second run into the same directory adds its documents beside the first run's. Write into a fresh
-directory.
+directory. Each input is compared, sentence by sentence, with what the directory already holds
+and with the inputs before it in the same command; only sentences of 60 characters or more count,
+since headings and short lines recur across unrelated texts. Sentences survive splitting at any
+size — `--split-chars` cuts at paragraph breaks and sentence ends — and a text of short paragraphs
+(an FAQ, a play) still has them. An input with half or more of its sentence text already there is
+refused before anything is written, naming the files with the largest shares: the same text twice in
+a corpus lets the held-out split score text the run trains on. That is what re-running a one-file
+preparation into the same directory with `--split-chars` would do — the whole book beside its own
+pieces — and it is refused even when the text was edited in between (a header stripped, a word
+changed) and whatever size either preparation was split at. Prepare into a fresh directory, or
+delete the earlier preparation of that text first. An input with less than half shared is
+prepared with a warning naming the files it shares text with: typically a licence or front matter
+that two sources both carry, which is the boilerplate above to strip.
 
 **`--combine`** writes one combined file instead of one per input, headed and separated by
 source. Use it to read the cleaned text, not to train on: the loader would read the whole corpus as
-a single document, and training would warn that one document dominates.
+a single document, which nothing can be held out of. `prepare-domain` warns that it is one
+document (and refuses it under `--supplement`); it does not go with `--split-chars`.
 
 **Point `--corpus` at the corpus directory itself** (`data/my_domain`), never at its parent. A
 supplement prepared with the data sits beside the corpus in `data/my_domain.supplement/`, and a
@@ -58,9 +101,13 @@ refusal.
   and the shuffle buys almost nothing; at the recipe's 50-step warmup such a run also spends its
   first six epochs or more below the learning rate the operating point was tuned at. Add documents,
   lower `batch_size`, or lower `sequence_length` so each document yields more chunks.
-* **One document dominating.** A single document past half the chunks contributes more gradient
-  than the whole of the rest of the corpus, so the run is at least as much a fine-tune on that one
-  document. The warning names the document and its share. Split it at its own section boundaries.
+* **One document dominating.** A single document past half the domain's chunks contributes more
+  gradient than the rest of the domain's documents together, so the run is at least as much a
+  fine-tune on that one document. Supplement pairs are not counted as documents here — they are
+  written from the domain's documents — so a single book with its pairs beside it is one document,
+  and is warned about. The warning names the document and its share, and reports the domain's
+  documents and the supplement pairs separately. Split it at its own section boundaries, or with
+  `prepare-domain --split-chars 3500` into a fresh directory.
 * **More epochs than the text can carry.** Under 500,000 training tokens (~2 MB of English) at more
   than five epochs. At the bundled recipes' λ (1,000,000, both models) the two-domain walkthrough's
   Darwin text (~189 k training tokens an epoch) carried all 15 — its held-out perplexity lowest at
@@ -109,7 +156,11 @@ data/my_domain.supplement/<hash>/supplement.jsonl.manifest.json
 the training side only — the recipe's held-out fraction and seed decide which documents that is,
 so held-out text never reaches the supplement. The recipe is `--recipe` when you pass one, and
 otherwise the bundled recipe that names `--model`; with neither, the command is refused before
-anything is written. `--supplement` without `--model` is refused the same way.
+anything is written. `--supplement` without `--model` is refused the same way, and so is a corpus
+with too few documents for the recipe's held-out split (one file without `--split-chars`): the
+supplement is minutes of generation, and the pairs would be written from text the trainer cannot
+hold anything out of. The refusal names the fix and writes nothing, so the same command re-run
+with `--split-chars 3500` starts clean.
 
 **Reading it.** `supplement.jsonl` holds one pair per line, `{"prompt": …, "response": …}`, in
 the order they were written. The manifest says who wrote it and from what: the writer's model id
