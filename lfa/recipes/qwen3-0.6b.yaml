@@ -28,11 +28,12 @@
 # docs/recipes.md.
 #
 # The dose at this lambda. The per-epoch validation perplexity (the training split's own 10 %)
-# fell from 20.45 after epoch 1 to its lowest, 17.62, at epoch 10 and ended at 18.09. At lambda =
-# 100,000 the same corpus bottomed at epoch 4 (16.63) and ended at 31.68, worse than the base
-# model on both axes. An unanchored 4-epoch run reaches held-out Darwin 18.73 with WikiText-2
-# 26.80 (+49.4 %). One seed, one corpus: on your own corpus, read the per-epoch held-out column
-# and set the dose from it (docs/recipes.md).
+# fell from 20.45 after epoch 1 to its lowest, 17.62, at epoch 10 and ended at 18.09, 2.6 % above
+# it: a shallow turn, for which the trainer advises a re-run at epoch 10 (no 10-epoch run was
+# measured). At lambda = 100,000 the same corpus bottomed at epoch 4 (16.63) and ended at 31.68,
+# worse than the base model on both axes. An unanchored 4-epoch run reaches held-out Darwin 18.73
+# with WikiText-2 26.80 (+49.4 %). One seed, one corpus: on your own corpus, read the per-epoch
+# held-out column and set the dose from it (docs/recipes.md).
 #
 # The stage-2 multiplier. A two-stage chain (Darwin, then the walkthrough's cookery text, 15
 # epochs each) at lambda = 1,000,000: 3x beat 1x on cookery (-34.0 % against -30.3 %), on Darwin

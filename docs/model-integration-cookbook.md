@@ -572,6 +572,8 @@ held-out domain perplexity and WikiText-2 — and the public text of the walkthr
    evidence that λ is independent of model size, and λ does not port, even within a family.
 6. **The dose curve**: no new run. From the chosen rung's validation curve, record the epoch with
    the lowest validation perplexity and the value at the last epoch, beside the controls' curves.
+   Every run reports both at its end (`Held-out perplexity: lowest … at epoch …; final …`), and
+   each stage's entry in the workspace's `history.json` keeps them under `held_out`.
    At the recipe dose the chosen rung's curve should not climb in the late epochs the way the
    control's does. If it does, the recipe's epoch count is too long for that λ: shorten `epochs` in
    the recipe copies, re-run the long control and the ladder at the new dose, and read them again

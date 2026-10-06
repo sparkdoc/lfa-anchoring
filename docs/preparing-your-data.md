@@ -31,7 +31,8 @@ cookie notice is not training data.
 whole documents (a tenth of them, at the bundled recipes' `val_fraction` 0.1), so a corpus needs at
 least two documents before anything is held out. One downloaded book prepared as it stands is one
 document: nothing is held out, so there is no per-epoch held-out curve to choose the number of
-epochs by, and the domain number is a fit rather than a measurement. `--split-chars` cuts every
+epochs by (the trainer says so when the run ends), and the domain number is a fit rather than a
+measurement. `--split-chars` cuts every
 file into documents of about that many characters at paragraph boundaries:
 
 ```bash
@@ -110,11 +111,15 @@ refusal.
   `prepare-domain --split-chars 3500` into a fresh directory.
 * **More epochs than the text can carry.** Under 500,000 training tokens (~2 MB of English) at more
   than five epochs. At the bundled recipes' λ (1,000,000, both models) the two-domain walkthrough's
-  Darwin text (~189 k training tokens an epoch) carried all 15 — its held-out perplexity lowest at
-  epoch 10 (Qwen3-0.6B) or 11 (Qwen3-1.7B) and ending within 3 % of it — while at λ = 100,000 the
-  same text turned by epoch 4–5. If λ is lowered or the corpus is smaller still, keep
-  `val_fraction` above 0 and let the held-out curve pick the dose — the trainer names the epoch it
-  bottomed at when the run ends.
+  Darwin text (~189 k training tokens an epoch) turned late and shallowly over 15 epochs — its
+  held-out perplexity lowest at epoch 10 and ending 2.6 % above it (Qwen3-0.6B), lowest at epoch
+  11 and ending 0.2 % above it (Qwen3-1.7B); no run at 10 or 11 epochs was measured — while at
+  λ = 100,000 the same text turned by epoch 4–5. If λ is lowered or the corpus is smaller still,
+  keep `val_fraction` above 0 and let the held-out curve pick the dose — at the end of every run
+  the trainer reports the epoch it bottomed at, the final value and the gap between them, and,
+  when the run did not end at its best, advises a re-run at that epoch (1 % or more above the
+  lowest) or calls one optional (under 1 %)
+  ([recipes.md](recipes.md#run-length-and-checkpointing) has the rule).
 
 A sound corpus produces none of them. To read them without starting a run,
 `ChunkedCorpus.shape_warnings(batch_size=…, epochs=…)` returns them as a list of strings.

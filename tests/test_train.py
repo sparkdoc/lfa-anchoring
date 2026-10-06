@@ -24,10 +24,13 @@ from lfa.sampler import Sampler
 from lfa.train import (
     EMBED_ANCHOR_DISABLED_NOTICE,
     OVERTRAINING_RATIO,
+    OPTIONAL_RERUN_GAP,
+    HeldOutSummary,
     ResumeSourceHasNoAdapter,
     TrainConfig,
     _build_scheduler,
-    held_out_turned_around,
+    _log_held_out_summary,
+    held_out_summary,
     train,
     train_epoch,
     train_step,
@@ -318,17 +321,259 @@ def _curve(values):
 
 @pytest.mark.parametrize("values, expected", [
     # The measured over-training run: minimum at epoch 2, ending 2.5x worse.
-    ([6.91, 6.67, 6.78, 6.84, 7.53, 14.46, 16.88], (2, 6.67, 16.88)),
-    ([9.0, 8.0, 7.0, 6.0], None),                        # still falling: nothing to say
-    ([9.0, 8.0, 7.0, 7.0 * OVERTRAINING_RATIO * 1.01], (3, 7.0, 7.0 * OVERTRAINING_RATIO * 1.01)),
-    ([9.0, 8.0, 7.0, 7.2], None),                        # an ordinary wobble is not a finding
-    # Two points are enough: the shortest runs are exactly where a small corpus turns early.
-    ([6.6, 305.9], (1, 6.6, 305.9)),
-    ([9.0, 8.0], None),                                  # two points, still falling
-    ([], None),                                          # val_fraction=0: no curve at all
+    ([6.91, 6.67, 6.78, 6.84, 7.53, 14.46, 16.88], ("turned", 2, 6.67, 7, 16.88)),
+    # The measured Wells run: lowest 27.02 at epoch 8, ending 6.1 % above it -- under the warning
+    # threshold, and still a curve that turned.
+    ([30.0, 29.0, 28.5, 28.0, 27.6, 27.3, 27.1, 27.02, 27.2, 27.5, 27.8, 28.0, 28.3, 28.5, 28.67],
+     ("turned", 8, 27.02, 15, 28.67)),
+    ([9.0, 8.0, 7.0, 6.0], ("still_falling", 4, 6.0, 4, 6.0)),
+    ([9.0, 8.0, 7.0, 7.2], ("turned", 3, 7.0, 4, 7.2)),   # a wobble still turned; the log grades it
+    ([6.6, 305.9], ("turned", 1, 6.6, 2, 305.9)),        # two points are enough to turn
+    ([9.0, 8.0], ("still_falling", 2, 8.0, 2, 8.0)),
+    ([7.5], ("still_falling", 1, 7.5, 1, 7.5)),          # one point: its minimum is its last epoch
+    ([9.0, 7.0, 7.0], ("turned", 2, 7.0, 3, 7.0)),       # a tie: the earliest epoch is the minimum
+    ([], ("no_curve", None, None, None, None)),          # val_fraction=0: no curve at all
 ])
-def test_the_turnaround_is_reported_only_when_it_is_one(values, expected):
-    assert held_out_turned_around(_curve(values)) == expected
+def test_the_held_out_summary_reads_the_curve(values, expected):
+    summary = held_out_summary(_curve(values))
+    assert (summary.verdict, summary.best_epoch, summary.best,
+            summary.final_epoch, summary.final) == expected
+    if summary.verdict == "no_curve":
+        assert summary.gap is None
+    else:
+        assert summary.gap == pytest.approx(summary.final / summary.best - 1.0)
+
+
+def test_the_wells_gap_is_six_point_one_percent():
+    """The trial run that the old 1.10 threshold left silent: +6.1 %."""
+    summary = held_out_summary(_curve([27.5, 27.02, 28.67]))
+    assert summary.gap == pytest.approx(28.67 / 27.02 - 1.0)
+    assert round(summary.gap * 100, 1) == 6.1
+
+
+def test_epochs_without_a_held_out_number_are_skipped():
+    history = [{"epoch": 1, "val_perplexity": 9.0},
+               {"epoch": 2, "loss_total": 2.0},                       # missing
+               {"epoch": 3, "val_perplexity": None},                  # None
+               {"epoch": 4, "val_perplexity": float("nan")},          # NaN
+               {"epoch": 5, "val_perplexity": 8.0}]
+    assert held_out_summary(history) == HeldOutSummary(
+        verdict="still_falling", best_epoch=5, best=8.0, final_epoch=5, final=8.0, gap=0.0)
+
+
+@pytest.mark.parametrize("bad", [float("inf"), float("-inf"), float("nan"), 0.0, -1.0])
+def test_an_unusable_value_mid_curve_is_never_the_minimum_or_the_end(bad):
+    """A bad epoch the run recovered from is skipped: it is neither the minimum nor the end."""
+    summary = held_out_summary(_curve([9.0, 8.0, bad, 8.4]))
+    assert (summary.verdict, summary.best_epoch, summary.final_epoch) == ("turned", 2, 4)
+    assert summary.gap == pytest.approx(0.05)
+    text = json.dumps(summary.to_dict(), allow_nan=False)        # raises on NaN or Infinity
+    assert json.loads(text)["final"] == 8.4
+
+
+@pytest.mark.parametrize("bad", [float("inf"), float("nan"), float("-inf"), 0.0])
+def test_an_unusable_last_value_is_a_divergence_not_a_shorter_run(bad):
+    """The last epoch diverged: the summary must not quietly end at the last finite epoch (which
+    would read "of 4" and "more epochs may lower it") -- it says the run diverged at epoch 5."""
+    summary = held_out_summary(_curve([9.0, 8.0, 8.2, 8.4, bad]))
+    assert summary == HeldOutSummary(verdict="diverged", best_epoch=2, best=8.0, final_epoch=5,
+                                     final=None, gap=None)
+    assert json.loads(json.dumps(summary.to_dict(), allow_nan=False))["final"] is None
+
+
+def test_a_last_epoch_without_a_held_out_number_is_not_a_divergence():
+    history = _curve([9.0, 8.0]) + [{"epoch": 3, "loss_total": 2.0}]
+    assert held_out_summary(history).verdict == "still_falling"
+
+
+def test_a_curve_of_nothing_but_unusable_values_diverged_with_no_minimum():
+    summary = held_out_summary(_curve([float("inf"), float("nan"), float("inf")]))
+    assert summary == HeldOutSummary(verdict="diverged", final_epoch=3)
+    json.dumps(summary.to_dict(), allow_nan=False)
+
+
+@pytest.mark.parametrize("bad", [float("inf"), float("nan")])
+def test_a_diverged_run_warns_not_to_ship_it(caplog, bad):
+    said = _said(caplog, [9.0, 8.0, 8.2, 8.4, bad])
+    assert said[0] == ("INFO", "Held-out perplexity: lowest 8.000 at epoch 2 of 5; final not "
+                               "finite.")
+    [(level, message)] = said[1:]
+    assert level == "WARNING"
+    assert "last epoch (5) was not finite" in message and "diverged" in message
+    assert "should not be shipped" in message
+    assert "--epochs 2" in message
+    assert "stronger anchor or a lower learning rate" in message
+    assert "more epochs" not in message
+
+
+def test_a_run_that_was_never_finite_warns_without_a_dose(caplog):
+    said = _said(caplog, [float("inf"), float("inf")])
+    assert said[0] == ("INFO", "Held-out perplexity: no finite value at any epoch up to epoch 2.")
+    [(level, message)] = said[1:]
+    assert level == "WARNING" and "should not be shipped" in message
+    assert "--epochs" not in message
+
+
+def test_the_summary_is_a_plain_record_for_the_history():
+    summary = held_out_summary(_curve([9.0, 8.0, 8.4]))
+    record = summary.to_dict()
+    assert record == {"verdict": "turned", "best_epoch": 2, "best": 8.0, "final_epoch": 3,
+                      "final": 8.4, "gap": pytest.approx(0.05)}
+    assert json.loads(json.dumps(record))["verdict"] == "turned"
+    assert held_out_summary([]).to_dict() == {"verdict": "no_curve", "best_epoch": None,
+                                              "best": None, "final_epoch": None, "final": None,
+                                              "gap": None}
+
+
+# ----------------------------------------------- what the end of a run says, verdict by verdict
+
+def _said(caplog, values):
+    """``[(levelname, message)]`` logged for the held-out curve ``values``."""
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="lfa.test.held_out"):
+        _log_held_out_summary(held_out_summary(_curve(values)),
+                              logging.getLogger("lfa.test.held_out"))
+    return [(r.levelname, r.getMessage()) for r in caplog.records]
+
+
+def test_a_turned_curve_past_the_threshold_warns_and_names_the_dose(caplog):
+    said = _said(caplog, [6.91, 6.67, 6.78, 16.88])
+    assert said[0] == ("INFO", "Held-out perplexity: lowest 6.670 at epoch 2 of 4; final 16.880 "
+                               "(+153.1 % over the lowest).")
+    [(level, warning)] = said[1:]
+    assert level == "WARNING"
+    assert "past its own optimum" in warning
+    assert "epoch 2 (6.670)" in warning and "16.880, epoch 4" in warning
+    assert "--epochs 2" in warning                        # the dose to re-run at
+    assert "no best checkpoint is kept" in warning        # why final_model is not that model
+
+
+def test_the_wells_run_is_no_longer_silent(caplog):
+    """+6.1 %: under the warning threshold, and a re-run at its minimum was better on both axes."""
+    said = _said(caplog, [27.5, 27.02, 28.67])
+    assert said[0] == ("INFO", "Held-out perplexity: lowest 27.020 at epoch 2 of 3; final 28.670 "
+                               "(+6.1 % over the lowest).")
+    [(level, message)] = said[1:]
+    assert level == "INFO"
+    assert "turned at epoch 2" in message
+    # Likely, not certain: the one measured re-run at a minimum is one seed on one domain.
+    assert "--epochs 2 is likely to ship a better model on this domain" in message
+    assert "usually" not in message
+    assert "no best checkpoint is kept" in message
+    assert "optional" not in message                     # 6.1 % is above the 1 % cut
+    assert not any(ch.isdigit() for ch in message.replace("--epochs 2", "").replace("epoch 2", ""))
+
+
+@pytest.mark.parametrize("ratio, level", [
+    (OVERTRAINING_RATIO, "WARNING"),                     # at the threshold: warned
+    (OVERTRAINING_RATIO * 1.0001, "WARNING"),
+    (OVERTRAINING_RATIO * 0.9999, "INFO"),               # just under it: advised, not warned
+])
+def test_the_warning_threshold_boundary(caplog, ratio, level):
+    said = _said(caplog, [8.0, 7.0, 7.0 * ratio])
+    assert [lvl for lvl, _ in said] == ["INFO", level]
+    assert "--epochs 2" in said[1][1]
+
+
+@pytest.mark.parametrize("final, optional", [
+    (7.0, True),                                         # back to the minimum: +0.0 %
+    (7.0 * 1.009, True),                                 # +0.9 %
+    (7.0 * (1 + OPTIONAL_RERUN_GAP) * 0.9996, False),    # +0.9996 % prints as +1.0 %: not "under"
+    (7.0 * 1.02, False),
+])
+def test_a_rise_under_one_percent_calls_the_re_run_optional(caplog, final, optional):
+    said = _said(caplog, [8.0, 7.0, final])
+    [(level, message)] = said[1:]
+    assert level == "INFO"
+    assert "turned at epoch 2" in message
+    if optional:
+        # Only the turn, the size of the rise, and that the re-run is optional: the 1 % cut is a
+        # judgement, so the message claims no spread and promises no better model.
+        assert message == ("The held-out curve turned at epoch 2 but ended under 1 % above its "
+                           "lowest, so a re-run with --epochs 2 is optional.")
+    else:
+        assert "optional" not in message
+        assert "is likely to ship a better model" in message
+    assert "spread" not in message
+    assert "usually" not in message and "the better model" not in message
+
+
+@pytest.mark.parametrize("gap, text", [
+    (0.0, "+0.0 %"), (0.061, "+6.1 %"), (0.0004, "+0.0 %"), (1.531, "+153.1 %"),
+])
+def test_the_gap_formatting(gap, text):
+    from lfa.train import _format_gap
+    assert _format_gap(gap) == text
+
+
+def test_a_still_falling_curve_says_more_epochs_may_help(caplog):
+    said = _said(caplog, [9.0, 8.0, 7.0])
+    assert said[0] == ("INFO", "Held-out perplexity: lowest 7.000 at epoch 3 of 3; final 7.000 "
+                               "(+0.0 % over the lowest).")
+    [(level, message)] = said[1:]
+    assert level == "INFO"
+    assert "had not turned by the last epoch" in message
+    assert "more epochs may lower it further" in message and "--epochs" in message
+
+
+def test_a_one_point_curve_is_read_as_not_yet_turned(caplog):
+    said = _said(caplog, [7.5])
+    assert said[0][1].startswith("Held-out perplexity: lowest 7.500 at epoch 1 of 1;")
+    assert "had not turned" in said[1][1]
+    assert all(level == "INFO" for level, _ in said)
+
+
+def test_no_curve_says_there_was_nothing_to_choose_the_dose_by(caplog):
+    [(level, message)] = _said(caplog, [])
+    assert level == "INFO"
+    assert message.startswith("Held-out perplexity: none was measured")
+    assert "nothing to choose its dose by" in message
+    assert "val_fraction above 0" in message
+    from lfa.prepare_domain import SUGGESTED_SPLIT_CHARS
+    assert f"lfa prepare-domain --split-chars {SUGGESTED_SPLIT_CHARS}`" in message
+
+
+def test_a_workspace_stage_records_its_held_out_summary(tmp_path, base_dir, corpus_a,
+                                                         tiny_artifact):
+    """The verdict outlives the log: the stage's history entry carries the same reading."""
+    from conftest import tiny_recipe
+    from lfa import Workspace
+
+    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact=str(tiny_artifact[1]))
+    entry = ws.train(corpus_a, recipe=tiny_recipe(base_dir, val_fraction=0.5, epochs=2),
+                     device="cpu")
+
+    history = json.loads((Path(entry["output_dir"]) / "training_history.json").read_text())
+    assert entry["held_out"] == held_out_summary(history).to_dict()
+    assert entry["held_out"]["verdict"] in ("still_falling", "turned")
+    assert entry["held_out"]["final_epoch"] == 2
+    assert json.loads((ws.path / "history.json").read_text())[-1]["held_out"] == entry["held_out"]
+
+
+def test_a_resumed_run_reads_the_whole_restored_curve(setup, tiny_model, tmp_path, tiny_texts,
+                                                       caplog):
+    """A resume restores the history, so the end-of-run reading spans every epoch, the ones
+    before the interruption included -- not only the epochs this process trained."""
+    teacher, fresh_student, dataset, sampler, adapter = setup
+    _, tokenizer = tiny_model
+    holdout = ChunkedCorpus(tiny_texts[8:], tokenizer, max_length=64)
+    config = make_config()
+    student = apply_lora(fresh_student(), adapter, rank=config.lora_rank, alpha=config.lora_alpha)
+    train(teacher, student, dataset, sampler, adapter, config, tmp_path,
+          tokenizer=tokenizer, val_dataset=holdout)
+
+    with caplog.at_level(logging.INFO, logger="lfa.train"):
+        state = train(teacher, fresh_student(), dataset, sampler, adapter,
+                      make_config(num_epochs=3), tmp_path, resume=True,
+                      tokenizer=tokenizer, val_dataset=holdout)
+
+    assert [record["epoch"] for record in state.history] == [1, 2, 3]
+    summary = held_out_summary(state.history)
+    assert summary.final_epoch == 3
+    [line] = [r.getMessage() for r in caplog.records
+              if r.getMessage().startswith("Held-out perplexity:")]
+    assert f"at epoch {summary.best_epoch} of 3;" in line
+    assert f"lowest {min(r['val_perplexity'] for r in state.history):.3f}" in line
 
 
 def test_a_run_shorter_than_its_own_warmup_says_the_corpus_is_too_small(setup, tmp_path,
@@ -394,8 +639,8 @@ def test_an_ordinary_run_is_not_called_too_small(setup, tmp_path, caplog):
     assert not [r for r in caplog.records if "very small for this recipe" in r.getMessage()]
 
 
-def test_a_history_without_validation_numbers_says_nothing(tiny_texts):
-    assert held_out_turned_around([{"epoch": 1, "loss_total": 2.0}] * 5) is None
+def test_a_history_without_validation_numbers_has_no_curve(tiny_texts):
+    assert held_out_summary([{"epoch": 1, "loss_total": 2.0}] * 5).verdict == "no_curve"
 
 
 def test_a_run_that_trained_past_its_optimum_says_so_and_names_the_dose(setup, tmp_path,
@@ -406,11 +651,17 @@ def test_a_run_that_trained_past_its_optimum_says_so_and_names_the_dose(setup, t
     teacher, fresh_student, dataset, sampler, adapter = setup
     config = make_config(num_epochs=1)
     student = apply_lora(fresh_student(), adapter, rank=config.lora_rank, alpha=config.lora_alpha)
-    monkeypatch.setattr(train_module, "held_out_turned_around", lambda history: (2, 6.67, 16.88))
+    monkeypatch.setattr(train_module, "held_out_summary", lambda history: HeldOutSummary(
+        verdict="turned", best_epoch=2, best=6.67, final_epoch=15, final=16.88,
+        gap=16.88 / 6.67 - 1))
 
-    with caplog.at_level(logging.WARNING, logger="lfa.train"):
+    with caplog.at_level(logging.INFO, logger="lfa.train"):
         train(teacher, student, dataset, sampler, adapter, config, tmp_path)
 
+    assert [r.getMessage() for r in caplog.records
+            if r.getMessage().startswith("Held-out perplexity:")] == [
+        "Held-out perplexity: lowest 6.670 at epoch 2 of 15; final 16.880 (+153.1 % over the "
+        "lowest)."]
     warned = [record.getMessage() for record in caplog.records
               if record.levelname == "WARNING" and "past its own optimum" in record.getMessage()]
     assert len(warned) == 1
@@ -419,30 +670,44 @@ def test_a_run_that_trained_past_its_optimum_says_so_and_names_the_dose(setup, t
     assert "no best checkpoint is kept" in warned[0]      # why final_model is not that model
 
 
-def test_a_run_that_is_still_improving_says_nothing_about_its_dose(setup, tiny_model, tmp_path,
-                                                                   tiny_texts, caplog):
+def test_a_run_with_a_held_out_split_always_reports_its_curve(setup, tiny_model, tmp_path,
+                                                              tiny_texts, caplog):
     teacher, fresh_student, dataset, sampler, adapter = setup
     _, tokenizer = tiny_model
     holdout = ChunkedCorpus(tiny_texts[8:], tokenizer, max_length=64)
     config = make_config()
     student = apply_lora(fresh_student(), adapter, rank=config.lora_rank, alpha=config.lora_alpha)
 
-    with caplog.at_level(logging.WARNING, logger="lfa.train"):
-        train(teacher, student, dataset, sampler, adapter, config, tmp_path,
-              tokenizer=tokenizer, val_dataset=holdout)
+    with caplog.at_level(logging.INFO, logger="lfa.train"):
+        state = train(teacher, student, dataset, sampler, adapter, config, tmp_path,
+                      tokenizer=tokenizer, val_dataset=holdout)
 
     assert not [r for r in caplog.records if "past its own optimum" in r.getMessage()]
+    # Whatever the curve did, the run said what it was, once, from its own history.
+    summary = held_out_summary(state.history)
+    assert summary.verdict in ("still_falling", "turned")
+    [line] = [r.getMessage() for r in caplog.records
+              if r.getMessage().startswith("Held-out perplexity:")]
+    assert line == (f"Held-out perplexity: lowest {summary.best:.3f} at epoch "
+                    f"{summary.best_epoch} of 2; final {summary.final:.3f} "
+                    f"({summary.gap * 100:+.1f} % over the lowest).")
 
 
-def test_without_a_held_out_split_the_history_carries_no_validation_columns(setup, tmp_path):
+def test_without_a_held_out_split_the_history_carries_no_validation_columns(setup, tmp_path,
+                                                                            caplog):
     teacher, fresh_student, dataset, sampler, adapter = setup
     config = make_config(num_epochs=1)
     student = apply_lora(fresh_student(), adapter, rank=config.lora_rank, alpha=config.lora_alpha)
 
-    train(teacher, student, dataset, sampler, adapter, config, tmp_path)
+    with caplog.at_level(logging.INFO, logger="lfa.train"):
+        train(teacher, student, dataset, sampler, adapter, config, tmp_path)
 
     [record] = json.loads((tmp_path / "training_history.json").read_text())
     assert "val_loss" not in record and "val_perplexity" not in record
+    # ...and the end of the run says that there was no curve to choose the dose by.
+    assert [r.getMessage() for r in caplog.records
+            if r.getMessage().startswith("Held-out perplexity:")
+            and "nothing to choose its dose by" in r.getMessage()]
 
 
 @pytest.mark.parametrize("freeze_embed", [True, False])

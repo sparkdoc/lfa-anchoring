@@ -64,8 +64,13 @@ two.
 
 > ⚠ **`epochs: 15` is a dose, and the corpus and λ together set how much of it a run can
 > carry.** At the recipe's λ the walkthrough's Darwin text (~189 k training tokens an epoch)
-> carried all fifteen: its held-out perplexity was lowest at epoch 10 and ended within 3 % of that
-> ([below](#how-λ-was-chosen)). A weaker anchor, or a smaller corpus, reaches its held-out minimum
+> turned late and shallowly: its held-out perplexity was lowest at epoch 10 (17.62) and ended at
+> 18.09, 2.6 % above that ([below](#how-λ-was-chosen)); on Qwen3-1.7B, at the same λ, lowest at
+> epoch 11 (12.69) and ended at 12.71, 0.2 % above. The trainer reads both curves as turned, and
+> by the rule below advises a re-run at epoch 10 for the first and calls one optional for the
+> second. No run at the turn's epoch count exists for Darwin, so whether 10 or 11 epochs would ship
+> a better model on this text is unmeasured. A weaker anchor, or a smaller corpus, reaches its
+> held-out minimum
 > much earlier: at λ = 100,000 the same Darwin text bottomed at epoch 4 and ended worse than the
 > base model on both axes, and on a measured 45-document, ~106 k-token corpus, also at
 > λ = 100,000, the held-out perplexity bottomed at **epoch 2** (6.67) and ended the fifteenth
@@ -73,12 +78,40 @@ two.
 > worse on its own domain than one it had passed through. The anchor was doing its job
 > throughout (the unanchored control was worse still on both axes); the *dose* was wrong.
 >
-> **The rule.** The trainer prints `Held-out: loss=… perplexity=…` after every epoch, and warns at
-> the end if the curve turned around. Read that column: the epoch where the perplexity stops
-> falling is your dose, and you re-run at it — `lfa train … --epochs <that epoch>` — rather than
-> truncating the run you have, because the learning-rate schedule is laid over the epoch count
-> (`--epochs 3` is a complete three-epoch run, not the first three epochs of fifteen). Re-tuning
-> the dose does not re-tune λ: they are separate knobs, and λ's couplings are below.
+> **The rule.** The trainer prints `Held-out: loss=… perplexity=…` after every epoch, and at the
+> end of every run one line that reads that column for you — `Held-out perplexity: lowest X at
+> epoch k of n; final Y (+z % over the lowest).` — followed by what the curve says:
+>
+> * **It turned** (the lowest epoch is before the last): the run names that epoch, and what it
+>   says depends on how far the end rose above it.
+>   * **10 % or more:** a warning ("this run trained past its own optimum"), advising a re-run
+>     with `--epochs <that epoch>`.
+>   * **1 % to 10 %:** INFO, saying a re-run at that epoch is *likely* to ship a better model on
+>     this domain. Likely, not certain: there is one measured case. On a single 757 KB book
+>     (H. G. Wells, *A Short History of the World*, split into 67 chapters, 7 held out;
+>     Qwen3-0.6B at this recipe; one seed) the held-out perplexity was lowest at epoch 8 (27.02)
+>     and ended 6.1 % above it (28.67), and the re-run at `--epochs 8` was better on both axes:
+>     WikiText-2 15.94 against 16.59, held-out domain 26.91 against 28.66.
+>   * **Under 1 %:** INFO, saying the re-run is optional. The 1 % cut is a judgement, not a
+>     measurement. For scale, the run-to-run spread at a fixed recipe and seed (Qwen3-1.7B,
+>     λ = 1,000,000, three runs; the Qwen3-1.7B section below) is about 0.15 % on
+>     held-out domain perplexity and about 0.5 % on WikiText-2.
+> * **It had not turned** (the lowest epoch is the last, which a one-epoch run always is): more
+>   epochs may lower it further, and the run says the dose can be raised with `--epochs`.
+> * **It diverged** (the last held-out value is not finite): a warning that the run diverged and
+>   its `final_model` should not be shipped, with the lowest finite epoch named for a re-run at
+>   `--epochs <that epoch>`, or a stronger anchor or a lower learning rate. The summary is not
+>   read off the last finite epoch, which would hide the divergence.
+> * **There was no curve** (`val_fraction` 0, or a corpus with too few documents to hold any
+>   out): nothing chose the dose, and the run says so. Keep `val_fraction` above 0, and split a
+>   single long file into documents with `lfa prepare-domain --split-chars 3500`
+>   ([preparing-your-data.md](preparing-your-data.md)).
+>
+> Re-run at the epoch rather than truncating the run you have, because the learning-rate schedule
+> is laid over the epoch count (`--epochs 3` is a complete three-epoch run, not the first three
+> epochs of fifteen). The same reading — verdict, lowest epoch and value, final value, gap — is
+> kept in the stage's entry in the workspace's `history.json`, under `held_out`. Re-tuning the dose
+> does not re-tune λ: they are separate knobs, and λ's couplings are below.
 >
 > **The other end of the same axis.** A corpus so small that the whole run takes fewer optimizer
 > steps than `warmup_steps` (50 here) never reaches the learning rate this operating point was
@@ -247,7 +280,8 @@ FAQ](faq.md#wikitext-2-perplexity-came-out-below-the-base-models-is-that-a-win) 
 
 **The dose at the chosen λ.** On this corpus (about 189 k training tokens an epoch), the per-epoch
 validation perplexity — the training split's own 10 % — fell at λ = 1,000,000 from 14.53 after
-epoch 1 to its lowest, 12.69, at epoch 11, and ended at 12.71: no turn within the 15 epochs. At
+epoch 1 to its lowest, 12.69, at epoch 11, and ended at 12.71, 0.2 % above it: a shallow turn,
+which the trainer reports with the re-run optional. At
 λ = 100,000 it bottomed at epoch 5 (12.25) and ended at 18.45, the turn the dose note above
 describes. The unanchored 4-epoch run reaches held-out Darwin 14.34 with WikiText-2 (100 windows)
 flat (15.09 → 15.01). One seed, one corpus: on your own corpus, read the per-epoch column as the

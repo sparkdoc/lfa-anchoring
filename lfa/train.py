@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 import warnings
 from dataclasses import asdict, dataclass, field, replace
@@ -50,6 +51,7 @@ from .corpus import ChunkedCorpus, make_dataloader
 from .losses import anchor_loss, compute_layer_weights, weight_loss
 from .models import (TeacherModeRefused, assert_trainable_params, load_adapter_for_training,
                      make_adapter_disabled_teacher, resolve_teacher_mode)
+from .prepare_domain import SUGGESTED_SPLIT_CHARS
 from .sampler import Sampler
 
 logger = logging.getLogger("lfa.train")
@@ -66,7 +68,9 @@ __all__ = [
     "train_step",
     "train_epoch",
     "validation_loss",
-    "held_out_turned_around",
+    "OVERTRAINING_RATIO",
+    "HeldOutSummary",
+    "held_out_summary",
     "train",
 ]
 
@@ -499,37 +503,171 @@ def train_epoch(
 _EMBEDDING_MODULE_NAMES = frozenset({"embed_tokens", "lm_head"})
 
 
-#: How much worse than its own minimum a held-out perplexity has to end before the run says so.
-#: Well above epoch-to-epoch wobble, well below the 2.5x an over-trained small corpus showed.
+#: How much worse than its own minimum a held-out perplexity has to end before the run WARNS.
+#: Well above epoch-to-epoch wobble, well below the 2.5x an over-trained small corpus showed. A
+#: smaller rise is still reported, at INFO, with the re-run worded as likely rather than certain:
+#: the one measured case (one seed) ended 6.1 % above its epoch-8 minimum and was beaten on both
+#: axes by a re-run at --epochs 8 (docs/recipes.md).
 OVERTRAINING_RATIO = 1.10
 
+#: Below this rise over its own minimum a turned curve's re-run is called optional. A judgement,
+#: not a measurement: nothing measured says a re-run under 1 % gains or loses. For scale, the
+#: run-to-run spread at a fixed recipe and seed (Qwen3-1.7B, lambda 1,000,000, three runs,
+#: docs/recipes.md) is about 0.15 % on held-out domain perplexity and about 0.5 % on WikiText-2.
+OPTIONAL_RERUN_GAP = 0.01
 
-def held_out_turned_around(history: list[dict]) -> tuple[int, float, float] | None:
-    """``(best_epoch, best_perplexity, final_perplexity)`` when a run trained past its optimum.
+#: The four answers :func:`held_out_summary` gives.
+HELD_OUT_VERDICTS = ("no_curve", "still_falling", "turned", "diverged")
+
+
+@dataclass(frozen=True)
+class HeldOutSummary:
+    """What a run's held-out perplexity curve says about its dose.
+
+    ``verdict`` is one of :data:`HELD_OUT_VERDICTS`:
+
+    * ``"no_curve"`` -- no epoch carries a ``val_perplexity`` (``val_fraction=0``, or a corpus
+      with too few documents to hold any out). Every other field is ``None``.
+    * ``"still_falling"`` -- the minimum is the last epoch, so the run had not turned when it
+      ended (a one-epoch curve is this too: its only point is its last).
+    * ``"turned"`` -- the minimum is earlier than the last epoch. ``gap`` says by how much the end
+      is worse; :data:`OVERTRAINING_RATIO` decides whether that is a warning.
+    * ``"diverged"`` -- the last held-out value is there but is not a finite positive number. The
+      minimum is still read from the finite epochs (``None`` if there are none); ``final_epoch``
+      is the run's real last epoch, and ``final`` and ``gap`` are ``None``.
+
+    ``gap`` is ``final / best - 1`` (``0.061`` for a run ending 6.1 % above its minimum). Every
+    field is a finite number or ``None``, so the summary writes as standard JSON.
+    """
+
+    verdict: str
+    best_epoch: int | None = None
+    best: float | None = None
+    final_epoch: int | None = None
+    final: float | None = None
+    gap: float | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def held_out_summary(history: list[dict]) -> HeldOutSummary:
+    """Read a run's held-out perplexity curve: its minimum, its end, and whether it turned.
 
     The trainer prints the held-out perplexity after every epoch, and on a small corpus that
     number turns around long before the recipe's epoch count runs out -- the run then ships a
-    model materially worse on its own domain than one it passed through, and prints the evidence
-    epoch by epoch without ever drawing the conclusion. Reading the curve is the user's job;
-    noticing that it turned is not.
+    model worse on its own domain than one it passed through, and prints the evidence epoch by
+    epoch without ever drawing the conclusion. Reading the curve is the user's job; noticing that
+    it turned, or that it never did, is not.
 
-    ``None`` when there is no held-out curve (``val_fraction=0``), when it is shorter than two
-    epochs (one point cannot turn), when the minimum is the last epoch, or when the end is within
-    :data:`OVERTRAINING_RATIO` of the minimum -- an ordinary wobble is not a finding.
-
-    Two points are enough on purpose. A small corpus is exactly where the turn comes early, and
-    the previous three-epoch floor meant the shortest runs -- the ones a first user makes while
-    finding their footing -- were the ones that could not be told.
+    Epochs without a ``val_perplexity`` (missing or ``None``) are skipped. A value that is
+    present but not a finite positive number (NaN, infinite, zero or below) is never a minimum
+    or an end; if it is the LAST value the run has, the run diverged and is not summarised from
+    the last finite epoch, which would hide it. On a tie the earliest epoch is the minimum, so a
+    curve that returns to its minimum has turned, by 0 %.
     """
-    curve = [(record["epoch"], record["val_perplexity"]) for record in history
-             if record.get("val_perplexity") is not None]
-    if len(curve) < 2:
-        return None
+    measured = [(record["epoch"], float(record["val_perplexity"])) for record in history
+                if record.get("val_perplexity") is not None]
+    if not measured:
+        return HeldOutSummary(verdict="no_curve")
+    curve = [(epoch, value) for epoch, value in measured if math.isfinite(value) and value > 0]
+    last_epoch, last_value = measured[-1]
+    if not (math.isfinite(last_value) and last_value > 0):
+        best_epoch, best = (min(curve, key=lambda pair: pair[1]) if curve else (None, None))
+        return HeldOutSummary(verdict="diverged", best_epoch=best_epoch, best=best,
+                              final_epoch=last_epoch)
     best_epoch, best = min(curve, key=lambda pair: pair[1])
     final_epoch, final = curve[-1]
-    if best_epoch == final_epoch or not best or final < best * OVERTRAINING_RATIO:
-        return None
-    return best_epoch, best, final
+    gap = final / best - 1.0
+    verdict = "still_falling" if best_epoch == final_epoch else "turned"
+    return HeldOutSummary(verdict=verdict, best_epoch=best_epoch, best=best,
+                          final_epoch=final_epoch, final=final, gap=gap)
+
+
+#: Said wherever a re-run at the minimum is advised: why `final_model` is not already that model.
+_LAST_EPOCH_BY_DESIGN = (
+    "`final_model` is the LAST epoch -- no best checkpoint is kept, by design "
+    "(docs/recipes.md says why) -- and a re-run with --epochs {epoch} lays the whole "
+    "learning-rate schedule over that many epochs rather than truncating this one."
+)
+
+
+def _log_held_out_summary(summary: HeldOutSummary, run_logger: logging.Logger) -> None:
+    """Say, at the end of every run, what its held-out curve says about its dose.
+
+    One summary line always, then one line by verdict: a WARNING when the run diverged, or when
+    the curve turned and ended at least :data:`OVERTRAINING_RATIO` above its minimum, otherwise
+    INFO. The messages carry no
+    measured evidence -- the docs do (docs/recipes.md, "Run length and checkpointing").
+    """
+    if summary.verdict == "no_curve":
+        run_logger.info(
+            "Held-out perplexity: none was measured (val_fraction is 0, or the corpus had too "
+            "few documents to hold any out), so this run had nothing to choose its dose by. To "
+            "get a curve, keep the recipe's val_fraction above 0 and give the corpus more than "
+            f"one document -- split a single long file with `lfa prepare-domain --split-chars "
+            f"{SUGGESTED_SPLIT_CHARS}` into a fresh directory."
+        )
+        return
+
+    if summary.verdict == "diverged":
+        if summary.best_epoch is None:
+            run_logger.info("Held-out perplexity: no finite value at any epoch up to epoch %d.",
+                            summary.final_epoch)
+            retry = "Re-run with a stronger anchor or a lower learning rate."
+        else:
+            run_logger.info("Held-out perplexity: lowest %.3f at epoch %d of %d; final not "
+                            "finite.", summary.best, summary.best_epoch, summary.final_epoch)
+            retry = (f"Re-run with --epochs {summary.best_epoch} (where it was lowest), or with "
+                     f"a stronger anchor or a lower learning rate.")
+        run_logger.warning(
+            "The held-out perplexity at the last epoch (%d) was not finite: this run diverged, "
+            "and its final_model should not be shipped. %s", summary.final_epoch, retry,
+        )
+        return
+
+    run_logger.info("Held-out perplexity: lowest %.3f at epoch %d of %d; final %.3f "
+                    "(%s over the lowest).", summary.best, summary.best_epoch,
+                    summary.final_epoch, summary.final, _format_gap(summary.gap))
+
+    if summary.verdict == "still_falling":
+        run_logger.info(
+            "The held-out curve had not turned by the last epoch, so more epochs may lower it "
+            "further: the dose can be raised with a re-run at a larger --epochs."
+        )
+        return
+
+    advice = _LAST_EPOCH_BY_DESIGN.format(epoch=summary.best_epoch)
+    if summary.final >= summary.best * OVERTRAINING_RATIO:
+        run_logger.warning(
+            "This run trained past its own optimum: held-out perplexity was lowest at epoch %d "
+            "(%.3f) and ended at %.3f, epoch %d. How many epochs a corpus carries depends on its "
+            "size and on lambda: a smaller corpus, or a weaker anchor, reaches its minimum "
+            "sooner. To ship the better model, re-run with --epochs %d. %s",
+            summary.best_epoch, summary.best, summary.final, summary.final_epoch,
+            summary.best_epoch, advice,
+        )
+        return
+
+    # Decided on the rounded figure the summary line printed, so a gap shown as "+1.0 %" is
+    # never called "under 1 %".
+    if round(summary.gap * 100, 1) < OPTIONAL_RERUN_GAP * 100:
+        run_logger.info(
+            "The held-out curve turned at epoch %d but ended under 1 %% above its lowest, so a "
+            "re-run with --epochs %d is optional.", summary.best_epoch, summary.best_epoch,
+        )
+        return
+
+    run_logger.info(
+        "The held-out curve turned at epoch %d: a re-run with --epochs %d is likely to ship a "
+        "better model on this domain than this one. %s",
+        summary.best_epoch, summary.best_epoch, advice,
+    )
+
+
+def _format_gap(gap: float) -> str:
+    """``+6.1 %``: the end's rise over the minimum, one decimal, always signed."""
+    return f"{gap * 100:+.1f} %"
 
 
 def _save_student(student: nn.Module, output_dir: Path) -> None:
@@ -858,7 +996,7 @@ def train(
     # Before the first step rather than after the last: the three corpus shapes that train badly
     # without failing are read off the corpus the caller built, against THIS run's batch and epoch
     # count. The trainer's other corpus remarks are downstream of the run -- the warmup one needs
-    # the step count, `held_out_turned_around` needs the curve -- and by then the time is spent.
+    # the step count, `held_out_summary` needs the curve -- and by then the time is spent.
     for note in _corpus_shape_warnings(dataset, config):
         run_logger.warning(note)
 
@@ -1054,18 +1192,6 @@ def train(
     history_path.write_text(json.dumps(state.history, indent=2))
     run_logger.info("Training history saved to %s", history_path)
 
-    turned_around = held_out_turned_around(state.history)
-    if turned_around is not None:
-        best_epoch, best, final = turned_around
-        run_logger.warning(
-            "This run trained past its own optimum: held-out perplexity was lowest at epoch %d "
-            "(%.3f) and ended at %.3f, epoch %d. How many epochs a corpus carries depends on its "
-            "size and on lambda: a smaller corpus, or a weaker anchor, reaches its minimum sooner. "
-            "`final_model` is the LAST epoch -- no best checkpoint is kept, by design "
-            "(docs/recipes.md says why) -- so to ship the better model, re-run with --epochs %d, "
-            "which lays the whole learning-rate schedule over that many epochs rather than "
-            "truncating this one.",
-            best_epoch, best, final, len(state.history), best_epoch,
-        )
+    _log_held_out_summary(held_out_summary(state.history), run_logger)
 
     return state

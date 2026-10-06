@@ -339,6 +339,19 @@ and more epochs than the text can carry. The trainer names each one with its num
 first step; [preparing-your-data.md](preparing-your-data.md#three-shapes-that-train-badly) has the
 thresholds and what to do about each.
 
+## The run ended with "Held-out perplexity: lowest … at epoch …". What do I do with it?
+
+Read it as the dose. If the lowest epoch is before the last, the curve turned, and `final_model`
+is the last epoch (no best checkpoint is kept). The fix is a re-run with `--epochs <the lowest
+epoch>` — a complete shorter run, not a truncation of this one — and the run says how much it is
+worth: a warning at 10 % or more above the lowest, "likely to ship a better model on this domain"
+from 1 % to 10 %, and "optional" under 1 %. If the lowest is the last epoch, more epochs may lower
+it further. If the last value is not finite, the run diverged: do not ship it. If there was no
+held-out curve at all, the corpus had nothing held out to choose the dose by.
+[recipes.md](recipes.md#run-length-and-checkpointing) has the rule and the one measured re-run
+behind it; the stage's entry in the workspace's `history.json` keeps the same reading under
+`held_out`.
+
 ## Is the learning-rate schedule exactly restored when I `--resume`?
 
 Nearly, and the caveat is inherited from the research code. The schedule's total is

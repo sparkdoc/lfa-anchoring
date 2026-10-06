@@ -73,6 +73,7 @@ from .recipe import BUNDLED_DIR, Recipe
 from .sampler import Sampler
 from .selfgen.artifact_corpus import SelfGenOptions
 from .supplements import beside_corpus, supplement_for
+from .train import held_out_summary
 from .train import train as run_training
 
 logger = logging.getLogger("lfa.workspace")
@@ -731,6 +732,10 @@ class Workspace:
                 "writer_sha256": (supplement_manifest or {}).get("writer_sha256"),
             },
             "final_loss": training.history[-1]["loss_total"] if training.history else None,
+            # What the stage's held-out curve said about its dose -- the same reading the
+            # trainer logged at the end of the run (verdict, minimum, end, gap) -- so a stage
+            # that ended past its minimum stays visible after the log is gone.
+            "held_out": held_out_summary(training.history).to_dict(),
             # Where and in what precision this stage ran: an export merges in the dtype it was
             # trained in rather than in a default that may not be the same one.
             "device": placement,

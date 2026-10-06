@@ -28,7 +28,8 @@
 #
 # The dose at this lambda. On this corpus (about 189 k training tokens an epoch) the per-epoch
 # validation perplexity (the training split's own 10 %) fell from 14.53 after epoch 1 to its
-# lowest, 12.69, at epoch 11 and ended at 12.71: no turn within the 15 epochs. At lambda =
+# lowest, 12.69, at epoch 11 and ended at 12.71, 0.2 % above it: a shallow turn, which the trainer
+# reports with a re-run at epoch 11 called optional (no 11-epoch run was measured). At lambda =
 # 100,000 it bottomed at epoch 5 (12.25) and ended at 18.45. An unanchored 4-epoch run reaches
 # held-out Darwin 14.34 with WikiText-2 flat (15.09 -> 15.01). One seed, one corpus: on your own
 # corpus, read the per-epoch held-out column and set the dose from it (docs/recipes.md).
