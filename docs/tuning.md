@@ -95,12 +95,14 @@ kept ([faq.md](faq.md#wikitext-2-perplexity-came-out-below-the-base-models-is-th
 
 **The control.** `lfa evaluate --compare-unanchored` trains the same stage again with λ = μ = 0 and
 adds it as a third column. It trains at the anchored run's epochs, and without the anchor a corpus
-turns much sooner, so at that dose much of the gap can be dose: on both corpora where it was
-measured (the Wells book below and the walkthrough's Darwin text) most of it was. On the Wells book,
-at 15 epochs, the control ended at WikiText-2 334.27 and held-out 435.46, but its own curve was
-lowest at epoch 1 (25.59). When the control's curve turned (ending 1 % or more above its lowest),
-`evaluate` says so beneath the table and prints three commands that train it at its own best epoch
-in a fresh workspace; the training one has the shape
+turns much sooner, so at that dose part of the gap can be dose. On the Wells book, at 15 epochs,
+the control ended at WikiText-2 334.27 and held-out 435.46, but its own curve was lowest at epoch 1
+(25.59), below every anchored run on the domain; its WikiText-2 near that epoch was not measured.
+On the walkthrough's Darwin text, re-run at its own best epoch, the control fit the domain more
+closely than the anchored run and kept less of WikiText-2 (the companion notebook). When the
+control's curve turned (ending 1 % or more above its lowest), `evaluate` says so beneath the table
+and prints three commands that train it at its own best epoch in a fresh workspace; the training
+one has the shape
 
 ```bash
 lfa train --workspace <fresh> --corpus data/world_history --lambda 0 --mu 0 --epochs <its best>
