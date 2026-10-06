@@ -220,7 +220,9 @@ Read the two axes together and always in that order:
    axis says.
 2. What did it cost on the general axis? That is a *cost*, and the interesting comparison is
    against the unanchored control (`--compare-unanchored`), which shows how much of that cost the
-   anchor removed.
+   anchor removed. Read the control at its own best epoch as well as at the run's: unanchored, a
+   small corpus turns early, and when it did, `evaluate` says so beneath the table and prints the
+   commands that train the control there.
 
 A general number below base is at best incidental and at worst a symptom. It is not evidence that
 anything was preserved.

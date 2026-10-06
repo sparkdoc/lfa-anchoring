@@ -138,7 +138,10 @@ learned anything:
 
 `--compare-unanchored` adds a third column: the same run with λ = μ = 0, trained on the same mix
 (the stage's own supplement at the stage's fraction). That control is what says what the anchor
-bought, and it costs a second training run.
+bought, and it costs a second training run. It trains for the anchored run's epochs, which is not
+its own dose, so read it at its own best epoch too: when its held-out curve turned earlier,
+`evaluate` says so beneath the table and prints the commands that train it there in a fresh
+workspace (`lfa train … --lambda 0 --mu 0 --epochs <its best>`).
 
 A general perplexity *below* the base model's is not a win — see [faq.md](faq.md).
 

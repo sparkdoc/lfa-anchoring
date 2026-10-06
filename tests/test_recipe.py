@@ -170,6 +170,67 @@ def test_full_weight_recipe_turns_lora_off(tmp_path):
     assert config.full_weight is True and config.use_lora is False
 
 
+# -- a per-run lambda and mu (`lfa train --lambda` / `--mu`)
+
+@pytest.mark.parametrize("stage", [1, 2, 3])
+def test_an_explicit_lambda_is_the_stages_lambda_with_no_multiplier_on_top(tmp_path, stage):
+    """`--lambda X` is what the stage trains at: the multiplier is the recipe's, not the flag's."""
+    config = Recipe.load("qwen3-0.6b").to_train_config(stage, tmp_path / "s.pt", lambda_=2.5e6)
+    assert (config.lambda_qkv, config.lambda_mlp) == (2.5e6, 2.5e6)
+    assert config.mu == 0.05                                      # untouched without --mu
+
+
+def test_an_explicit_lambda_sets_both_site_families_even_where_the_recipe_splits_them(tmp_path):
+    recipe = dataclasses.replace(Recipe.load("qwen3-0.6b"), lambda_qkv=1e6, lambda_mlp=2e6)
+    assert recipe.stage_lambdas(2) == (3e6, 6e6)
+    config = recipe.to_train_config(2, tmp_path / "s.pt", lambda_=5e5)
+    assert (config.lambda_qkv, config.lambda_mlp) == (5e5, 5e5)
+
+
+def test_an_explicit_mu_is_used_as_given_and_zero_is_a_value(tmp_path):
+    recipe = Recipe.load("qwen3-0.6b")
+    assert recipe.to_train_config(2, tmp_path / "s.pt", mu=0.2).mu == 0.2
+    config = recipe.to_train_config(1, tmp_path / "s.pt", lambda_=0, mu=0)
+    assert (config.lambda_qkv, config.lambda_mlp, config.mu) == (0.0, 0.0, 0.0)
+
+
+@pytest.mark.parametrize("bad", [-1.0, float("nan"), float("inf"), "much"])
+@pytest.mark.parametrize("knob", ["lambda_", "mu"])
+def test_a_lambda_or_mu_that_cannot_weight_a_loss_is_refused(tmp_path, knob, bad):
+    with pytest.raises(ValueError, match="finite number, 0 or above|must be a number"):
+        Recipe.load("qwen3-0.6b").to_train_config(1, tmp_path / "s.pt", **{knob: bad})
+
+
+def test_no_override_note_when_nothing_moved():
+    recipe = Recipe.load("qwen3-0.6b")
+    assert recipe.override_notes(1) == []
+    assert recipe.override_notes(1, lambda_=1e6, mu=0.05) == []          # the recipe's own
+    assert recipe.override_notes(2, lambda_=3e6) == []                   # stage 2's own
+
+
+def test_an_off_recipe_lambda_names_the_value_set_and_the_one_calibrated():
+    [note] = Recipe.load("qwen3-0.6b").override_notes(1, lambda_=2.5e6)
+    assert note.startswith("lambda 2.5e+06 set by --lambda")
+    assert "the recipe calibrated 1e+06." in note
+    assert "no stage multiplier on top" in note
+
+
+def test_at_stage_two_the_note_quotes_the_multiplied_value_and_says_where_it_came_from():
+    [note] = Recipe.load("qwen3-0.6b").override_notes(2, lambda_=1e6)
+    assert "the recipe calibrated 3e+06 for stage 2 (1e+06 x its stage-2 multiplier 3)" in note
+
+
+def test_mu_and_the_unanchored_control_are_named():
+    recipe = Recipe.load("qwen3-0.6b")
+    [mu_note] = recipe.override_notes(1, mu=0.2)
+    assert mu_note == "mu 0.2 set by --mu (mu= from Python); the recipe's is 0.05."
+    lambda_note, mu_note, control = recipe.override_notes(1, lambda_=0, mu=0)
+    assert lambda_note.startswith("lambda 0 set by --lambda")
+    assert "unanchored control" in control and "not sampled" in control
+    *_, backstop_only = recipe.override_notes(1, lambda_=0)
+    assert "only mu's weight backstop" in backstop_only
+
+
 # ==============================================================================================
 # warnings
 # ==============================================================================================
@@ -409,3 +470,10 @@ def test_the_recorded_frame_agrees_with_selfgen_options():
 def test_a_self_generated_frame_that_is_not_a_frame_is_refused(bad):
     with pytest.raises(ValueError, match="self_generated_frame"):
         Recipe(name="r", model_id="m", artifact="self-generated", self_generated_frame=bad)
+
+
+def test_the_notes_read_a_numeric_string_as_its_number_and_refuse_a_bool():
+    recipe = Recipe.load("qwen3-0.6b")
+    assert recipe.override_notes(1, lambda_="2.5e6") == recipe.override_notes(1, lambda_=2.5e6)
+    with pytest.raises(ValueError, match="must be a number"):
+        recipe.override_notes(1, mu=True)

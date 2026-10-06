@@ -174,7 +174,8 @@ def test_a_stage_trains_with_the_self_written_supplement_mixed_in(tmp_path, darw
     assert supp["n_pairs_available"] >= 2 and supp["n_pairs_used"] >= 1
     assert 0.0 < supp["achieved_fraction"] < 0.5
     assert len(supp["writer_sha256"]) == 64
-    assert entry["n_val_docs"] == 1 and entry["n_train_docs"] == 3 + supp["n_pairs_used"]
+    assert (entry["n_val_docs"], entry["n_train_docs"]) == (1, 3)      # domain documents only
+    assert entry["n_train_supplement_pairs"] == supp["n_pairs_used"]
     assert (tmp_path / "ws" / "supplements").is_dir()
 
 

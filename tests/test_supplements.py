@@ -111,3 +111,52 @@ def test_the_walk_stops_below_the_home_directory(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path / "alice"))
     assert supplements.domain_description_for(tmp_path / "alice" / "data" / "train") == "the domain"
     assert supplements.domain_description_for(tmp_path / "alice" / "darwin" / "train") == "darwin"
+
+
+# -- one guard for every route to the writer (Task 1 review G2)
+
+def _one_book(tmp_path) -> Path:
+    corpus = tmp_path / "wells"
+    corpus.mkdir()
+    (corpus / "book.txt").write_text("A long book, read as one document. " * 400)
+    return corpus
+
+
+@pytest.fixture
+def no_writer(monkeypatch):
+    """Fails the test if the writer, or the hash of the checkpoint it would load, is reached."""
+    def reached(*args, **kwargs):
+        raise AssertionError("the supplement writer was reached")
+    monkeypatch.setattr(supplements, "write_supplement", reached)
+    monkeypatch.setattr(supplements, "checkpoint_sha256", reached)
+
+
+def test_a_one_document_corpus_is_refused_before_the_writer_loads(tmp_path, base_dir, no_writer):
+    corpus = _one_book(tmp_path)
+    with pytest.raises(ValueError) as refused:
+        supplements.supplement_for(corpus, "base", tiny_recipe(base_dir, val_fraction=0.1),
+                                   write_root=tmp_path / "out", search_roots=[], device="cpu")
+    message = str(refused.value)
+    assert "holds 1 document(s)" in message and "at least 2" in message
+    assert "--split-chars 3500" in message and "--no-supplement" in message
+    assert not (tmp_path / "out").exists()
+
+
+def test_prepare_supplement_takes_the_same_refusal(tmp_path, base_dir, no_writer):
+    with pytest.raises(ValueError, match="--split-chars 3500"):
+        supplements.prepare_supplement(_one_book(tmp_path), "base",
+                                       recipe=tiny_recipe(base_dir, val_fraction=0.1))
+    assert not supplements.beside_corpus(tmp_path / "wells").exists()
+
+
+def test_a_recipe_that_holds_nothing_out_is_not_refused(tmp_path, base_dir, patched):
+    """val_fraction 0 asks for no held-out split, so one document is missing nothing."""
+    path, _ = supplements.supplement_for(
+        _one_book(tmp_path), "base", tiny_recipe(base_dir, val_fraction=0.0),
+        write_root=tmp_path / "out", search_roots=[], device="cpu")
+    assert path.is_file() and len(patched) == 1
+
+
+def test_the_refusal_suggests_prepare_domains_own_size():
+    from lfa.prepare_domain import SUGGESTED_SPLIT_CHARS
+    assert supplements.SUGGESTED_SPLIT_CHARS == SUGGESTED_SPLIT_CHARS == 3500

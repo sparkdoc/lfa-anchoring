@@ -113,6 +113,17 @@ two.
 > kept in the stage's entry in the workspace's `history.json`, under `held_out`. Re-tuning the dose
 > does not re-tune λ: they are separate knobs, and λ's couplings are below.
 >
+> **Where the re-run goes.** In the same workspace, before `lfa extend`, `lfa train --corpus <the
+> same corpus> --epochs 8` is a second run of the stage, not an overwrite (after `extend`, the same
+> corpus would be the next stage): it writes `runs/stage1_run2` (a third,
+> `runs/stage1_run3`), and the first run stays in `runs/stage1`. The latest run of a stage is the
+> one `lfa evaluate`, `lfa fuse`, `lfa extend` and `lfa regenerate-artifact` read from then on;
+> `train` says so when it starts and when it ends, `evaluate` logs the directory it read, and every
+> run keeps its own entry in `history.json`. `--resume` is the exception: it continues the latest
+> run in its own directory, at the λ and μ that run was started with: without `--lambda`/`--mu`
+> it takes them from the run's `config.json` and says so, and an explicit `--lambda` or `--mu`
+> that differs is refused, naming the run's value exactly and the flag to give or drop.
+>
 > **The other end of the same axis.** A corpus so small that the whole run takes fewer optimizer
 > steps than `warmup_steps` (50 here) never reaches the learning rate this operating point was
 > tuned at — a handful of documents can be two or three steps in total. The trainer says so at the
@@ -361,10 +372,57 @@ rather than its id, and is one of these:
 One more is logged by `train` itself rather than by the recipe: *"Training on the raw corpus alone:
 this recipe's lambda was calibrated at supplement_fraction 0.13 and this run mixes none."* It fires
 on `--no-supplement` (`supplement=False`) when the recipe's `supplement_fraction` is above 0; a
-recipe that sets `0.0` has opted out at the recipe level and is not warned.
+recipe that sets `0.0` has opted out at the recipe level and is not warned. And a `--lambda` or
+`--mu` that differs from what the recipe would have used at that stage is named beside the
+recipe's value (`Recipe.override_notes`; [below](#trying-another-λ)).
 
 **Diagnose against held-out domain perplexity.** Over-anchoring makes general-text perplexity look
 its best while domain quality collapses, so the general axis alone cannot tell you λ is too high.
+
+## Trying another λ
+
+λ is coupled to the corpus as well as to the rank and the artifact, so the recipe's value is where
+to start on your text, not a promise about it. To try another, set it for one run:
+
+```bash
+lfa train --workspace runs/my_ws --corpus data/my_domain --lambda 2500000
+```
+
+`--lambda X` is the stage's λ **exactly**: both `lambda_qkv` and `lambda_mlp`, with no stage
+multiplier on top (at stage 2, `--lambda 3000000` is what the shipped recipes would have used).
+`--mu Y` does the same for μ. From Python: `ws.train(corpus, lambda_=2.5e6, mu=0.05)`. Every
+other field is the recipe's.
+
+The run starts with a note naming both values — *"lambda 2.5e+06 set by --lambda (lambda_= from
+Python); the recipe calibrated 1e+06. It applies as given, with no stage multiplier on top. …"*
+(at stage 2, *"… the recipe calibrated 3e+06 for stage 2 (1e+06 x its stage-2 multiplier 3)"*) —
+and ends with its held-out verdict, as every run does. What ran is recorded: the stage's
+`history.json` entry carries `lambda_applied`, `lambda_mlp_applied` and `mu_applied` (the values
+the trainer used, which the run's `config.json` also holds as `lambda_qkv`, `lambda_mlp` and `mu`),
+`lambda_override` and `mu_override` (the values given, `null` where the recipe's were used), and
+`recipe`, the recipe as written. `lfa evaluate` logs the λ and μ of the run it reads and where each
+came from.
+
+Read the result by its held-out curve and on both axes (`lfa evaluate`), as for the recipe's own
+λ. One measured case (H. G. Wells, *A Short History of the World*, Qwen3-0.6B at this recipe, one
+seed): λ 2,500,000 at 15 epochs scored WikiText-2 15.91 and held-out 27.12, the recipe's
+1,000,000 re-run at its best epoch, 8, scored 15.94 and 26.91, and the recipe's own 15 epochs
+16.59 and 28.66. There, a stronger anchor and a shorter run reached about the same point.
+
+In one workspace, each value is a run of the same stage (`runs/stage1_run2`, …;
+[above](#run-length-and-checkpointing)). Run `lfa evaluate` after each: the numbers land in that
+run's entry. The last run trained is the one `fuse` and `extend` take, so finish on the value you
+choose, or give each value its own workspace (`lfa init <new> --model <id> --artifact <first
+workspace>/artifacts/v1.pt` reuses the artifact without rebuilding it).
+
+**`--lambda 0 --mu 0` is the unanchored control**, at whatever `--epochs` says. At λ 0 the
+function anchor has no term to compute, so the artifact is not sampled (a workspace still needs one
+at `init`). `lfa evaluate --compare-unanchored` trains the control at the stage's own epochs; when
+that control's held-out curve turned earlier, `evaluate` prints the three commands that train it
+at its own best epoch with these flags, in a fresh workspace.
+
+To keep a λ — or to change any other field — write it into a recipe of your own (next section), so
+that it is what `train` uses without a flag and its calibration record says where it was tuned.
 
 ## Writing your own
 
@@ -391,18 +449,21 @@ A recipe file must be a YAML mapping, may not carry a field `Recipe` does not ha
 
 ## Per-run overrides
 
-`Workspace.train` takes `epochs`, `full_weight`, `teacher_mode`, `keep_short_whole`,
-`supplement`, `domain_description` and `output_name` per call (`--epochs`, `--full-weight`,
-`--teacher-mode`, `--no-supplement` / `--supplement <file>`, `--domain-description` on the CLI);
-the recipe is otherwise used as written. `teacher_mode` is not a recipe field on purpose: it
-decides where the frozen teacher is read from, not what is optimized, and the two modes train the
-same model to the last bit — so it is not part of a tuned operating point. `auto`, the default, is
-`adapter_disabled` for a LoRA run (no second model is loaded) and `separate` for full weight. Whatever
-actually ran — both λ values after the stage multiplier, the short-document setting, the held-out
-fraction, the device and the dtype, and under `supplement` the pairs file, how many pairs were
-available and used, the target and achieved fractions and the writer's checkpoint hash — is
-recorded in that stage's `history.json` entry, so a run says what it did rather than what it was
-asked for.
+`Workspace.train` takes `epochs`, `lambda_`, `mu`, `full_weight`, `teacher_mode`,
+`keep_short_whole`, `supplement`, `domain_description` and `output_name` per call (`--epochs`,
+`--lambda`, `--mu`, `--full-weight`, `--teacher-mode`, `--no-supplement` / `--supplement <file>`,
+`--domain-description` on the CLI); the recipe is otherwise used as written. `teacher_mode` is
+not a recipe field on purpose: it decides where the frozen teacher is read from, not what is
+optimized, and the two modes train the same model to the last bit — so it is not part of a tuned
+operating point. `auto`, the default, is `adapter_disabled` for a LoRA run (no second model is
+loaded) and `separate` for full weight. Whatever actually ran — both λ values after the stage
+multiplier (or as `--lambda` set them), μ, the short-document setting, the held-out fraction, the
+domain documents trained on and held out
+(`n_train_docs`, `n_val_docs`) and, apart from them, the supplement pairs mixed in
+(`n_train_supplement_pairs`), the device and the dtype, and under `supplement` the pairs file, how
+many pairs were available and used, the target and achieved fractions and the writer's checkpoint
+hash — is recorded in that stage's `history.json` entry, so a run says what it did rather than what
+it was asked for.
 
 The chunk offset itself is not a setting: it rotates the chunk boundaries, so every token of every
 document is trained on in every epoch.

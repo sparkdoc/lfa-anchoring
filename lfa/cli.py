@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import shlex
 import sys
 from pathlib import Path
 
@@ -52,6 +53,7 @@ from .prepare_domain import (
     prepare_domain,
 )
 from .probe import probe_artifact
+from .recipe import Recipe, check_anchor_weight
 from .seed_corpus import SourceUnavailable, prepare_seed_corpus
 # CorpusFrameMismatch is a ValueError, so the tuple below already reports it; imported to name it.
 from .selfgen.artifact_corpus import (  # noqa: F401
@@ -112,6 +114,20 @@ def _windows(value: str) -> int | None:
             f"general axis; got {value!r}")
 
 
+def _anchor_weight(name: str):
+    """``--lambda`` / ``--mu``: a finite number, 0 or above.
+
+    The rule is :func:`lfa.recipe.check_anchor_weight`'s, applied at parse time so that a bad
+    value is a usage error rather than a refusal after the workspace is opened.
+    """
+    def parse(value: str) -> float:
+        try:
+            return check_anchor_weight(name, value)
+        except ValueError as error:
+            raise argparse.ArgumentTypeError(str(error))
+    return parse
+
+
 def _layer_list(value: str) -> list[int]:
     """``--layers``: comma-separated layer indices."""
     try:
@@ -138,8 +154,15 @@ def _init(args) -> int:
     workspace = Workspace.init(args.path, args.model, artifact=args.artifact,
                                recipe=args.recipe, selfgen=selfgen, rebuild=args.rebuild)
     # `Workspace.init` already LOGS that the workspace was created, and the CLI configures
-    # logging, so printing the same sentence here showed it twice. Say the next step instead.
-    print(f"Next: lfa train --workspace {workspace.path} --corpus <your documents>")
+    # logging, so printing the same sentence here showed it twice. Say the next steps instead:
+    # the documents and their supplement first (the trial's user went straight to `train`),
+    # then the stage.
+    recipe = (f" --recipe {shlex.quote(args.recipe)}"
+              if args.recipe and args.recipe != Recipe.bundled_for(args.model) else "")
+    print(f"Next: lfa prepare-domain <your files> --out <dir> --supplement --model "
+          f"{shlex.quote(args.model)}{recipe}   (add --split-chars {SUGGESTED_SPLIT_CHARS} for "
+          "one long file, such as a book)")
+    print(f"Then: lfa train --workspace {shlex.quote(str(workspace.path))} --corpus <dir>")
     return 0
 
 
@@ -167,9 +190,10 @@ def _list_artifacts(args) -> int:
 
 
 def _train(args) -> int:
-    entry = _open(args).train(
-        args.corpus, args.recipe, epochs=args.epochs, device=args.device,
-        allow_sharding=args.allow_sharding, resume=args.resume,
+    workspace = _open(args)
+    entry = workspace.train(
+        args.corpus, args.recipe, epochs=args.epochs, lambda_=args.lambda_, mu=args.mu,
+        device=args.device, allow_sharding=args.allow_sharding, resume=args.resume,
         full_weight=args.full_weight, teacher_mode=args.teacher_mode,
         supplement=(False if args.no_supplement else (args.supplement or True)),
         domain_description=args.domain_description,
@@ -177,6 +201,12 @@ def _train(args) -> int:
     loss = entry["final_loss"]
     cost = f" (final loss {loss:.4f})" if loss is not None else ""
     print(f"Stage {entry['stage']} written to {entry['output_dir']}{cost}")
+    # A second run of a stage is the one every later command reads; say so where it is seen.
+    earlier = workspace._earlier_runs(entry["stage"], Path(entry["output_dir"]))
+    if earlier:
+        print(f"This is the latest of stage {entry['stage']}'s runs: `lfa evaluate`, `lfa fuse`, "
+              f"`lfa extend` and `lfa regenerate-artifact` read it, not "
+              f"{', '.join(map(str, earlier))}.")
     return 0
 
 
@@ -386,6 +416,17 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--epochs", type=int, metavar="N",
                        help="override the recipe's number of epochs (the learning-rate schedule "
                             "is laid over whatever this says)")
+    train.add_argument("--lambda", dest="lambda_", type=_anchor_weight("lambda"), metavar="X",
+                       help="this stage's lambda, exactly: both site families, with no stage "
+                            "multiplier on top (default: the recipe's, x its stage-2 multiplier "
+                            "from stage 2 on). The run logs the value the recipe calibrated "
+                            "beside it; read the result by its held-out curve and on both axes "
+                            "(docs/recipes.md, 'Trying another λ'). 0 switches the anchor "
+                            "off and the artifact is not sampled")
+    train.add_argument("--mu", type=_anchor_weight("mu"), metavar="Y",
+                       help="this stage's mu, the weight backstop, exactly (default: the "
+                            "recipe's). --lambda 0 --mu 0 trains the unanchored control, at "
+                            "whatever --epochs says")
     train.add_argument("--full-weight", dest="full_weight", action="store_true", default=None,
                        help="train full weights instead of LoRA; outside the paper's validated "
                             "envelope")
@@ -397,7 +438,12 @@ def build_parser() -> argparse.ArgumentParser:
                             "second for --full-weight. The two are bit-identical; the choice is "
                             "memory, not results")
     train.add_argument("--resume", action="store_true",
-                       help="continue the run already in this stage's output directory")
+                       help="continue the run already in this stage's output directory, at "
+                            "the lambda and mu it was started with: taken from the run when "
+                            "--lambda/--mu are not given, and an explicit one that differs is "
+                            "refused. Without it, training the same corpus again "
+                            "is a second run of the stage, written to runs/stage<N>_run<k>; "
+                            "evaluate, fuse and extend then read that latest run")
     supplement = train.add_mutually_exclusive_group()
     supplement.add_argument("--no-supplement", dest="no_supplement", action="store_true",
                             help="train on the raw corpus alone (the recipe's lambda was "
@@ -453,7 +499,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     # ------------------------------------------------------------------------------ evaluate
     evaluate = subcommands.add_parser(
-        "evaluate", help="read the last stage on both axes: what it learned and what it kept")
+        "evaluate", help="read the last stage on both axes: what it learned and what it kept "
+                         "(its latest run, when the stage was trained more than once)")
     _add_workspace(evaluate)
     evaluate.add_argument("--corpus", metavar="DIR",
                           help="text to measure domain perplexity on, scored whole "
@@ -461,7 +508,11 @@ def build_parser() -> argparse.ArgumentParser:
                                "its val_fraction kept out of training)")
     evaluate.add_argument("--compare-unanchored", action="store_true",
                           help="re-run the stage with lambda = mu = 0 and report it as a third "
-                               "column: the control that says what the anchor bought")
+                               "column: the control that says what the anchor bought. It trains "
+                               "at the stage's epochs, the anchored run's dose; when its own "
+                               "held-out curve turned earlier, part of its gap is dose, and a "
+                               "note beneath the table gives the commands that train it at its "
+                               "own best epoch in a fresh workspace")
     evaluate.add_argument("--n-windows", type=_windows, default=100, metavar="N",
                           help="WikiText-2 windows for the general axis; 0 scores the whole "
                                "split and 'none' skips it (default: %(default)s)")

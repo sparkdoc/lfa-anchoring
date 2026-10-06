@@ -17,7 +17,8 @@ import os
 import re
 from pathlib import Path
 
-from .corpus import split_documents
+from .corpus import min_documents_for_held_out, split_documents
+from .prepare_domain import SUGGESTED_SPLIT_CHARS
 from .recipe import Recipe
 from .selfgen.generate import checkpoint_sha256, sha256_text
 from .selfgen.supplement import SupplementOptions, template_sha256, write_supplement
@@ -106,11 +107,23 @@ def supplement_for(corpus_path: Path, writer_id: str, recipe: Recipe, *, write_r
     side is the recipe's: its held-out fraction and seed decide which documents the pairs may
     come from, so held-out text never reaches the supplement.
 
+    Every route to the writer comes through here -- ``lfa train``, ``lfa prepare-supplement``,
+    ``lfa prepare-domain --supplement`` and their Python calls -- so this is where a corpus with
+    nothing to hold out is refused: before any supplement is looked for or the writer loads.
+
     Returns:
         The supplement's path and its manifest.
+
+    Raises:
+        ValueError: the recipe holds documents out (``val_fraction`` above 0) and the corpus has
+            too few to hold any out -- one long file, typically. The pairs are minutes of
+            generation, for a run with no held-out curve to choose its epochs by and a domain
+            number that is a fit.
     """
     corpus_path = Path(corpus_path).expanduser().resolve()
-    train_docs, _ = split_documents(corpus_path, recipe.val_fraction, recipe.seed)
+    train_docs, held_out = split_documents(corpus_path, recipe.val_fraction, recipe.seed)
+    if recipe.val_fraction > 0 and not held_out:
+        raise ValueError(_nothing_held_out(corpus_path, len(train_docs), recipe.val_fraction))
     corpus_hash = sha256_text(train_docs)
     writer_hash = checkpoint_sha256(str(writer_id))
     description = domain_description or domain_description_for(corpus_path)
@@ -133,6 +146,25 @@ def supplement_for(corpus_path: Path, writer_id: str, recipe: Recipe, *, write_r
                                 options=SupplementOptions(), corpus_sha256=corpus_hash,
                                 device=device)
     return out, manifest
+
+
+def _nothing_held_out(corpus_path: Path, n_documents: int, val_fraction: float) -> str:
+    """The refusal for a supplement over a corpus that holds nothing out.
+
+    The same facts and the same fix as ``lfa prepare-domain``'s refusal, worded for a corpus that
+    already exists.
+    """
+    return (
+        f"{corpus_path} holds {n_documents} document(s), and training holds out whole documents "
+        f"(val_fraction {val_fraction:g}), which takes at least "
+        f"{min_documents_for_held_out(val_fraction)}. With fewer, nothing is held out: there is "
+        "no per-epoch held-out curve to choose the number of epochs by, and the domain number "
+        "is a fit rather than a measurement -- so the supplement, minutes of generation, is not "
+        "written. Fix: a long file (a book, a report) is one document until it is split: `lfa "
+        f"prepare-domain <file> --out <new dir> --split-chars {SUGGESTED_SPLIT_CHARS}` "
+        f"(split_chars={SUGGESTED_SPLIT_CHARS} from Python) cuts every file into documents of "
+        f"about {SUGGESTED_SPLIT_CHARS:,} characters at paragraph boundaries; or add more files. "
+        "To train on it as it is, pass --no-supplement (supplement=False from Python).")
 
 
 def prepare_supplement(corpus, model_id: str, *, recipe: Recipe | str | Path | None = None,

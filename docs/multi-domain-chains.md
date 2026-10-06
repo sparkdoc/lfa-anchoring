@@ -25,7 +25,10 @@ Training a **different** corpus while a stage is still pending is refused (`Stag
 without the extension the new stage would adapt the previous stage's starting model and anchor
 against a p(h) that does not describe what it is anchoring. Training the **same** corpus again —
 more epochs on the domain in progress — is the same stage, keeps the same λ, and gets its own run
-directory (`runs/stage2_run2`) so neither run's history is overwritten.
+directory (`runs/stage2_run2`) so neither run's history is overwritten. That latest run is the one
+`lfa evaluate`, `lfa fuse`, `lfa extend` and `lfa regenerate-artifact` then read; `train` says so
+when it starts and when it ends, and the earlier run stays on disk, unread by them. `--resume`
+continues the latest run in its own directory instead.
 
 ## What `extend` does
 
@@ -122,6 +125,11 @@ text and at least level on the new domain ([recipes.md](recipes.md)).
 λ is coupled to the corpus
 ([recipes.md](recipes.md)), so a chain over your own pair of domains re-tunes it — judged on the
 same two axes, on the domain the stage is learning and on what it is supposed to be keeping.
+`lfa train --lambda X` sets one stage's λ exactly, with no multiplier on top: at stage 2,
+`--lambda 3000000` is what the shipped recipe would have used, and the run's note names the
+recipe's value beside the one given ([recipes.md](recipes.md#trying-another-λ)). A chain spec
+has no per-domain λ; a stage trained with `--lambda` is run with `lfa train` and `lfa extend` by
+hand.
 
 ## Running a whole chain
 

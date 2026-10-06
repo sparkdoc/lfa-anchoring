@@ -1677,3 +1677,386 @@ def test_init_keeps_a_recipe_it_cannot_load_without_a_note(tmp_path, base_dir, c
                             recipe="no-such-recipe")
     assert ws.state["recipe"] == "no-such-recipe"
     assert not [r for r in caplog.records if "is calibrated for" in r.message]
+
+
+# ------------------------------------------------------- a per-run lambda and mu (--lambda, --mu)
+
+def test_an_explicit_lambda_and_mu_are_what_the_stage_trains_at_and_records(tmp_path, base_dir,
+                                                                           corpus_a, caplog):
+    ws = new_workspace(tmp_path, base_dir)
+    recipe = tiny_recipe(base_dir, calibrated_artifact=TINY_ARTIFACT_PATH)
+
+    with caplog.at_level("WARNING", logger="lfa.workspace"):
+        entry = ws.train(corpus_a, recipe=recipe, lambda_=25.0, mu=0.5, device="cpu")
+
+    assert (entry["lambda_applied"], entry["lambda_mlp_applied"], entry["mu_applied"]) == (
+        25.0, 25.0, 0.5)
+    assert (entry["lambda_override"], entry["mu_override"]) == (25.0, 0.5)
+    assert entry["recipe"]["lambda_qkv"] == 10.0             # the recipe stays as written
+    config = json.loads((Path(entry["output_dir"]) / "config.json").read_text())
+    assert (config["lambda_qkv"], config["lambda_mlp"], config["mu"]) == (25.0, 25.0, 0.5)
+    assert Workspace.open(ws.path).history[-1]["lambda_override"] == 25.0
+    warned = [r.message for r in caplog.records if r.name == "lfa.workspace"]
+    assert warned == recipe.override_notes(1, 25.0, 0.5)
+    assert warned[0].startswith("lambda 25 set by --lambda") and "calibrated 10." in warned[0]
+
+
+def test_a_stage_without_overrides_records_the_recipes_values_and_no_override(flow):
+    _, first, _, second = flow
+    assert (first["mu_applied"], first["lambda_override"], first["mu_override"]) == (
+        0.05, None, None)
+    assert second["lambda_applied"] == 30.0                  # 10 x the stage-2 multiplier
+
+
+def test_at_stage_two_an_explicit_lambda_gets_no_multiplier(tmp_path, base_dir, corpus_a,
+                                                            corpus_b, caplog):
+    ws = new_workspace(tmp_path, base_dir)
+    ws.train(corpus_a, recipe=tiny_recipe(base_dir), lambda_=7.0, device="cpu")
+    ws.extend(need=NEED, k_domain=K_DOMAIN, device="cpu")
+
+    with caplog.at_level("WARNING", logger="lfa.workspace"):
+        second = ws.train(corpus_b, recipe=tiny_recipe(base_dir), lambda_=7.0, device="cpu")
+
+    assert second["stage"] == 2
+    assert (second["lambda_applied"], second["lambda_mlp_applied"]) == (7.0, 7.0)
+    assert any("the recipe calibrated 30 for stage 2" in r.message for r in caplog.records)
+
+
+def test_lambda_zero_and_mu_zero_train_a_control_without_sampling_the_artifact(
+        tmp_path, base_dir, corpus_a, monkeypatch, caplog):
+    def no_sampler(*args, **kwargs):
+        raise AssertionError("the artifact was sampled at lambda 0")
+
+    monkeypatch.setattr(workspace_module, "Sampler", no_sampler)
+    ws = new_workspace(tmp_path, base_dir)
+
+    with caplog.at_level("WARNING", logger="lfa.workspace"):
+        entry = ws.train(corpus_a, recipe=tiny_recipe(base_dir), lambda_=0, mu=0, epochs=2,
+                         device="cpu")
+
+    assert (entry["lambda_applied"], entry["lambda_mlp_applied"], entry["mu_applied"]) == (0, 0, 0)
+    assert entry["epochs"] == 2 and entry["final_loss"] is not None
+    assert (Path(entry["adapter"]) / "adapter_model.safetensors").is_file()
+    assert any("unanchored control" in r.message for r in caplog.records)
+
+
+def test_a_lambda_that_cannot_weight_a_loss_is_refused_before_anything_is_written(
+        tmp_path, base_dir, corpus_a):
+    ws = new_workspace(tmp_path, base_dir)
+    with pytest.raises(ValueError, match="lambda must be a finite number"):
+        ws.train(corpus_a, recipe=tiny_recipe(base_dir), lambda_=float("nan"), device="cpu")
+    with pytest.raises(ValueError, match="mu must be a finite number"):
+        ws.train(corpus_a, recipe=tiny_recipe(base_dir), mu=-0.1, device="cpu")
+    assert not (ws.path / "runs").exists() and ws.history == []
+
+
+# ------------------------------------------ a stage trained twice: which run later commands read
+
+def test_a_second_run_of_a_stage_is_run2_and_every_later_command_reads_it(
+        tmp_path, base_dir, corpus_a, monkeypatch, caplog):
+    ws = new_workspace(tmp_path, base_dir)
+    first = ws.train(corpus_a, recipe=tiny_recipe(base_dir), device="cpu")
+
+    with caplog.at_level("INFO", logger="lfa.workspace"):
+        again = ws.train(corpus_a, recipe=tiny_recipe(base_dir), epochs=2, device="cpu")
+
+    run1, run2 = Path(first["output_dir"]), Path(again["output_dir"])
+    assert (run1.name, run2.name) == ("stage1", "stage1_run2")
+    said = [r.message for r in caplog.records if "already has a run" in r.message]
+    assert len(said) == 1 and str(run1) in said[0] and str(run2) in said[0]
+    assert "read this one" in said[0]
+    assert ws.state["last_stage_dir"] == str(run2)
+    assert ws.state["last_stage_adapter"] == str(run2 / "final_model")
+
+    # evaluate: the run it names and the adapter it scores are run 2's.
+    scored = []
+    monkeypatch.setattr(Workspace, "_score",
+                        lambda self, base, adapter, *a: scored.append(adapter) or
+                        {"general": None, "domain": 1.0})
+    with caplog.at_level("INFO", logger="lfa.workspace"):
+        ws.evaluate(n_windows=None, device="cpu")
+    assert scored == [None, str(run2 / "final_model")]
+    assert any(r.message.startswith(f"The run read: {run2} (λ 10 (the recipe's), μ 0.05 "
+                                    "(the recipe's), 2 epochs)") for r in caplog.records)
+
+    # fuse and extend: both merge run 2's adapter.
+    merged = []
+    real_fuse = workspace_module.fuse
+    monkeypatch.setattr(workspace_module, "fuse",
+                        lambda adapter, *a, **k: merged.append(Path(adapter)) or
+                        real_fuse(adapter, *a, **k))
+    ws.fuse(out_dir=tmp_path / "export")
+    ws.extend(need=NEED, k_domain=K_DOMAIN, device="cpu")
+    assert merged == [run2 / "final_model", run2 / "final_model"]
+
+
+def test_a_repeat_after_a_resume_is_still_run2(tmp_path, base_dir, corpus_a):
+    """A resume adds a history entry for the same directory; it is not a run of its own."""
+    ws = new_workspace(tmp_path, base_dir)
+    ws.train(corpus_a, recipe=tiny_recipe(base_dir), device="cpu")
+    ws.train(corpus_a, recipe=tiny_recipe(base_dir), epochs=2, resume=True, device="cpu")
+    again = ws.train(corpus_a, recipe=tiny_recipe(base_dir), device="cpu")
+    assert Path(again["output_dir"]).name == "stage1_run2"
+
+
+# ------------------------------------------------- the unanchored control and its own dose
+
+def _control_turns(monkeypatch, curve):
+    """Make the unanchored control's held-out curve read as `curve` (one value per epoch)."""
+    real = Workspace._run_training
+
+    def run(self, config, *args, anchored, **kwargs):
+        training, counts = real(self, config, *args, anchored=anchored, **kwargs)
+        if not anchored and config.mu == 0:
+            training.history = [{"epoch": i + 1, "val_perplexity": value}
+                                for i, value in enumerate(curve)]
+        return training, counts
+
+    monkeypatch.setattr(Workspace, "_run_training", run)
+
+
+def test_a_control_whose_curve_turned_says_part_of_its_gap_is_dose(tmp_path, base_dir,
+                                                                   corpus_a, monkeypatch):
+    ws = new_workspace(tmp_path, base_dir)
+    ws.train(corpus_a, recipe=tiny_recipe(base_dir, epochs=3), device="cpu")
+    _control_turns(monkeypatch, [25.59, 60.0, 433.78])
+
+    result = ws.evaluate(compare_unanchored=True, n_windows=None, device="cpu")
+
+    assert result["unanchored_held_out"]["verdict"] == "turned"
+    assert ws.history[-1]["unanchored"]["held_out"]["best_epoch"] == 1
+    note = result["table"].rsplit("\n\n", 1)[1]               # beneath the table
+    prose = " ".join(line for line in note.splitlines() if not line.startswith("  "))
+    assert prose.startswith("The unanchored control's held-out perplexity was lowest at epoch 1 "
+                            "(25.59) and ended at 433.78 (epoch 3, +1595.1 %)")
+    assert "part of the unanchored column's gap is dose, not the anchor" in prose
+    init, train, evaluate = [line.strip() for line in note.splitlines() if line.startswith("  ")]
+    fresh = tmp_path.resolve().parent / f"{tmp_path.name}-stage1-control-e1"
+    assert init == (f"lfa init {fresh} --model {base_dir} --artifact {ws.state['current_artifact']}"
+                    f" --recipe {ws.path / 'runs' / 'stage1' / 'recipe.yaml'}")
+    assert train == (f"lfa train --workspace {fresh} --corpus {corpus_a} --lambda 0 --mu 0 "
+                     "--epochs 1 --no-supplement --device cpu")
+    assert evaluate == f"lfa evaluate --workspace {fresh} --n-windows none --device cpu"
+
+
+def test_a_control_that_did_not_turn_gets_no_note(tmp_path, base_dir, corpus_a, monkeypatch):
+    ws = new_workspace(tmp_path, base_dir)
+    ws.train(corpus_a, recipe=tiny_recipe(base_dir), device="cpu")
+    _control_turns(monkeypatch, [30.0])
+
+    result = ws.evaluate(compare_unanchored=True, n_windows=None, device="cpu")
+
+    assert result["unanchored_held_out"]["verdict"] == "still_falling"
+    assert "dose" not in result["table"] and "control-e" not in result["table"]
+
+
+def test_the_control_commands_name_the_stages_supplement_and_its_frame(tmp_path, base_dir,
+                                                                       corpus_a):
+    """The stage's own pairs, and the recipe it trained under -- overrides included."""
+    ws = new_workspace(tmp_path, base_dir)
+    entry = ws.train(corpus_a, recipe=tiny_recipe(base_dir, keep_short_whole=True),
+                     keep_short_whole=False, device="cpu")
+    entry["supplement"] = {"path": str(tmp_path / "pairs file.jsonl")}
+
+    commands = workspace_module.control_at_epoch_commands(ws, entry, 4, corpus=corpus_a,
+                                                          n_windows=0)
+
+    assert f"--supplement '{tmp_path / 'pairs file.jsonl'}'" in commands[1]
+    assert "--device" not in " ".join(commands)               # the default device is not named
+    assert commands[2].endswith(f"--corpus {corpus_a} --n-windows 0")
+    written = Recipe.load(Path(entry["output_dir"]) / "recipe.yaml")
+    assert written.keep_short_whole is False
+    assert dataclasses.replace(written, keep_short_whole=True) == Recipe(**entry["recipe"])
+
+
+# ---------------------------------------------------- documents and supplement pairs, counted apart
+
+def test_the_training_document_count_is_the_domains_and_the_pairs_are_counted_apart(
+        tmp_path, base_dir, corpus_a, supplement_writer):
+    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact=TINY_ARTIFACT_PATH)
+    entry = ws.train(corpus_a, recipe=tiny_recipe(base_dir, val_fraction=0.25,
+                                                  supplement_fraction=0.2), device="cpu")
+
+    assert (entry["n_train_docs"], entry["n_val_docs"]) == (6, 2)
+    assert entry["n_train_supplement_pairs"] == entry["supplement"]["n_pairs_used"] > 0
+
+
+def test_train_refuses_to_write_a_supplement_for_a_corpus_with_nothing_to_hold_out(
+        tmp_path, base_dir, supplement_writer, monkeypatch):
+    def no_model(*args, **kwargs):
+        raise AssertionError("a model was loaded")
+
+    monkeypatch.setattr(Workspace, "_run_training", no_model)
+    book = make_corpus(tmp_path / "one_book", "history", n_docs=1)
+    ws = Workspace.init(tmp_path / "ws", str(base_dir), artifact=TINY_ARTIFACT_PATH)
+
+    with pytest.raises(ValueError, match="--split-chars 3500"):
+        ws.train(book, recipe=tiny_recipe(base_dir, val_fraction=0.1, supplement_fraction=0.2),
+                 device="cpu")
+    with pytest.raises(ValueError, match="--split-chars 3500"):
+        ws.prepare_supplement(book, recipe=tiny_recipe(base_dir, val_fraction=0.1), device="cpu")
+    assert supplement_writer == [] and ws.history == []
+
+
+# --------------------------------------------------------------------------- fix round 1
+
+@pytest.mark.parametrize("curve", [[25.0, 25.0, 25.0],          # a tie: "turned" by 0 %
+                                   [25.0, 25.1, 25.2]],         # +0.8 %: under 1 %
+                         ids=["tie", "under-one-percent"])
+def test_a_control_that_turned_by_less_than_the_rerun_gap_gets_no_note(tmp_path, base_dir,
+                                                                       corpus_a, monkeypatch,
+                                                                       curve):
+    ws = new_workspace(tmp_path, base_dir)
+    ws.train(corpus_a, recipe=tiny_recipe(base_dir), device="cpu")
+    _control_turns(monkeypatch, curve)
+
+    result = ws.evaluate(compare_unanchored=True, n_windows=None, device="cpu")
+
+    assert result["unanchored_held_out"]["verdict"] == "turned"
+    assert result["unanchored_held_out"]["gap"] < 0.01
+    assert "dose" not in result["table"] and "control-e" not in result["table"]
+
+
+def test_a_lambda_spelt_as_a_string_from_python_is_read_as_its_number(tmp_path, base_dir,
+                                                                      corpus_a, caplog):
+    ws = new_workspace(tmp_path, base_dir)
+    with caplog.at_level("WARNING", logger="lfa.workspace"):
+        entry = ws.train(corpus_a, recipe=tiny_recipe(base_dir), lambda_="2.5e6", mu="0.5",
+                         device="cpu")
+
+    assert (entry["lambda_applied"], entry["lambda_override"]) == (2.5e6, 2.5e6)
+    assert (entry["mu_applied"], entry["mu_override"]) == (0.5, 0.5)
+    assert any(r.message.startswith("lambda 2.5e+06 set by --lambda") for r in caplog.records)
+    with pytest.raises(ValueError, match="lambda must be a number"):
+        ws.train(corpus_a, recipe=tiny_recipe(base_dir), lambda_=True, device="cpu")
+
+
+def test_the_note_says_inits_next_line_and_model_warning_do_not_apply_to_the_control(
+        tmp_path, base_dir, corpus_a):
+    from lfa.train import HeldOutSummary
+
+    ws = new_workspace(tmp_path, base_dir)
+    entry = ws.train(corpus_a, recipe=tiny_recipe(base_dir), device="cpu")
+    control = HeldOutSummary("turned", 1, 25.59, 3, 433.78, 433.78 / 25.59 - 1)
+
+    def prose(stage):
+        note = ws._control_dose_note({**entry, "stage": stage}, control, corpus=None,
+                                     n_windows=None, device="cpu")
+        return " ".join(line for line in note.splitlines() if not line.startswith("  "))
+
+    first, later = prose(1), prose(2)
+    assert ("`lfa init` ends with its own Next: and Then: suggestions; none of them applies to "
+            "this lambda-0 control: run the `lfa train` and `lfa evaluate` lines below.") in first
+    assert "another model" not in first
+    assert ("`lfa init` ends with its own Next: and Then: suggestions (and, from a later stage's "
+            "model, a warning that the recipe names another model); none of them applies to this "
+            "lambda-0 control: run the `lfa train` and `lfa evaluate` lines below.") in later
+
+
+def test_a_plain_resume_takes_the_runs_own_lambda_and_mu_and_says_so(tmp_path, base_dir,
+                                                                      corpus_a, caplog):
+    ws = new_workspace(tmp_path, base_dir)
+    first = ws.train(corpus_a, recipe=tiny_recipe(base_dir), lambda_=25.0, mu=0.5, device="cpu")
+
+    with caplog.at_level("INFO", logger="lfa.workspace"):
+        resumed = ws.train(corpus_a, recipe=tiny_recipe(base_dir), epochs=2, resume=True,
+                           device="cpu")
+
+    assert resumed["output_dir"] == first["output_dir"]
+    assert (resumed["lambda_applied"], resumed["lambda_mlp_applied"], resumed["mu_applied"]) == (
+        25.0, 25.0, 0.5)
+    assert (resumed["lambda_override"], resumed["mu_override"]) == (25.0, 0.5)
+    config = json.loads((Path(resumed["output_dir"]) / "config.json").read_text())
+    assert (config["lambda_qkv"], config["mu"]) == (25.0, 0.5)
+    assert any(r.message.startswith(f"Resuming {first['output_dir']} at the anchor it was "
+                                    "started with, from its config.json: λ_qkv 25.0, "
+                                    "λ_mlp 25.0, μ 0.5") for r in caplog.records)
+
+
+def test_a_plain_resume_of_a_run_at_the_recipes_values_records_no_override(tmp_path, base_dir,
+                                                                           corpus_a):
+    ws = new_workspace(tmp_path, base_dir)
+    ws.train(corpus_a, recipe=tiny_recipe(base_dir), device="cpu")
+    resumed = ws.train(corpus_a, recipe=tiny_recipe(base_dir), epochs=2, resume=True,
+                       device="cpu")
+    assert (resumed["lambda_applied"], resumed["lambda_override"], resumed["mu_override"]) == (
+        10.0, None, None)
+
+
+def test_an_explicit_lambda_or_mu_that_differs_from_the_run_is_refused(tmp_path, base_dir,
+                                                                       corpus_a):
+    ws = new_workspace(tmp_path, base_dir)
+    ws.train(corpus_a, recipe=tiny_recipe(base_dir), lambda_=25.0, device="cpu")
+    recipe = tiny_recipe(base_dir)
+
+    with pytest.raises(ValueError) as changed:
+        ws.train(corpus_a, recipe=recipe, lambda_=0, epochs=2, resume=True, device="cpu")
+    assert ("this run was started at lambda 25.0: resume with --lambda 25.0 or without "
+            "--lambda") in str(changed.value)
+    with pytest.raises(ValueError, match=r"started at mu 0\.05: resume with --mu 0\.05 or "
+                                         r"without --mu"):
+        ws.train(corpus_a, recipe=recipe, mu=0.2, epochs=2, resume=True, device="cpu")
+    assert len(ws.history) == 1
+
+
+def test_a_lambda_g_cannot_round_trip_is_printed_exactly_and_accepted_as_printed(
+        tmp_path, base_dir, corpus_a):
+    """1234567 prints as 1.23457e+06 under :g; the message must hand back a value that matches."""
+    ws = new_workspace(tmp_path, base_dir)
+    ws.train(corpus_a, recipe=tiny_recipe(base_dir), lambda_=1234567, device="cpu")
+
+    with pytest.raises(ValueError) as changed:
+        ws.train(corpus_a, recipe=tiny_recipe(base_dir), lambda_=1e6, epochs=2, resume=True,
+                 device="cpu")
+    message = str(changed.value)
+    assert "resume with --lambda 1234567.0 or" in message and "1.23457e+06" not in message
+
+    printed = message.split("resume with --lambda ")[1].split(" or")[0]
+    resumed = ws.train(corpus_a, recipe=tiny_recipe(base_dir), lambda_=float(printed), epochs=2,
+                       resume=True, device="cpu")
+    assert resumed["lambda_applied"] == 1234567.0
+
+
+def test_a_workspace_trained_before_the_override_fields_still_evaluates(tmp_path, base_dir,
+                                                                        corpus_a, caplog):
+    ws = new_workspace(tmp_path, base_dir)
+    ws.train(corpus_a, recipe=tiny_recipe(base_dir), device="cpu")
+    history = json.loads((ws.path / "history.json").read_text())
+    for field in ("mu_applied", "lambda_override", "mu_override"):
+        del history[0][field]
+    (ws.path / "history.json").write_text(json.dumps(history))
+
+    with caplog.at_level("INFO", logger="lfa.workspace"):
+        result = Workspace.open(ws.path).evaluate(n_windows=None, device="cpu")
+
+    assert 0 < result["after"]["domain"] < float("inf")
+    assert any("(λ 10 (the recipe's), μ 0.05 (the recipe's), 1 epochs)" in r.message
+               for r in caplog.records)
+
+
+def test_the_control_commands_name_absolute_paths_and_run_from_another_directory(
+        tmp_path, base_dir, corpus_a, monkeypatch):
+    """A workspace opened by a relative path records relative paths; the commands must not."""
+    import shlex
+
+    from lfa.cli import main
+
+    monkeypatch.chdir(tmp_path)
+    ws = Workspace.init("ws", str(base_dir), artifact=TINY_ARTIFACT_PATH)
+    entry = ws.train(corpus_a, recipe=tiny_recipe(base_dir), device="cpu")
+    assert not Path(entry["artifact"]).is_absolute()               # what the history holds
+
+    commands = [shlex.split(c) for c in workspace_module.control_at_epoch_commands(
+        ws, entry, 1, n_windows=None, device="cpu")]
+    init, train, evaluate = commands
+    for argv, flags in ((init, ["--artifact", "--recipe", "--model"]),
+                        (train, ["--workspace", "--corpus"]), (evaluate, ["--workspace"])):
+        for flag in flags:
+            assert Path(argv[argv.index(flag) + 1]).is_absolute(), (flag, argv)
+    assert Path(init[2]).is_absolute()
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    for argv in commands:
+        assert main(argv[1:]) == 0, argv

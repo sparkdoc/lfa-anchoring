@@ -12,6 +12,7 @@ Everything runs on the CPU `tiny_model` with the one-epoch rank-2 recipe from `c
 """
 
 import json
+import shlex
 from pathlib import Path
 
 import pytest
@@ -237,8 +238,19 @@ def test_init_says_the_next_command_rather_than_repeating_the_library_line(tmp_p
                  "--artifact", TINY_ARTIFACT_PATH]) == 0
 
     printed = capsys.readouterr().out.strip().splitlines()
-    assert len(printed) == 1
-    assert printed[0].startswith("Next: lfa train --workspace")
+    assert len(printed) == 2
+    # The documents and their supplement come first (the user trial went straight to train).
+    assert printed[0].startswith(f"Next: lfa prepare-domain <your files> --out <dir> "
+                                 f"--supplement --model {base_dir}")
+    assert "--split-chars 3500" in printed[0] and "--recipe" not in printed[0]
+    assert printed[1] == f"Then: lfa train --workspace {tmp_path / 'ws'} --corpus <dir>"
+
+
+def test_init_names_a_recipe_the_supplement_would_not_find_by_itself(tmp_path, base_dir,
+                                                                     recipe_path, capsys):
+    assert main(["init", str(tmp_path / "ws"), "--model", str(base_dir),
+                 "--artifact", TINY_ARTIFACT_PATH, "--recipe", str(recipe_path)]) == 0
+    assert f"--model {base_dir} --recipe {recipe_path}" in capsys.readouterr().out
 
 
 def test_an_interrupted_command_says_how_to_continue_rather_than_printing_a_traceback(
@@ -818,3 +830,125 @@ def test_prepare_domain_help_names_split_chars_and_its_size(capsys):
     help_text = " ".join(capsys.readouterr().out.split())
     assert "--split-chars N" in help_text and "3500" in help_text
     assert "a book, a report" in help_text
+
+
+# ------------------------------------------------------------------------ --lambda and --mu
+
+def test_lambda_and_mu_reach_the_runs_config_and_its_history_entry(tmp_path, base_dir,
+                                                                   corpus_a, recipe_path):
+    workspace = tmp_path / "ws"
+    assert main(["init", str(workspace), "--model", str(base_dir),
+                 "--artifact", TINY_ARTIFACT_PATH]) == 0
+
+    assert main(["train", "--workspace", str(workspace), "--corpus", str(corpus_a),
+                 "--recipe", str(recipe_path), "--device", "cpu",
+                 "--lambda", "2.5e1", "--mu", "0"]) == 0
+
+    config = json.loads((workspace / "runs" / "stage1" / "config.json").read_text())
+    assert (config["lambda_qkv"], config["lambda_mlp"], config["mu"]) == (25.0, 25.0, 0.0)
+    [entry] = json.loads((workspace / "history.json").read_text())
+    assert (entry["lambda_applied"], entry["mu_applied"]) == (25.0, 0.0)
+    assert (entry["lambda_override"], entry["mu_override"]) == (25.0, 0.0)
+
+
+@pytest.mark.parametrize("flag, value", [("--lambda", "-1"), ("--lambda", "nan"),
+                                         ("--mu", "inf"), ("--mu", "lots")])
+def test_a_lambda_or_mu_that_cannot_weight_a_loss_is_a_usage_error(flag, value, capsys):
+    with pytest.raises(SystemExit) as exit_info:
+        main(["train", "--corpus", "x", flag, value])
+    assert exit_info.value.code == 2
+    assert f"argument {flag}" in capsys.readouterr().err
+
+
+def test_a_second_run_of_a_stage_says_which_run_later_commands_read(tmp_path, base_dir,
+                                                                    corpus_a, recipe_path,
+                                                                    capsys):
+    workspace = tmp_path / "ws"
+    main(["init", str(workspace), "--model", str(base_dir), "--artifact", TINY_ARTIFACT_PATH])
+    train = ["train", "--workspace", str(workspace), "--corpus", str(corpus_a),
+             "--recipe", str(recipe_path), "--device", "cpu"]
+    assert main(train) == 0
+    assert "latest" not in capsys.readouterr().out
+
+    assert main(train) == 0
+
+    out = capsys.readouterr().out
+    assert f"Stage 1 written to {workspace / 'runs' / 'stage1_run2'}" in out
+    assert ("This is the latest of stage 1's runs: `lfa evaluate`, `lfa fuse`, `lfa extend` and "
+            f"`lfa regenerate-artifact` read it, not {workspace / 'runs' / 'stage1'}.") in out
+
+
+def test_the_commands_the_control_note_prints_run_as_written(tmp_path, base_dir, corpus_a,
+                                                             recipe_path, monkeypatch, capsys):
+    """`evaluate --compare-unanchored` prints three commands when the control turned; each one
+    is run here exactly as printed, and the third reads a control at its own best epoch."""
+    real = Workspace._run_training
+
+    def control_turns(self, config, *args, anchored, **kwargs):
+        training, counts = real(self, config, *args, anchored=anchored, **kwargs)
+        if not anchored and config.mu == 0:
+            training.history = [{"epoch": 1, "val_perplexity": 25.59},
+                                {"epoch": 2, "val_perplexity": 433.78}]
+        return training, counts
+
+    workspace = tmp_path / "ws"
+    main(["init", str(workspace), "--model", str(base_dir), "--artifact", TINY_ARTIFACT_PATH])
+    main(["train", "--workspace", str(workspace), "--corpus", str(corpus_a),
+          "--recipe", str(recipe_path), "--device", "cpu"])
+    monkeypatch.setattr(Workspace, "_run_training", control_turns)
+    capsys.readouterr()
+
+    assert main(["evaluate", "--workspace", str(workspace), "--compare-unanchored",
+                 "--n-windows", "none", "--device", "cpu"]) == 0
+    monkeypatch.setattr(Workspace, "_run_training", real)
+
+    out = capsys.readouterr().out
+    assert "part of the unanchored column's gap is dose" in " ".join(out.split())
+    commands = [line.strip() for line in out.splitlines() if line.startswith("  lfa ")]
+    assert [command.split()[1] for command in commands] == ["init", "train", "evaluate"]
+    for command in commands:
+        argv = shlex.split(command)
+        assert argv[0] == "lfa"
+        assert main(argv[1:]) == 0, command
+
+    fresh = Path(shlex.split(commands[0])[2])
+    [entry] = json.loads((fresh / "history.json").read_text())
+    assert (entry["lambda_applied"], entry["lambda_mlp_applied"], entry["mu_applied"]) == (0, 0, 0)
+    assert entry["epochs"] == 1 and entry["corpus"] == str(corpus_a)
+    stage = json.loads((workspace / "history.json").read_text())[0]
+    assert {**entry["recipe"], "epochs": 0} == {**stage["recipe"], "epochs": 0}
+    assert "perplexity" in entry                             # the third command scored it
+
+
+def test_prepare_supplement_on_one_document_exits_two_before_the_writer(tmp_path, base_dir,
+                                                                       monkeypatch, capsys):
+    import lfa.supplements as supplements_module
+
+    def reached(*args, **kwargs):
+        raise AssertionError("the supplement writer was reached")
+
+    monkeypatch.setattr(supplements_module, "checkpoint_sha256", reached)
+    monkeypatch.setattr(supplements_module, "write_supplement", reached)
+    book = tmp_path / "wells"
+    book.mkdir()
+    (book / "book.txt").write_text("One long book. " * 500)
+    recipe = tiny_recipe(base_dir, val_fraction=0.1).save(tmp_path / "held.yaml")
+
+    assert main(["prepare-supplement", "--model", str(base_dir), "--corpus", str(book),
+                 "--recipe", str(recipe), "--device", "cpu"]) == 2
+    [line] = error_lines(capsys)
+    assert "holds 1 document(s)" in line and "--split-chars 3500" in line
+
+
+def test_a_resume_at_another_lambda_exits_two_with_one_line(tmp_path, base_dir, corpus_a,
+                                                            recipe_path, capsys):
+    workspace = tmp_path / "ws"
+    main(["init", str(workspace), "--model", str(base_dir), "--artifact", TINY_ARTIFACT_PATH])
+    train = ["train", "--workspace", str(workspace), "--corpus", str(corpus_a),
+             "--recipe", str(recipe_path), "--device", "cpu"]
+    assert main(train) == 0
+    capsys.readouterr()
+
+    assert main(train + ["--resume", "--epochs", "2", "--lambda", "0"]) == 2
+    [line] = error_lines(capsys)
+    assert "started at lambda 10.0: resume with --lambda 10.0 or without --lambda" in line

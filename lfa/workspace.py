@@ -37,8 +37,10 @@ import gc
 import hashlib
 import json
 import logging
+import shlex
 import shutil
 import subprocess
+import textwrap
 from pathlib import Path
 from typing import Any
 
@@ -69,18 +71,18 @@ from .models import (
     resolve_device,
     resolve_teacher_mode,
 )
-from .recipe import BUNDLED_DIR, Recipe
+from .recipe import BUNDLED_DIR, Recipe, check_anchor_weight
 from .sampler import Sampler
 from .selfgen.artifact_corpus import SelfGenOptions
 from .supplements import beside_corpus, supplement_for
-from .train import held_out_summary
+from .train import OPTIONAL_RERUN_GAP, HeldOutSummary, held_out_summary
 from .train import train as run_training
 
 logger = logging.getLogger("lfa.workspace")
 
 __all__ = ["Workspace", "StageOrderError", "WorkspaceNotReady", "WORKSPACE_FILE", "HISTORY_FILE",
            "LOADER_FRAME_NOTICE", "DOMAIN_FIELDS", "CHAIN_ARTIFACT_ROUTES", "code_identity",
-           "source_digest"]
+           "source_digest", "control_at_epoch_commands"]
 
 WORKSPACE_FILE = "workspace.json"
 HISTORY_FILE = "history.json"
@@ -269,6 +271,68 @@ def _table(before: dict, after: dict, unanchored: dict | None) -> str:
                       "", f"{GENERAL_ROW}: not measured ({', '.join(unmeasured)})"])
 
 
+def _anchor_in_words(entry: dict) -> str:
+    """A stage's anchor as it ran, e.g. ``λ 1e+06 (the recipe's), μ 0.05 (the recipe's), 15
+    epochs``."""
+    # Read with .get: a workspace trained before these fields existed recorded no override (a
+    # missing one means the recipe's value) and no mu_applied (the recipe's mu, then).
+    qkv, mlp = entry["lambda_applied"], entry["lambda_mlp_applied"]
+    lam = f"λ {qkv:g}" if qkv == mlp else f"λ_qkv {qkv:g}, λ_mlp {mlp:g}"
+    lam_source = ("set by --lambda" if entry.get("lambda_override") is not None
+                  else "the recipe's")
+    mu_source = "set by --mu" if entry.get("mu_override") is not None else "the recipe's"
+    mu = entry.get("mu_applied", entry["recipe"]["mu"])
+    return f"{lam} ({lam_source}), μ {mu:g} ({mu_source}), {entry['epochs']} epochs"
+
+
+def control_at_epoch_commands(workspace: "Workspace", entry: dict, epochs: int, *,
+                              corpus: str | Path | None = None, n_windows: int | None = 100,
+                              device: str | dict = DEFAULT_DEVICE) -> list[str]:
+    """The three commands that train ``entry``'s unanchored control at ``epochs`` and score it.
+
+    ``lfa init`` of a fresh workspace beside this one, over the model the stage started from and
+    the artifact it anchored on; ``lfa train`` of the stage's corpus with ``--lambda 0 --mu 0
+    --epochs <epochs>`` and the stage's own supplement (or ``--no-supplement`` when it mixed
+    none); ``lfa evaluate`` of that workspace on the same text. A fresh workspace rather than
+    this one, because a repeat here would become this stage's latest run, and ``evaluate``,
+    ``fuse`` and ``extend`` would then read the control. At lambda 0 the artifact is never
+    sampled, but ``init`` needs one, and the stage's is at hand.
+
+    The stage's recipe -- the frame it trained in, per-call overrides included -- is written
+    to ``recipe.yaml`` in its run directory, and the ``init`` command names that file, so the
+    control trains with the stage's batch, learning rate, held-out split and seed. ``--epochs``,
+    ``--lambda`` and ``--mu`` then set the rest. ``device`` is named only when it is not the
+    default.
+    """
+    # Every path absolute, so the commands work from any directory: a workspace opened by a
+    # relative path records relative paths in its history.
+    run_dir = Path(entry["output_dir"]).resolve()
+    recipe_path = Recipe(**{**entry["recipe"], "keep_short_whole": entry["keep_short_whole"],
+                            "full_weight": entry["full_weight"]}).save(run_dir / "recipe.yaml")
+    # A local checkpoint (a later stage's fused model) is resolved; a Hub id is not a path.
+    base_model = (str(Path(entry["base_model"]).resolve())
+                  if Path(entry["base_model"]).exists() else str(entry["base_model"]))
+    here = workspace.path.resolve()
+    fresh = here.parent / f"{here.name}-{run_dir.name}-control-e{epochs}"
+    device_flag = [] if device == DEFAULT_DEVICE else ["--device", str(device)]
+    supplement = entry["supplement"]
+    mix = (["--supplement", str(Path(supplement["path"]).resolve())] if supplement is not None
+           else ["--no-supplement"])
+    evaluate = ["lfa", "evaluate", "--workspace", str(fresh)]
+    if corpus:
+        evaluate += ["--corpus", str(Path(corpus).expanduser().resolve())]
+    if n_windows != 100:
+        evaluate += ["--n-windows", "none" if n_windows is None else str(n_windows)]
+    return [shlex.join(command) for command in (
+        ["lfa", "init", str(fresh), "--model", base_model,
+         "--artifact", str(Path(entry["artifact"]).resolve()), "--recipe", str(recipe_path)],
+        ["lfa", "train", "--workspace", str(fresh), "--corpus",
+         str(Path(entry["corpus"]).resolve()),
+         "--lambda", "0", "--mu", "0", "--epochs", str(epochs), *mix, *device_flag],
+        evaluate + device_flag,
+    )]
+
+
 def _meta_of(path: Path) -> dict:
     """The ``__meta__`` block of the artifact file at ``path``, which this package must have built.
 
@@ -360,7 +424,8 @@ class Workspace:
         Args:
             path: the workspace directory (created if needed). It must not already hold one.
             model_id: a Hub id or a local checkpoint path. It is not loaded here -- the artifact
-                is checked against the model when a stage starts.
+                is checked against the model when an anchored stage starts (a stage at lambda 0
+                never reads it).
             artifact: ``"self-generated"`` or the path to an artifact file. ``"self-generated"``
                 has the model write its own corpus and fits p(h) on it
                 (:func:`lfa.artifact.build.build_artifact_self_generated`) -- a GPU job of about
@@ -539,6 +604,8 @@ class Workspace:
         recipe: Recipe | str | Path | None = None,
         *,
         epochs: int | None = None,
+        lambda_: float | None = None,
+        mu: float | None = None,
         output_name: str | None = None,
         keep_short_whole: bool | None = None,
         full_weight: bool | None = None,
@@ -551,9 +618,9 @@ class Workspace:
     ) -> dict:
         """Train one stage: ``current_model`` on ``corpus``, anchored on ``current_artifact``.
 
-        The stage number decides the lambda: from stage 2 on, the recipe's
-        ``stage2_lambda_multiplier`` applies, because a later stage anchors a model that already
-        carries a domain. Training the *same* corpus again -- more epochs on the domain in
+        The stage number decides the lambda unless ``lambda_`` is given: from stage 2 on, the
+        recipe's ``stage2_lambda_multiplier`` applies, because a later stage anchors a model that
+        already carries a domain. Training the *same* corpus again -- more epochs on the domain in
         progress -- is the same stage and keeps the same lambda; a *different* corpus is the next
         stage and must be preceded by :meth:`extend`.
 
@@ -563,11 +630,22 @@ class Workspace:
                 workspace's own.
             epochs: override the recipe's number of epochs. The learning-rate schedule is laid
                 over whatever this says, so it changes the whole curve, not only where it stops.
+            lambda_: this stage's lambda, exactly (``lfa train --lambda``): both ``lambda_qkv``
+                and ``lambda_mlp`` are set to it, with no stage multiplier on top. ``None`` (the
+                default) is the recipe's, multiplied from stage 2 on. A value off the recipe's is
+                logged as an off-calibration note naming both. ``0`` switches the function
+                anchor off and the artifact is then not sampled; with ``mu=0`` as well the stage
+                is an unanchored control at whatever ``epochs`` says.
+            mu: this stage's mu, exactly (``lfa train --mu``). ``None`` is the recipe's.
             output_name: run directory name under ``runs/``. The default is ``stage{N}``, and
                 ``stage{N}_run{k}`` for a repeat of a stage already trained -- a repeat is a
-                second run, not an overwrite of the first, and both stay readable. A name that
-                already holds a run is refused (``FileExistsError``) unless ``resume`` is set,
-                since writing over it would discard that run's config, curve and checkpoint.
+                second run, not an overwrite of the first, and both stay readable; ``k`` counts
+                the stage's run directories, this one included. Whatever its name, the latest
+                run of the stage is the one :meth:`evaluate`, :meth:`fuse`, :meth:`extend` and
+                :meth:`regenerate_artifact` read afterwards; the start of a repeat says so. A
+                name that already holds a run is refused (``FileExistsError``) unless ``resume``
+                is set, since writing over it would discard that run's config, curve and
+                checkpoint.
             keep_short_whole: override the recipe's short-document setting. Under ``False`` a
                 document that fits in one chunk is cut at the epoch's chunk offset like a longer
                 one, into a chunk and a fragment.
@@ -581,7 +659,9 @@ class Workspace:
                 resolved mode lands in the history entry and in the run's ``config.json``.
             device: a single device, as :func:`lfa.models.resolve_device` reads it.
             allow_sharding: permit a device map that spreads the model over several devices.
-            resume: continue the run already in this stage's output directory.
+            resume: continue the run already in this stage's output directory, at the lambda and
+                mu it was started with: read from its ``config.json`` when ``lambda_``/``mu``
+                are not given (and logged), and refused when an explicit one differs.
             supplement: the question-and-answer pairs mixed into the training side at the
                 recipe's ``supplement_fraction``. ``True`` (the default) reuses the supplement
                 under ``supplements/``, or one prepared beside the corpus, when its manifest
@@ -600,9 +680,16 @@ class Workspace:
 
         Raises:
             StageOrderError: a new corpus while a trained stage has not been extended.
-            ValueError: no recipe anywhere, or an ``epochs`` the schedule cannot carry.
+            ValueError: no recipe anywhere, an ``epochs`` the schedule cannot carry, a
+                ``lambda_`` or ``mu`` that is negative or not finite, or a supplement to be
+                written for a corpus too small to hold any document out
+                (:func:`lfa.supplements.supplement_for`).
             FileExistsError: the run directory already holds a run and this is not a resume.
         """
+        # Coerced (or refused) before anything reads them: a string such as "2.5e6" from Python
+        # becomes the number it spells, and the note, the config and the record all see that.
+        lambda_ = None if lambda_ is None else check_anchor_weight("lambda", lambda_)
+        mu = None if mu is None else check_anchor_weight("mu", mu)
         corpus_path = Path(corpus).expanduser().resolve()
         if not corpus_path.exists():
             raise FileNotFoundError(
@@ -633,7 +720,31 @@ class Workspace:
             resolved = dataclasses.replace(resolved, **overrides)
 
         stage = self.state["stage"] if repeat else self.state["stage"] + 1
-        config = resolved.to_train_config(stage, artifact, keep_short_whole=keep_short_whole)
+        output_dir = self.path / "runs" / (output_name or self._run_name(stage, repeat, resume))
+        self._refuse_to_overwrite(output_dir, resume)
+        # A resume continues the run at the anchor it was started with: taken from the run's own
+        # config.json when no flag is given, and an explicit flag that differs is refused.
+        saved = self._saved_anchor(output_dir) if resume else None
+        if saved is not None:
+            self._refuse_a_changed_anchor(output_dir, saved, lambda_, mu)
+        # An explicit lambda or mu is this stage's value as given: no multiplier on top.
+        config = resolved.to_train_config(stage, artifact, keep_short_whole=keep_short_whole,
+                                          lambda_=lambda_, mu=mu)
+        if saved is not None:
+            config = dataclasses.replace(config, **saved)
+            logger.info("Resuming %s at the anchor it was started with, from its config.json: "
+                        "λ_qkv %r, λ_mlp %r, μ %r", output_dir, saved["lambda_qkv"],
+                        saved["lambda_mlp"], saved["mu"])
+        # The per-run values: as given, or -- on a resume -- inherited from the run where they
+        # depart from what the recipe would use at this stage.
+        lambda_set, mu_set = lambda_, mu
+        if saved is not None:
+            pair = (config.lambda_qkv, config.lambda_mlp)
+            if (lambda_set is None and pair != resolved.stage_lambdas(stage)
+                    and pair[0] == pair[1]):
+                lambda_set = pair[0]
+            if mu_set is None and config.mu != resolved.mu:
+                mu_set = config.mu
         # Resolved here, before anything is loaded, because it decides whether a second model is
         # loaded at all -- and because `adapter_disabled` on a full-weight run is a refusal, which
         # belongs at second zero rather than after the corpus has been chunked.
@@ -651,22 +762,32 @@ class Workspace:
         if self.state.get("artifact_route") == "regenerate":
             notes = [note + REGENERATED_NOTE if "self-generated" in note or "own text" in note
                      else note for note in notes]
+        notes += resolved.override_notes(
+            stage, None if lambda_set is None else config.lambda_qkv,
+            None if mu_set is None else config.mu)
         for note in notes:
             logger.warning(note)
         if config.keep_short_whole:
             logger.info(LOADER_FRAME_NOTICE)
 
         base_model = self.state["current_model"]
-        output_dir = self.path / "runs" / (output_name or self._run_name(stage, repeat, resume))
-        self._refuse_to_overwrite(output_dir, resume)
+        earlier = self._earlier_runs(stage, output_dir)
+        if earlier and not resume:
+            # The trial's user re-ran a stage at its best epoch and could not tell where the run
+            # went or which of the two the next command would read.
+            logger.info(
+                "Stage %d already has a run (%s): this one writes %s, and from here on `lfa "
+                "evaluate`, `lfa fuse`, `lfa extend` and `lfa regenerate-artifact` read this one "
+                "-- a stage's latest run. The earlier run stays on disk, unread by them.", stage,
+                ", ".join(str(path) for path in earlier), output_dir)
         # Read before the run rather than after it: it is meant to name the code that trained the
         # stage, and an edit landing on disk while the run is in flight is not that code.
         implementation = code_identity()
         placement = resolve_device(device, allow_sharding)
         dtype = _dtype_for(placement)
-        logger.info("Stage %d: %s on %s (artifact v%d, λ_qkv=%s, %d epochs)", stage, base_model,
-                    corpus_path, self.state["artifact_version"], config.lambda_qkv,
-                    config.num_epochs)
+        logger.info("Stage %d: %s on %s (artifact v%d, λ_qkv=%s, λ_mlp=%s, μ=%s, %d epochs)",
+                    stage, base_model, corpus_path, self.state["artifact_version"],
+                    config.lambda_qkv, config.lambda_mlp, config.mu, config.num_epochs)
 
         supplement_path, supplement_manifest = None, None
         if resolved.supplement_fraction > 0.0 and supplement is not False:
@@ -686,7 +807,9 @@ class Workspace:
 
         training, corpus_counts = self._run_training(
             config, corpus_path, base_model, output_dir, placement=placement, dtype=dtype,
-            allow_sharding=allow_sharding, resume=resume, anchored=True,
+            allow_sharding=allow_sharding, resume=resume,
+            # At lambda 0 the anchor has no term to compute, so the artifact is not sampled.
+            anchored=config.lambda_qkv > 0 or config.lambda_mlp > 0,
             supplement=supplement_path, supplement_fraction=resolved.supplement_fraction)
         report = corpus_counts.pop("supplement_report")
 
@@ -695,9 +818,15 @@ class Workspace:
             "corpus": str(corpus_path),
             "recipe": dataclasses.asdict(resolved),
             # The lambda actually passed to the trainer -- the recipe's value times the stage
-            # multiplier. Both site families are recorded, since a recipe may differ across them.
+            # multiplier, or the per-run value as given. Both site families are recorded, since
+            # a recipe may differ across them; `recipe` above stays the recipe as written, so
+            # the two together say whether this stage ran off its calibration.
             "lambda_applied": config.lambda_qkv,
             "lambda_mlp_applied": config.lambda_mlp,
+            "mu_applied": config.mu,
+            # The per-run values (`--lambda`, `--mu`), or None where the recipe's were used.
+            "lambda_override": None if lambda_set is None else config.lambda_qkv,
+            "mu_override": None if mu_set is None else config.mu,
             "artifact_version": self.state["artifact_version"],
             "artifact": artifact,
             # How that artifact came from the previous one: "extend" or "regenerate"; None at
@@ -806,6 +935,52 @@ class Workspace:
                else " (resume=True cannot help: there is no training_state.pt to continue from).")
         )
 
+    @staticmethod
+    def _saved_anchor(output_dir: Path) -> dict | None:
+        """``lambda_qkv``, ``lambda_mlp`` and ``mu`` from the run's ``config.json``, or ``None``.
+
+        ``None`` when there is no config (nothing was started there) or it lacks a field.
+        """
+        config_path = output_dir / "config.json"
+        if not config_path.is_file():
+            return None
+        saved = json.loads(config_path.read_text())
+        if not all(name in saved for name in ("lambda_qkv", "lambda_mlp", "mu")):
+            return None
+        return {name: float(saved[name]) for name in ("lambda_qkv", "lambda_mlp", "mu")}
+
+    @staticmethod
+    def _refuse_a_changed_anchor(output_dir: Path, saved: dict, lambda_: float | None,
+                                 mu: float | None) -> None:
+        """Stop a resume whose EXPLICIT lambda or mu differs from the run it continues.
+
+        The trainer restores the epoch counter and the optimizer, not the anchor, so a resume at
+        another value would train half the run at each and record only the second. A resume with
+        no flag takes the run's own values instead (:meth:`train`). The values are printed in
+        their round-trip form, so the flag the message names is accepted as typed.
+
+        Raises:
+            ValueError: naming the run's value and the flag to give or drop, for each.
+        """
+        problems = []
+        qkv, mlp = saved["lambda_qkv"], saved["lambda_mlp"]
+        if lambda_ is not None and (qkv, mlp) != (lambda_, lambda_):
+            if qkv == mlp:
+                problems.append(f"this run was started at lambda {qkv!r}: resume with --lambda "
+                                f"{qkv!r} or without --lambda")
+            else:
+                problems.append(f"this run was started at lambda_qkv {qkv!r} and lambda_mlp "
+                                f"{mlp!r}, which one --lambda cannot express; resume without "
+                                "--lambda")
+        if mu is not None and mu != saved["mu"]:
+            problems.append(f"this run was started at mu {saved['mu']!r}: resume with --mu "
+                            f"{saved['mu']!r} or without --mu")
+        if problems:
+            raise ValueError(
+                f"--resume continues {output_dir} at the anchor it was started with, and a run "
+                "trained half at one value and half at another measures neither: "
+                + "; ".join(problems) + ".")
+
     @classmethod
     def _validate_domains(cls, spec_path: Path, domains: list) -> None:
         """Check every domain in a chain spec before any of them trains.
@@ -892,14 +1067,25 @@ class Workspace:
         The first run of a stage is ``stage{N}``. A repeat -- more epochs on the domain already
         in progress -- is ``stage{N}_run{k}``, because two history entries pointing at one
         directory would leave the first run's config, curve and checkpoint overwritten by the
-        second's. A
-        *resumed* repeat is the same run continuing, so it keeps its own directory.
+        second's. ``k`` is one more than the stage's run DIRECTORIES so far, not its history
+        entries: a resume appends an entry for the same directory, and counting it would skip a
+        number. A *resumed* repeat is the same run continuing, so it keeps its own directory.
         """
         if not repeat:
             return f"stage{stage}"
         if resume:
             return Path(self.state["last_stage_dir"]).name
-        return f"stage{stage}_run{1 + sum(1 for e in self.history if e['stage'] == stage)}"
+        runs = {entry["output_dir"] for entry in self.history if entry["stage"] == stage}
+        return f"stage{stage}_run{1 + len(runs)}"
+
+    def _earlier_runs(self, stage: int, output_dir: Path) -> list[Path]:
+        """The stage's run directories before this one, in the order they were trained."""
+        seen: list[Path] = []
+        for entry in self.history:
+            path = Path(entry["output_dir"])
+            if entry["stage"] == stage and path != Path(output_dir) and path not in seen:
+                seen.append(path)
+        return seen
 
     def _run_training(self, config, corpus_path, base_model, output_dir, *, placement, dtype,
                       allow_sharding, resume, anchored, supplement=None,
@@ -987,7 +1173,11 @@ class Workspace:
             # Documents AND chunks: the document counts say how the split fell, the chunk counts
             # say what the loader made of it, and only the second is comparable with another
             # implementation's loader (the research code logs exactly these two numbers per run).
-            counts = {"n_train_docs": dataset.report["n_docs"],
+            # The loader counts each supplement pair as a document of its own; recorded apart, so
+            # `n_train_docs` is the domain's documents and a 60-chapter book does not read as 353.
+            n_pairs = dataset.report["n_supplement_docs"]
+            counts = {"n_train_docs": dataset.report["n_docs"] - n_pairs,
+                      "n_train_supplement_pairs": n_pairs,
                       "n_val_docs": holdout.report["n_docs"] if holdout is not None else 0,
                       "n_train_chunks": dataset.report["n_chunks"],
                       "n_val_chunks": holdout.report["n_chunks"] if holdout is not None else 0,
@@ -1245,7 +1435,11 @@ class Workspace:
                 ``runs/{run}_unanchored`` (named after the run it controls) and report it as a
                 third column. It is the control
                 that says what the anchor bought: an unanchored run reaches the domain by giving
-                up the general axis.
+                up the general axis. It trains at the stage's own dose (its epochs), which is
+                not the control's: when the control's held-out curve turned before its last
+                epoch, part of its gap is dose rather than the anchor, and a note beneath the
+                table says so, with the commands that train the control at its own best epoch
+                in a fresh workspace (:func:`control_at_epoch_commands`).
             n_windows: WikiText-2 windows for the general axis; ``0`` scores the whole split and
                 ``None`` skips it. The general axis is also skipped (with a warning, and a
                 ``None`` in its cell) when the split cannot be fetched -- an offline machine
@@ -1253,9 +1447,14 @@ class Workspace:
             device: where to run the evaluations.
 
         Returns:
-            ``{"before": {...}, "after": {...}, "unanchored": {...} | None, "table": str}``,
-            each axis dict keyed ``"general"`` and ``"domain"``. The same numbers are written
-            into the stage's history entry under ``"perplexity"``.
+            ``{"before": {...}, "after": {...}, "unanchored": {...} | None,
+            "unanchored_held_out": {...} | None, "table": str}``, each axis dict keyed
+            ``"general"`` and ``"domain"``. ``unanchored_held_out`` is the control's held-out
+            curve read as :func:`lfa.train.held_out_summary` reads it. ``table`` carries the
+            control's dose note beneath it when there is one. The read stage is the latest
+            run in the history -- after a repeat of a stage, its latest run -- and the log names
+            its directory, lambda and mu. The numbers are written into that history entry under
+            ``"perplexity"`` (and the control's curve under ``"unanchored"``).
         """
         entry = self._require_trained_stage()
         placement = resolve_device(device)
@@ -1280,23 +1479,59 @@ class Workspace:
                     len(heldout),
                     "held out from training" if held_out_used
                     else "trained on -- a fit, not a held-out measurement")
+        logger.info("The run read: %s (%s)", entry["output_dir"], _anchor_in_words(entry))
 
         before = self._score(entry["base_model"], None, tokenizer, heldout, n_windows, placement,
                              dtype)
         after = self._score(entry["base_model"], entry["adapter"], tokenizer, heldout, n_windows,
                             placement, dtype)
 
-        unanchored = None
+        unanchored = control = None
         if compare_unanchored:
-            unanchored_dir = self._train_unanchored(entry, recipe, placement=placement,
-                                                    dtype=dtype)
+            unanchored_dir, control = self._train_unanchored(entry, recipe, placement=placement,
+                                                             dtype=dtype)
             unanchored = self._score(entry["base_model"], unanchored_dir / "final_model",
                                      tokenizer, heldout, n_windows, placement, dtype)
+            entry["unanchored"] = {"output_dir": str(unanchored_dir),
+                                   "held_out": control.to_dict()}
 
+        table = _table(before, after, unanchored)
+        # A turn under OPTIONAL_RERUN_GAP (a tie included) is no dose worth a second run.
+        if (control is not None and control.verdict == "turned"
+                and control.gap >= OPTIONAL_RERUN_GAP):
+            table += "\n\n" + self._control_dose_note(entry, control, corpus=corpus,
+                                                       n_windows=n_windows, device=device)
         entry["perplexity"] = {"before": before, "after": after, "unanchored": unanchored}
         self._save_history()
         return {"before": before, "after": after, "unanchored": unanchored,
-                "table": _table(before, after, unanchored)}
+                "unanchored_held_out": None if control is None else control.to_dict(),
+                "table": table}
+
+    def _control_dose_note(self, entry: dict, control: HeldOutSummary, *, corpus,
+                           n_windows: int | None, device) -> str:
+        """Beneath the table, when the control's held-out curve turned: part of its gap is dose.
+
+        The control trains at the stage's epoch count, which is the anchored run's dose, not its
+        own. Unanchored, a small corpus turns early -- the user trial's control was lowest at
+        epoch 1 (25.59) and ended at 433.78 -- so its gap mixes what the anchor bought with how
+        far past its own minimum the control was driven. The note names the control's best
+        epoch and the commands that train it there, in a fresh workspace, and score it.
+        """
+        commands = control_at_epoch_commands(self, entry, control.best_epoch, corpus=corpus,
+                                             n_windows=n_windows, device=device)
+        later = (" (and, from a later stage's model, a warning that the recipe names another "
+                 "model)" if entry["stage"] >= 2 else "")
+        prose = (
+            f"The unanchored control's held-out perplexity was lowest at epoch "
+            f"{control.best_epoch} ({control.best:.2f}) and ended at {control.final:.2f} (epoch "
+            f"{control.final_epoch}, {control.gap * 100:+.1f} %): it trained at this run's dose, "
+            f"past its own best, so part of the unanchored column's gap is dose, not the anchor. "
+            f"To read the anchor alone, train the control at its own best epoch in a fresh "
+            f"workspace and set its `after` column beside this run's. `lfa init` ends with its own "
+            f"Next: and Then: suggestions{later}; none of them applies to this lambda-0 control: "
+            f"run the `lfa train` and `lfa evaluate` lines below.")
+        return "\n".join([*textwrap.wrap(prose, width=100),
+                          *(f"  {command}" for command in commands)])
 
     def _score(self, base_model, adapter_dir, tokenizer, heldout, n_windows, placement, dtype):
         """One column of the table: general and domain perplexity for one model."""
@@ -1343,12 +1578,17 @@ class Workspace:
                            type(error).__name__, error)
             return None
 
-    def _train_unanchored(self, entry: dict, recipe: Recipe, *, placement, dtype) -> Path:
+    def _train_unanchored(self, entry: dict, recipe: Recipe, *, placement,
+                          dtype) -> tuple[Path, HeldOutSummary]:
         """Re-run the stage with the anchor and the weight backstop switched off.
 
         Everything else about the run is the stage's own, per-call overrides included: the
         control answers "what would this run have done without the anchor", and a control that
         trained a different way answers a different question.
+
+        Returns:
+            The control's run directory, and its held-out curve read by
+            :func:`lfa.train.held_out_summary`.
         """
         control = dataclasses.replace(
             recipe, lambda_qkv=0.0, lambda_mlp=0.0, mu=0.0,
@@ -1368,11 +1608,11 @@ class Workspace:
         # The stage's own supplement at its own fraction: under the same seed the loader selects
         # the same prefix, so the control trains on exactly the stage's documents.
         mixed = entry["supplement"] or {}
-        self._run_training(config, Path(entry["corpus"]), entry["base_model"], output_dir,
-                           placement=placement, dtype=dtype, allow_sharding=False, resume=False,
-                           anchored=False, supplement=mixed.get("path"),
-                           supplement_fraction=mixed.get("target_fraction", 0.0))
-        return output_dir
+        training, _ = self._run_training(
+            config, Path(entry["corpus"]), entry["base_model"], output_dir, placement=placement,
+            dtype=dtype, allow_sharding=False, resume=False, anchored=False,
+            supplement=mixed.get("path"), supplement_fraction=mixed.get("target_fraction", 0.0))
+        return output_dir, held_out_summary(training.history)
 
     def _require_trained_stage(self) -> dict:
         """The stage :meth:`evaluate` and :meth:`fuse` act on.

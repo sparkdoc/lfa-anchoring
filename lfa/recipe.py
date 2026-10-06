@@ -34,6 +34,7 @@ one.
 from __future__ import annotations
 
 import dataclasses
+import math
 from dataclasses import dataclass, fields
 from pathlib import Path
 
@@ -41,7 +42,8 @@ import yaml
 
 from .train import LR_SCHEDULES, TrainConfig
 
-__all__ = ["Recipe", "BUNDLED_DIR", "SELF_GENERATED_REFERENCE", "RECORDED_SELF_GENERATED_FRAME"]
+__all__ = ["Recipe", "BUNDLED_DIR", "SELF_GENERATED_REFERENCE", "RECORDED_SELF_GENERATED_FRAME",
+           "check_anchor_weight"]
 
 #: Where the bundled recipes live -- inside the package, so a wheel carries them.
 BUNDLED_DIR = Path(__file__).parent / "recipes"
@@ -65,6 +67,30 @@ _QWEN3_0_6B = "Qwen/Qwen3-0.6B"
 #: :meth:`lfa.selfgen.artifact_corpus.SelfGenOptions.artifact_frame`.
 _FRAME_KEYS = frozenset(RECORDED_SELF_GENERATED_FRAME) | {
     "seed", "chat_seed", "min_chars", "max_repeat_ratio", "burn_in_tokens", "reservoir_size"}
+
+
+def check_anchor_weight(name: str, value: float) -> float:
+    """``value`` as a float when it can weight a loss term (finite, 0 or above); else ValueError.
+
+    Used for a per-run ``lambda`` or ``mu`` (``lfa train --lambda`` / ``--mu``), where a NaN or
+    an infinity would otherwise start a run whose every loss is NaN.
+    """
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be a number, got {value!r}")
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be a number, got {value!r}") from None
+    if not math.isfinite(number) or number < 0:
+        raise ValueError(
+            f"{name} must be a finite number, 0 or above, got {value!r}: it weights a loss term, "
+            f"and {name} 0 switches that term off.")
+    return number
+
+
+def _g(value: float) -> str:
+    """A lambda or mu as written in a note: ``1e+06``, ``0.05``, ``0``."""
+    return f"{value:g}"
 
 
 def _describe(frame: dict) -> str:
@@ -271,8 +297,20 @@ class Recipe:
 
     # ------------------------------------------------------------------ use
 
+    def stage_lambdas(self, stage: int) -> tuple[float, float]:
+        """``(lambda_qkv, lambda_mlp)`` as this recipe sets them for ``stage``.
+
+        Stage 1 takes the recipe's values; from stage 2 on both are multiplied by
+        :attr:`stage2_lambda_multiplier`.
+        """
+        if stage < 1:
+            raise ValueError(f"stage must be at least 1, got {stage}")
+        scale = self.stage2_lambda_multiplier if stage >= 2 else 1.0
+        return self.lambda_qkv * scale, self.lambda_mlp * scale
+
     def to_train_config(
         self, stage: int, artifact_path: str | Path, *, keep_short_whole: bool | None = None,
+        lambda_: float | None = None, mu: float | None = None,
     ) -> TrainConfig:
         """The :class:`lfa.train.TrainConfig` for one stage of a run using this recipe.
 
@@ -285,16 +323,22 @@ class Recipe:
             keep_short_whole: Override the recipe's short-document setting. ``None`` uses the
                 recipe's own value; ``False`` cuts a document that fits in one chunk at the epoch
                 offset like any longer one.
-        """
-        if stage < 1:
-            raise ValueError(f"stage must be at least 1, got {stage}")
+            lambda_: This stage's lambda, exactly: both ``lambda_qkv`` and ``lambda_mlp`` are set
+                to it and no stage multiplier is applied on top. ``None`` uses the recipe's.
+            mu: This stage's mu, exactly. ``None`` uses the recipe's.
 
-        lambda_scale = self.stage2_lambda_multiplier if stage >= 2 else 1.0
+        Raises:
+            ValueError: ``stage`` below 1, or a ``lambda_`` or ``mu`` that is negative or not
+                finite.
+        """
+        lambda_qkv, lambda_mlp = self.stage_lambdas(stage)
+        if lambda_ is not None:
+            lambda_qkv = lambda_mlp = check_anchor_weight("lambda", lambda_)
         return TrainConfig(
             model_id=self.model_id,
-            lambda_qkv=self.lambda_qkv * lambda_scale,
-            lambda_mlp=self.lambda_mlp * lambda_scale,
-            mu=self.mu,
+            lambda_qkv=lambda_qkv,
+            lambda_mlp=lambda_mlp,
+            mu=self.mu if mu is None else check_anchor_weight("mu", mu),
             n_anchor_samples=self.n_anchor_samples,
             anchor_end_ratio=self.anchor_end_ratio,
             anchor_schedule=self.anchor_schedule,
@@ -403,4 +447,52 @@ class Recipe:
                 f"lambda for full weight{start} by docs/model-integration-cookbook.md §5, and "
                 "check held-out domain perplexity, not only general-text perplexity."
             )
+        return notes
+
+    def override_notes(self, stage: int, lambda_: float | None = None,
+                       mu: float | None = None) -> list[str]:
+        """What a per-run ``lambda_`` or ``mu`` moved away from, for ``stage``.
+
+        Empty when neither was given, or when each equals what this recipe would have used at
+        ``stage`` (its lambdas after :attr:`stage2_lambda_multiplier`, its mu). Like
+        :meth:`warnings`, a note rather than a refusal: an off-calibration value is allowed, it
+        just is not the measured operating point. ``lambda_ = mu = 0`` is the unanchored control
+        and is said to be one.
+
+        Raises:
+            ValueError: a ``lambda_`` or ``mu`` that is not a finite number, 0 or above
+                (:func:`check_anchor_weight`; a numeric string is read as its number).
+        """
+        lambda_ = None if lambda_ is None else check_anchor_weight("lambda", lambda_)
+        mu = None if mu is None else check_anchor_weight("mu", mu)
+        notes: list[str] = []
+        lambda_qkv, lambda_mlp = self.stage_lambdas(stage)
+        calibrated = (_g(lambda_qkv) if lambda_qkv == lambda_mlp
+                      else f"qkv {_g(lambda_qkv)}, mlp {_g(lambda_mlp)}")
+        if stage >= 2:
+            calibrated += (f" for stage {stage} ({_g(self.lambda_qkv)} x its stage-2 multiplier "
+                           f"{_g(self.stage2_lambda_multiplier)})")
+        lambda_moved = lambda_ is not None and (lambda_qkv, lambda_mlp) != (lambda_, lambda_)
+        mu_moved = mu is not None and mu != self.mu
+        if lambda_moved:
+            notes.append(
+                f"lambda {_g(lambda_)} set by --lambda (lambda_= from Python); the recipe "
+                f"calibrated {calibrated}. It applies as given, with no stage multiplier on top. "
+                "Read the run by its held-out curve and on both axes (`lfa evaluate`): a "
+                "lambda off the recipe's is a measurement on your corpus, not the shipped "
+                "operating point (docs/recipes.md, 'Trying another λ').")
+        if mu_moved:
+            notes.append(f"mu {_g(mu)} set by --mu (mu= from Python); the recipe's is "
+                         f"{_g(self.mu)}.")
+        if not (lambda_moved or mu_moved):
+            return notes
+        anchor_off = (lambda_qkv, lambda_mlp) == (0, 0) if lambda_ is None else lambda_ == 0
+        if anchor_off and (self.mu if mu is None else mu) == 0:
+            notes.append(
+                "lambda and mu are both 0: nothing anchors this run, so it is the unanchored "
+                "control, not an LFA run, and the artifact is not sampled.")
+        elif anchor_off:
+            notes.append(
+                "lambda is 0: the function anchor is off and the artifact is not sampled; only "
+                "mu's weight backstop holds the model near where it started.")
         return notes
