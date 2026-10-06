@@ -258,23 +258,24 @@ general axis reads WikiText-2 from the Hub).
 ### What it prints
 
 The walkthrough's stage 1 (Qwen3-0.6B on Darwin; a 4-epoch demo where the recipe trains 15;
-200 WikiText-2 windows; recorded 2026-10-05), with `--compare-unanchored`:
+200 WikiText-2 windows; recorded 2026-10-06), with `--compare-unanchored`:
 
 ```
 | metric               | before | after |     Δ% | unanchored |     Δ% |
 | -------------------- | -----: | ----: | -----: | ---------: | -----: |
-| general (WikiText-2) |  17.80 | 16.06 |  -9.8% |      26.36 | +48.1% |
-| domain               |  30.12 | 19.25 | -36.1% |      18.84 | -37.5% |
+| general (WikiText-2) |  17.80 | 16.07 |  -9.7% |      26.78 | +50.4% |
+| domain               |  30.12 | 19.26 | -36.1% |      18.68 | -38.0% |
 ```
 
 Lower is better. **The domain number should fall and WikiText-2 should hold.** A general number
 *below* the base model's, as here, is not by itself evidence that anything was kept —
 [faq.md](faq.md#wikitext-2-perplexity-came-out-below-the-base-models-is-that-a-win) says why. The
-control trains at the anchored run's epochs, which is not its own dose: this one was lowest at
-epoch 2 and ended 23.5 % above that at epoch 4, so part of its gap is dose. When the control's
-curve turned like that (1 % or more above its lowest), `evaluate` says so beneath the table (the
-recording above predates that note) and prints three commands that train it at its own best epoch
-in a fresh workspace (`lfa train … --lambda 0 --mu 0 --epochs <its best>`); read it there too.
+control trains at the anchored run's epochs, which is not its own dose. When its curve turned (1 %
+or more above its lowest), `evaluate` says so beneath the table — here, "The unanchored control's
+held-out perplexity was lowest at epoch 2 (14.90) and ended at 18.24 (epoch 4, +22.4 %): it
+trained at this run's dose, past its own best, so part of the unanchored column's gap is dose, not
+the anchor." — and prints three commands that train it at its own best epoch in a fresh workspace
+(`lfa train … --lambda 0 --mu 0 --epochs <its best>`); read it there too.
 [tuning.md](tuning.md#3-read-both-axes-and-the-control-at-its-own-dose) says what that showed on
 one book.
 
@@ -307,13 +308,13 @@ For the whole thing worked through on real text — two domains one after the ot
 public-domain books the notebook downloads itself, with **each stage run a second time with the
 anchor off** so the control sits beside every number — open
 [`examples/two_domain_walkthrough.ipynb`](../examples/two_domain_walkthrough.ipynb). It ran end to
-end in 35.3 minutes on one RTX 3090 (four training runs, two of them controls, and a supplement
+end in 35.4 minutes on one RTX 3090 (four training runs, two of them controls, and a supplement
 written for each stage), plus whatever the
 model and WikiText-2 cost you on a cold cache and, when the store has none for the model yet, the
 artifact's download (or its build, for a model with none published). Its epoch count is demo scale — a quarter of the
 recipe's fifteen — and the notebook says so
 beside every table, so do not read its settings as the recommended ones. Its recorded outputs were
-made on 2026-10-05 on that card, with the self-generated artifact at the recorded frame (2,500
+made on 2026-10-06 on that card, with the self-generated artifact at the recorded frame (2,500
 documents × 2,048 tokens, K = 32) and the supplement on.
 [`examples/what_the_anchor_does.ipynb`](../examples/what_the_anchor_does.ipynb) is optional and
 picks up the workspace it leaves behind: each control re-run at its own best number of epochs,

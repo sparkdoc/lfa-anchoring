@@ -75,13 +75,13 @@ workspace writes `runs/stage1_run2`, and `evaluate` and `fuse` then read that ru
 
 **`evaluate`** reads the stage on both axes against the model it started from. The before and
 after columns of the walkthrough's stage 1 (Qwen3-0.6B on Darwin, a 4-epoch demo where the recipe
-trains 15; 200 WikiText-2 windows; recorded 2026-10-05):
+trains 15; 200 WikiText-2 windows; recorded 2026-10-06):
 
 ```
 | metric               | before | after |     Δ% |
 | -------------------- | -----: | ----: | -----: |
-| general (WikiText-2) |  17.80 | 16.06 |  -9.8% |
-| domain               |  30.12 | 19.25 | -36.1% |
+| general (WikiText-2) |  17.80 | 16.07 |  -9.7% |
+| domain               |  30.12 | 19.26 | -36.1% |
 ```
 
 Lower is better. **The domain number should fall and WikiText-2 should hold.** A WikiText-2
@@ -185,12 +185,12 @@ Details:
 
 **To watch it work rather than read about it**, open
 [`examples/two_domain_walkthrough.ipynb`](https://github.com/sparkdoc/lfa-anchoring/blob/main/examples/two_domain_walkthrough.ipynb):
-Qwen3-0.6B adapted to Darwin, then to a Victorian cookbook, with every stage repeated with the
+Qwen3-0.6B adapted to Darwin, then to an 1853 American cookbook, with every stage repeated with the
 anchor off so the control sits beside each number. Across stage 2 the anchored model's Darwin
-perplexity moves 19.25 → 19.92 while the unanchored one's goes to 37.47, having read no Darwin
-either way. Recorded 2026-10-05 on one RTX 3090 with the self-generated artifact at the recorded
+perplexity moves 19.26 → 20.06 while the unanchored one's goes to 36.53, having read no Darwin
+either way. Recorded 2026-10-06 on one RTX 3090 with the self-generated artifact at the recorded
 frame (2,500 documents × 2,048 tokens, K = 32) and the supplement on; one seed, one run per cell.
-35.3 minutes of training and tables on that card once the artifact is in the store, and it
+35.4 minutes of training and tables on that card once the artifact is in the store, and it
 downloads what it needs and needs no API key.
 
 A second notebook is optional and continues from the workspace the first leaves behind:

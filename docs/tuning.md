@@ -115,8 +115,8 @@ own best epoch the control's held-out perplexity (25.59, epoch 1 of its 15-epoch
 every anchored run's lowest (26.88, the 8-epoch re-run at epoch 7). What the anchor bought there
 can only be on the general axis, and that was not measured: neither the control's WikiText-2 at
 epoch 1 nor a 1-epoch control run. Where it was measured, in the walkthrough's companion notebook
-(Darwin, a 4-epoch demo), the control at its own dose fit the domain more closely (15.50 against
-19.25) and kept less of the general axis (WikiText-2 18.93 against 16.06, base 17.80).
+(Darwin, a 4-epoch demo), the control at its own dose fit the domain more closely (15.53 against
+19.26) and kept less of the general axis (WikiText-2 18.93 against 16.07, base 17.80).
 
 ## 4. λ: when to try another
 
