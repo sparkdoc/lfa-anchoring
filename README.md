@@ -80,8 +80,8 @@ trains 15; 200 WikiText-2 windows; recorded 2026-10-06):
 ```
 | metric               | before | after |     Δ% |
 | -------------------- | -----: | ----: | -----: |
-| general (WikiText-2) |  17.80 | 16.07 |  -9.7% |
-| domain               |  30.12 | 19.26 | -36.1% |
+| general (WikiText-2) |  17.80 | 16.08 |  -9.7% |
+| domain               |  30.12 | 19.30 | -35.9% |
 ```
 
 Lower is better. **The domain number should fall and WikiText-2 should hold.** A WikiText-2
@@ -189,10 +189,10 @@ Details:
 [`examples/two_domain_walkthrough.ipynb`](https://github.com/sparkdoc/lfa-anchoring/blob/main/examples/two_domain_walkthrough.ipynb):
 Qwen3-0.6B adapted to Darwin, then to an 1853 American cookbook, with every stage repeated with the
 anchor off so the control sits beside each number. Across stage 2 the anchored model's Darwin
-perplexity moves 19.26 → 20.06 while the unanchored one's goes to 36.53, having read no Darwin
+perplexity moves 19.30 → 19.97 while the unanchored one's goes to 37.67, having read no Darwin
 either way. Recorded 2026-10-06 on one RTX 3090 with the self-generated artifact at the recorded
 frame (2,500 documents × 2,048 tokens, K = 32) and the supplement on; one seed, one run per cell.
-35.4 minutes of training and tables on that card once the artifact is in the store, and it
+35.5 minutes of training and tables on that card once the artifact is in the store, and it
 downloads what it needs and needs no API key.
 
 A second notebook is optional and continues from the workspace the first leaves behind:
@@ -200,7 +200,10 @@ A second notebook is optional and continues from the workspace the first leaves 
 re-runs each control at its own best epoch count, so the gaps above can be split into what is
 dose and what is anchor — at its own dose each control fits its new domain more closely than the
 anchored run and keeps less of the rest — and then puts the three models to fixed probes, whose
-answers, at this scale, mostly do not show that difference.
+answers, at this scale, split: on the first ten the control's answer is the better one five times
+(twice on a general question) and the anchored model's once, and on the eight transfer probes the
+anchored model's is the nearer to the question on all three adjacent ones and the nearer to the base
+model's on two of the three inward ones; the other three do not separate the arms.
 
 ## Documentation
 

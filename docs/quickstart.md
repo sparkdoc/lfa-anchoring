@@ -263,8 +263,8 @@ The walkthrough's stage 1 (Qwen3-0.6B on Darwin; a 4-epoch demo where the recipe
 ```
 | metric               | before | after |     Δ% | unanchored |     Δ% |
 | -------------------- | -----: | ----: | -----: | ---------: | -----: |
-| general (WikiText-2) |  17.80 | 16.07 |  -9.7% |      26.78 | +50.4% |
-| domain               |  30.12 | 19.26 | -36.1% |      18.68 | -38.0% |
+| general (WikiText-2) |  17.80 | 16.08 |  -9.7% |      26.68 | +49.9% |
+| domain               |  30.12 | 19.30 | -35.9% |      18.82 | -37.5% |
 ```
 
 Lower is better. **The domain number should fall and WikiText-2 should hold.** A general number
@@ -274,8 +274,8 @@ Beneath the table, `evaluate` repeats the run's own held-out verdict — the lin
 with, as one paragraph opening `This run's held-out curve:` — so the dose advice is on the screen
 you read the numbers from. The control trains at the anchored run's epochs, which is not its own
 dose. When its curve turned (1 % or more above its lowest), `evaluate` says so after that — here,
-"The unanchored control's held-out perplexity was lowest at epoch 2 (14.90) and ended at 18.24
-(epoch 4, +22.4 %): it trained at this run's dose, past its own best, so part of the unanchored
+"The unanchored control's held-out perplexity was lowest at epoch 2 (14.85) and ended at 18.23
+(epoch 4, +22.8 %): it trained at this run's dose, past its own best, so part of the unanchored
 column's gap is dose, not the anchor." — and prints three commands that train it at its own best
 epoch in a fresh workspace (`lfa train … --lambda 0 --mu 0 --epochs <its best>`); read it there
 too.
@@ -311,7 +311,7 @@ For the whole thing worked through on real text — two domains one after the ot
 public-domain books the notebook downloads itself, with **each stage run a second time with the
 anchor off** so the control sits beside every number — open
 [`examples/two_domain_walkthrough.ipynb`](../examples/two_domain_walkthrough.ipynb). It ran end to
-end in 35.4 minutes on one RTX 3090 (four training runs, two of them controls, and a supplement
+end in 35.5 minutes on one RTX 3090 (four training runs, two of them controls, and a supplement
 written for each stage), plus whatever the
 model and WikiText-2 cost you on a cold cache and, when the store has none for the model yet, the
 artifact's download (or its build, for a model with none published). Its epoch count is demo scale — a quarter of the
