@@ -100,8 +100,10 @@ gives the reasons (the schedule, the one axis, the held-out number) and the meas
 >   epochs may lower it further, and the run says the dose can be raised with `--epochs`. The
 >   exception is a re-run at an earlier run's turn, which usually ends at its own lowest: when the
 >   workspace holds that earlier run (same stage, same frame but the epochs), the run names it,
->   says to stop there, and compares the two finals — keep the lower, and two less than about
->   0.15 % apart are the same ([tuning.md](tuning.md#when-the-re-run-does-not-turn)).
+>   says to stop there, reads the two held-out finals, and asks for the two runs' `evaluate`
+>   tables: keep the run not worse on either axis beyond the run-to-run spread
+>   ([tuning.md](tuning.md#when-the-re-run-does-not-turn)). An earlier run that diverged after its
+>   lowest epoch is matched the same way, and the re-run is kept.
 > * **It diverged** (the last held-out value is not finite): a warning that the run diverged and
 >   its `final_model` should not be shipped, with the lowest finite epoch named for a re-run at
 >   `--epochs <that epoch>`, or a stronger anchor or a lower learning rate. The summary is not
@@ -115,8 +117,9 @@ gives the reasons (the schedule, the one axis, the held-out number) and the meas
 > is laid over the epoch count (`--epochs 3` is a complete three-epoch run, not the first three
 > epochs of fifteen). The same reading — verdict, lowest epoch and value, final value, gap — is
 > kept in the stage's entry in the workspace's `history.json`, under `held_out`, and a re-run at
-> an earlier run's turn names that run, its turn epoch and its final under `rerun_of`. Re-tuning
-> the dose does not re-tune λ: they are separate knobs, and λ's couplings are below.
+> an earlier run's turn names that run, its turn epoch and its final (`null` for a run that
+> diverged) under `rerun_of`. Re-tuning the dose does not re-tune λ: they are separate knobs, and
+> λ's couplings are below.
 > [tuning.md](tuning.md) puts the dose, the control and λ together as one procedure for your
 > corpus.
 >
@@ -130,6 +133,8 @@ gives the reasons (the schedule, the one axis, the held-out number) and the meas
 > run in its own directory, at the λ and μ that run was started with: without `--lambda`/`--mu`
 > it takes them from the run's `config.json` and says so, and an explicit `--lambda` or `--mu`
 > that differs is refused, naming the run's value exactly and the flag to give or drop.
+> `evaluate` and `fuse` read an earlier run of the stage when `--run` names it (`--run stage1`);
+> `extend` and `regenerate-artifact` never do.
 >
 > **The other end of the same axis.** A corpus so small that the whole run takes fewer optimizer
 > steps than `warmup_steps` (50 here) never reaches the learning rate this operating point was

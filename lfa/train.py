@@ -523,6 +523,9 @@ OPTIONAL_RERUN_GAP = 0.01
 #: Two finals closer than this are called the same on that axis.
 HELD_OUT_SPREAD = 0.0015
 
+#: The same spread on WikiText-2 (100 windows), from the same three runs: about 0.5 %.
+GENERAL_SPREAD = 0.005
+
 #: The four answers :func:`held_out_summary` gives.
 HELD_OUT_VERDICTS = ("no_curve", "still_falling", "turned", "diverged")
 
@@ -560,20 +563,23 @@ class HeldOutSummary:
 
 @dataclass(frozen=True)
 class EarlierTurn:
-    """An earlier run of the same stage whose held-out curve turned at the epoch count this run
-    was trained with -- what makes this run the re-run its end-of-run line advised.
+    """An earlier run of the same stage whose held-out curve was lowest at the epoch count this
+    run was trained with, and which advised a re-run there -- what makes this run that re-run.
 
-    Only a workspace can say so: it holds the stage's history, and :meth:`lfa.Workspace.train`
-    finds the run (:func:`held_out_messages` then words the verdict for it). :func:`train` called
-    directly has no history and is handed none.
+    The earlier run either turned (verdict ``"turned"``) or diverged after its lowest epoch
+    (``"diverged"``): both end-of-run lines advise ``--epochs <lowest>``. Only a workspace can
+    say so: it holds the stage's history, and :meth:`lfa.Workspace.train` finds the run
+    (:func:`held_out_messages` then words the verdict for it). :func:`train` called directly has
+    no history and is handed none.
 
     ``run`` is the earlier run's directory name (``stage1``), ``epoch`` its lowest epoch, which is
-    this run's ``--epochs``, and ``final`` its final held-out perplexity.
+    this run's ``--epochs``, and ``final`` its final held-out perplexity -- ``None`` when it
+    diverged, since its last value was not finite.
     """
 
     run: str
     epoch: int
-    final: float
+    final: float | None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -634,9 +640,9 @@ def held_out_messages(summary: HeldOutSummary,
 
     ``rerun_of`` names the earlier run of the stage whose turn this run's ``--epochs`` re-ran at
     (:class:`EarlierTurn`; found by :meth:`lfa.Workspace.train`). It changes one verdict: a
-    re-run at a turn that did not turn itself is told to stop and compare the two finals
-    (:func:`_rerun_at_turn`), not to raise ``--epochs`` -- which would advise the epoch count it
-    was re-run to leave. Every other verdict ignores it.
+    re-run at a turn that did not turn itself is told to stop and choose between the two runs on
+    both axes (:func:`_rerun_at_turn`), not to raise ``--epochs`` -- which would advise the epoch
+    count it was re-run to leave. Every other verdict ignores it.
     """
     if summary.verdict == "no_curve":
         return [(logging.INFO,
@@ -705,24 +711,40 @@ def _rerun_at_turn(summary: HeldOutSummary, rerun_of: EarlierTurn) -> str:
     Such a re-run is expected not to turn -- a curve that was lowest at epoch k, re-run with its
     schedule laid over k epochs, usually is lowest at its own last epoch -- and the generic
     advice ("raise --epochs") would send the user back toward the run they just left. So: stop,
-    compare the two finals, keep the lower. The comparison is made on the printed (three-decimal)
-    figures, and two finals within :data:`HELD_OUT_SPREAD` of each other are called the same.
+    and choose between the two runs. The held-out finals are read first, on the printed
+    (three-decimal) figures, two of them within :data:`HELD_OUT_SPREAD` called the same; but
+    they are one axis, so the choice is put on both: keep the run not worse on either beyond
+    the run-to-run spread (:data:`GENERAL_SPREAD`, :data:`HELD_OUT_SPREAD`), reading the two
+    runs' ``evaluate`` tables. Either run can come out the keeper, so both exports are named.
+    An earlier run that diverged is no candidate, and this run is kept.
     """
+    run = rerun_of.run
+    stop = ("and not turning is what such a re-run shows, not a sign that more epochs would "
+            "help: stop here.")
+    if rerun_of.final is None:
+        return (f"This run is the re-run at {run}'s lowest epoch (epoch {rerun_of.epoch}), "
+                f"before it diverged, {stop} The earlier run, {run}, diverged and should not be "
+                f"shipped, so keep this run.")
     this, earlier = round(summary.final, 3), round(rerun_of.final, 3)
     apart = abs(this / earlier - 1.0)
-    said = (f"This run is the re-run at {rerun_of.run}'s turn (epoch {rerun_of.epoch}), and not "
-            f"turning is what such a re-run shows, not a sign that more epochs would help: stop "
-            f"here. Compare the two finals and keep the lower: this run's {summary.final:.3f} "
-            f"against {rerun_of.run}'s {rerun_of.final:.3f}")
+    finals = (f"On the held-out curve this run ended at {summary.final:.3f} and {run} at "
+              f"{rerun_of.final:.3f}")
     if apart < HELD_OUT_SPREAD:
-        return (f"{said}, {apart * 100:.2f} % apart -- within the run-to-run spread of about "
-                f"{HELD_OUT_SPREAD * 100:.2f} % (docs/tuning.md, 'When to stop'), so on this axis "
-                f"they are the same, and either can be kept.")
-    if this < earlier:
-        return f"{said}: this run is {apart * 100:.1f} % lower; keep it."
-    return (f"{said}: {rerun_of.run} is {apart * 100:.1f} % lower. `lfa fuse` reads this run, "
-            f"the stage's latest; docs/tuning.md (step 2) says how to ship {rerun_of.run} "
-            f"instead.")
+        finals += (f", {apart * 100:.2f} % apart, within the run-to-run spread of about "
+                   f"{HELD_OUT_SPREAD * 100:.2f} % (measured on Qwen3-1.7B).")
+    elif this < earlier:
+        finals += f", so this run is {apart * 100:.1f} % lower."
+    else:
+        finals += f", so {run} is {apart * 100:.1f} % lower."
+    return (f"This run is the re-run at {run}'s turn (epoch {rerun_of.epoch}), {stop} {finals} "
+            f"That is one axis: keep the run that is not worse on either axis by more than the "
+            f"run-to-run spread measured on Qwen3-1.7B, three repeats at one seed (about "
+            f"{GENERAL_SPREAD * 100:.1f} % on WikiText-2 and "
+            f"{HELD_OUT_SPREAD * 100:.2f} % on the held-out domain; docs/tuning.md, 'When to "
+            f"stop'), setting this run's `lfa evaluate` table beside {run}'s (the one evaluate "
+            f"printed for it, or `lfa evaluate --run {run}`). When each run is better on one "
+            f"axis, docs/tuning.md (step 2) says what to weigh. `lfa fuse` exports this run, the "
+            f"stage's latest, and `lfa fuse --run {run}` exports {run}.")
 
 
 def _log_held_out_summary(summary: HeldOutSummary, run_logger: logging.Logger,

@@ -58,7 +58,7 @@ The held-out curve turned at epoch 8: a re-run with --epochs 8 is likely to ship
 | it turned, 1 % to 10 % above: a re-run is "likely to ship a better model" | re-run with `--epochs <its lowest epoch>` |
 | it turned, under 1 % above: the re-run is "optional" | keep the run, or re-run; the 1 % cut is a judgement ([§5](#5-when-to-stop) has the measured spread) |
 | it had not turned: "more epochs may lower it further" | re-run with a larger `--epochs` |
-| it had not turned, and it is the re-run at an earlier run's turn: "stop here" | stop; compare the two runs' finals and keep the lower ([below](#when-the-re-run-does-not-turn)) |
+| it had not turned, and it is the re-run at an earlier run's turn: "stop here" | stop; keep whichever of the two runs is not worse on either axis ([below](#when-the-re-run-does-not-turn)) |
 | it diverged (the last value is not finite) | do not ship it; re-run at the lowest epoch, or with a stronger anchor, or with a lower learning rate (a recipe of your own: [recipes.md](recipes.md#writing-your-own)) |
 | no curve | go back to step 1 |
 
@@ -69,7 +69,8 @@ lfa train --workspace runs/world_history --corpus data/world_history --epochs 8
 **Same workspace or a fresh one.** In the same workspace, before `lfa extend`, the re-run is a
 second run of the stage: it writes `runs/stage1_run2`, the first stays in `runs/stage1`, and from
 then on `lfa evaluate`, `lfa fuse` and `lfa extend` read the latest run (`train` says so when it
-starts and ends). A fresh workspace keeps each run on its own: `lfa init runs/world_history_e8
+starts and ends); `evaluate` and `fuse` read the earlier one when `--run stage1` names it. A fresh
+workspace keeps each run on its own: `lfa init runs/world_history_e8
 --model Qwen/Qwen3-0.6B --artifact runs/world_history/artifacts/v1.pt`, naming the first
 workspace's artifact file, which is the very file its run anchored on (`--artifact
 self-generated` would look the artifact up in the store again). Either way each run keeps its
@@ -95,32 +96,58 @@ the re-run at `--epochs 6` ended at 13.526, 0.7 % above it, and beat the 10-epoc
 #### When the re-run does not turn
 
 A re-run at the turn usually ends at its own lowest, so its line says the curve had not turned.
-That is what such a re-run shows, not a call for more epochs: stop there, compare the two runs'
-final held-out perplexity, and keep the lower. In the same workspace the run finds the earlier run
-in the stage's history and says so itself, and `evaluate` repeats it. With the astronomy book's
-figures (that trial ran before the line existed), the end of the re-run reads:
+That is what such a re-run shows, not a call for more epochs: stop there, and choose between the
+two runs. In the same workspace the run finds the earlier run in the stage's history and says so
+itself, and `evaluate` repeats it. With the astronomy book's figures (that trial ran before the
+line existed), the end of the re-run reads:
 
 ```
 Held-out perplexity: lowest 13.839 at epoch 10 of 10; final 13.839 (+0.0 % over the lowest).
-This run is the re-run at stage1's turn (epoch 10), and not turning is what such a re-run shows, not a sign that more epochs would help: stop here. Compare the two finals and keep the lower: this run's 13.839 against stage1's 14.021: this run is 1.3 % lower; keep it.
+This run is the re-run at stage1's turn (epoch 10), and not turning is what such a re-run shows, not a sign that more epochs would help: stop here. On the held-out curve this run ended at 13.839 and stage1 at 14.021, so this run is 1.3 % lower. That is one axis: keep the run that is not worse on either axis by more than the run-to-run spread measured on Qwen3-1.7B, three repeats at one seed (about 0.5 % on WikiText-2 and 0.15 % on the held-out domain; docs/tuning.md, 'When to stop'), setting this run's `lfa evaluate` table beside stage1's (the one evaluate printed for it, or `lfa evaluate --run stage1`). When each run is better on one axis, docs/tuning.md (step 2) says what to weigh. `lfa fuse` exports this run, the stage's latest, and `lfa fuse --run stage1` exports stage1.
 ```
 
-Two finals less than about 0.15 % apart are the same run as far as one seed can tell
-([§5](#5-when-to-stop)), and the line says so. A run trained elsewhere cannot be seen from here:
-a re-run in a fresh workspace, or the control trained at its own best epoch by the commands
-`evaluate` prints ([§3](#3-read-both-axes-and-the-control-at-its-own-dose)), ends with the
-generic "had not turned" line. Read it the same way: it is a re-run at a turn, so stop, and compare
-its final with the run whose turn it re-ran.
+If the earlier run diverged, the line says so and keeps the re-run: a run whose last value is not
+finite is not shipped, so there is nothing to choose between.
 
-`lfa fuse` and `lfa extend` read the stage's latest run, which after a re-run is the re-run. When
-the earlier run came out lower, export it from Python instead, with the same call `fuse` makes:
+The held-out finals are one axis, so they are not the choice. Read both runs on both axes, from
+their `evaluate` tables: the re-run's from `lfa evaluate`, and the earlier run's from the table
+`evaluate` printed for it before the re-run (its numbers are also kept under `perplexity` in its
+`history.json` entry) or, if it was never evaluated, from `lfa evaluate --run stage1`. Keep the run
+that is not worse on either axis by more than the run-to-run spread of [§5](#5-when-to-stop), about
+0.5 % on WikiText-2 and 0.15 % on the held-out domain (if both runs are, either will do). That
+spread is three repeats of one run at a fixed seed, measured on Qwen3-1.7B, not on your model; how
+much a different seed moves the numbers was not measured, so a difference just beyond it is still
+one reading. On the astronomy book the re-run was lower on both axes by more than that spread,
+WikiText-2 15.97 against 16.24 (1.7 %) and held-out domain 13.85 against 14.03 (1.3 %), so the
+re-run is the one to keep.
 
-```python
-from lfa.models import fuse
+When the two runs split — one lower on WikiText-2 by more than the spread, the other lower on the
+held-out domain by more than its spread — the choice is the method's own trade. The run lower on
+WikiText-2 kept more of what the model knew before; the one lower on the held-out domain learned
+more of your text. Weigh them by what the model is for. If neither matters more to you, one way to
+settle it is the rule [§4](#4-λ-when-to-try-another) applies to λ rungs when the control
+over-trains: keep the run lower on the held-out domain if its WikiText-2 is within 1 % of the
+other's, and otherwise the run lower on WikiText-2. The 1 % is a judgement, not a measurement.
 
-fuse("runs/world_history/runs/stage1/final_model", "Qwen/Qwen3-0.6B",
-     "runs/world_history/models/stage1_export")
+A run trained elsewhere cannot be seen from here: a re-run in a fresh workspace, or the control
+trained at its own best epoch by the commands `evaluate` prints
+([§3](#3-read-both-axes-and-the-control-at-its-own-dose)), ends with the generic "had not turned"
+line. Read it the same way: it is a re-run at a turn, so stop, and set its table beside the table
+of the run whose turn it re-ran.
+
+`lfa fuse` exports the stage's latest run, which after a re-run is the re-run. To ship the earlier
+run, name it:
+
+```bash
+lfa fuse --workspace runs/world_history --run stage1
 ```
+
+It exports exactly as a `fuse` of the latest run would: that run's adapter, merged into the base
+model it trained on, in the dtype it trained in. The default directory, `models/stage1_fused_export`,
+belongs to the stage and holds whichever of its runs was fused last ([§5](#5-when-to-stop)).
+`lfa extend` has no `--run`: it always folds the latest run into the model and into p(h). To go on
+to a next domain from the earlier run, train the stage again at that run's settings first, so that
+the run you keep is the latest.
 
 ## 3. Read both axes, and the control at its own dose
 
@@ -157,16 +184,17 @@ Run the printed commands rather than this one: they carry the stage's exact reci
 run is a re-run at the control's turn, so its line saying the curve had not turned means stop
 ([step 2](#when-the-re-run-does-not-turn)).
 
-**Read the control there, and expect it to beat every anchored run on the domain.** At its own
-dose the control fits the domain more closely and pays on the general axis; what the anchor buys
-is the general axis. One seed each: on *A Short History of Astronomy* the control at its own 2
-epochs scored held-out 12.37, below every anchored run (the lowest, 13.53, was λ = 400,000 at 6
-epochs), and WikiText-2 19.68, 9.8 % above the base model's 17.93, where the recipe's λ re-run at
-10 epochs scored 13.85 and 15.97. In the walkthrough's companion notebook (Darwin, a 4-epoch demo)
-the control at its own dose fit the domain more closely (15.55 against 19.30) and kept less of the
-general axis (WikiText-2 18.95 against 16.08, base 17.80). On the Wells book its lowest held-out
-(25.59, epoch 1 of its 15-epoch run) was below every anchored run's lowest (26.88, the 8-epoch
-re-run at epoch 7); its WikiText-2 near that epoch was not measured.
+**Read the control there.** At its own dose the control fits the domain more closely and pays on
+the general axis; what the anchor buys is the general axis. In all three measured cases, one seed
+each, it was lower on the held-out domain than every anchored run set beside it. On *A Short
+History of Astronomy* the control at its own 2 epochs scored held-out 12.37, below every anchored
+run (the lowest, 13.53, was λ = 400,000 at 6 epochs), and WikiText-2 19.68, 9.8 % above the base
+model's 17.93, where the recipe's λ re-run at 10 epochs scored 13.85 and 15.97. In the
+walkthrough's companion notebook (Darwin, a 4-epoch demo) the control at its own dose fit the
+domain more closely (15.55 against 19.30) and kept less of the general axis (WikiText-2 18.95
+against 16.08, base 17.80). On the Wells book the lowest of its 15-epoch curve, at epoch 1 (above),
+was below every anchored run's lowest (26.88, the 8-epoch re-run at epoch 7); its WikiText-2 near
+that epoch was not measured.
 
 ## 4. λ: when to try another
 
@@ -238,10 +266,11 @@ favour, is above the 0.15 % spread of [§5](#5-when-to-stop); the WikiText-2 gap
 0.5 %. On *A Short History of Astronomy* (step 2) the dose changed the pick. At a common 10 epochs λ
 = 400,000 scored WikiText-2 16.57 and held-out 13.91 (it turned at epoch 6 and ended 3.5 % above its
 lowest), λ = 1,000,000 15.97 and 13.85, λ = 2,500,000 15.92 and 14.44, and the rule picks 1,000,000.
-λ = 400,000 re-run at its own 6 epochs scored 16.06 and 13.53: within 1 % of the lowest WikiText-2
-and the lowest held-out domain, so by the rule it is the pick, and as an end rung it calls for a
-rung at 160,000, which was not run. To keep a λ, pass `--lambda` on every `train`, or write it into
-a recipe of your own ([recipes.md](recipes.md#writing-your-own)) so that it is the default.
+λ = 400,000 re-run at its own 6 epochs scored 16.06 and 13.53: its WikiText-2 is within 1 % of the
+lowest (16.06 against 15.92), and among the rungs that close it has the lowest held-out domain, so
+by the rule it is the pick, and as an end rung it calls for a rung at 160,000, which was not run.
+To keep a λ, pass `--lambda` on every `train`, or write it into a recipe of your own
+([recipes.md](recipes.md#writing-your-own)) so that it is the default.
 
 ## 5. When to stop
 
@@ -257,8 +286,8 @@ Then fuse the run you chose:
 lfa fuse --workspace runs/world_history
 ```
 
-`fuse` reads the workspace's latest run of the stage, so in a workspace that holds several runs,
-make the last one trained the one you mean to ship, or export an earlier one as
-[step 2](#when-the-re-run-does-not-turn) shows. Its default directory, `models/stage1_fused_export`,
-belongs to the stage, not the run: a `fuse` after a re-run replaces the export already there and
-says so, naming the run the directory now holds (`--out DIR` writes elsewhere).
+`fuse` reads the workspace's latest run of the stage; in a workspace that holds several runs,
+`--run NAME` exports another of them ([step 2](#when-the-re-run-does-not-turn)). Its default
+directory, `models/stage1_fused_export`, belongs to the stage, not the run: it holds whichever run
+of the stage was fused last, and a `fuse` that replaces an export there says so, naming the run the
+directory now holds and whether it is the stage's latest (`--out DIR` writes elsewhere).

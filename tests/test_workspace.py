@@ -2156,7 +2156,7 @@ def test_a_rerun_at_the_earlier_runs_turn_is_told_to_stop_in_train_and_evaluate(
         tmp_path, base_dir, corpus_a, monkeypatch, caplog):
     """The trial: the 15-epoch run turned at 10, the re-run at --epochs 10 ended at its own lowest
     and was told to raise --epochs again. Now both the train log and evaluate say to stop and
-    compare the two finals, from the one builder."""
+    choose between the two runs, from the one builder."""
     from lfa.train import EarlierTurn, HeldOutSummary, held_out_messages
 
     ws = new_workspace(tmp_path, base_dir)
@@ -2170,7 +2170,7 @@ def test_a_rerun_at_the_earlier_runs_turn_is_told_to_stop_in_train_and_evaluate(
     assert entry["rerun_of"] == {"run": "stage1", "epoch": 2, "final": 14.021}
     said = _end_of_run(caplog)
     assert said.startswith("This run is the re-run at stage1's turn (epoch 2)")
-    assert "stop here" in said and "this run's 13.839 against stage1's 14.021" in said
+    assert "stop here" in said and "this run ended at 13.839 and stage1 at 14.021" in said
     assert "had not turned" not in said
 
     table = Workspace.open(ws.path).evaluate(n_windows=None, device="cpu")["table"]
@@ -2227,6 +2227,185 @@ def test_with_several_earlier_turns_the_most_recent_is_named(tmp_path, base_dir,
 
     assert entry["rerun_of"] == {"run": "stage1_run2", "epoch": 2, "final": 14.5}
     assert "re-run at stage1_run2's turn (epoch 2)" in _end_of_run(caplog)
+
+
+def test_a_rerun_at_the_lowest_epoch_of_a_run_that_diverged_is_told_to_stop(
+        tmp_path, base_dir, corpus_a, monkeypatch, caplog):
+    """A diverged run's line also advises --epochs <its lowest> (the review's O1): the re-run
+    there is matched like a re-run at a turn, and kept, since the earlier run is not shippable."""
+    from lfa.train import HeldOutSummary
+
+    ws = new_workspace(tmp_path, base_dir)
+    ws.train(corpus_a, recipe=tiny_recipe(base_dir, epochs=3), device="cpu")
+    _with_curve(ws, HeldOutSummary("diverged", 2, 13.5, 3))
+    _ends_falling(monkeypatch)
+    with caplog.at_level("INFO"):
+        entry = ws.train(corpus_a, recipe=tiny_recipe(base_dir, epochs=3), epochs=2, device="cpu")
+
+    assert entry["rerun_of"] == {"run": "stage1", "epoch": 2, "final": None}
+    said = _end_of_run(caplog)
+    assert said.startswith("This run is the re-run at stage1's lowest epoch (epoch 2), before "
+                           "it diverged")
+    assert said.endswith("The earlier run, stage1, diverged and should not be shipped, so keep "
+                         "this run.")
+    table = Workspace.open(ws.path).evaluate(n_windows=None, device="cpu")["table"]
+    assert said in _own_line(table)
+
+
+def test_a_run_that_diverged_with_no_finite_epoch_is_no_turn(tmp_path, base_dir, corpus_a,
+                                                             monkeypatch, caplog):
+    """No finite epoch means no lowest epoch, so nothing to have re-run at."""
+    from lfa.train import HeldOutSummary
+
+    ws = new_workspace(tmp_path, base_dir)
+    ws.train(corpus_a, recipe=tiny_recipe(base_dir, epochs=3), device="cpu")
+    _with_curve(ws, HeldOutSummary("diverged", None, None, 3))
+    _ends_falling(monkeypatch)
+    entry = ws.train(corpus_a, recipe=tiny_recipe(base_dir, epochs=3), epochs=2, device="cpu")
+    assert entry["rerun_of"] is None
+
+
+def test_a_stage_2_rerun_at_its_turn_is_matched(tmp_path, base_dir, corpus_a, corpus_b,
+                                                 monkeypatch, caplog):
+    """At stage 2 both runs carry the stage-multiplied lambda, and only stage 2's runs are read
+    (the review's O2)."""
+    ws = new_workspace(tmp_path, base_dir)
+    ws.train(corpus_a, recipe=tiny_recipe(base_dir, epochs=3), device="cpu")
+    _turned_at(ws, 2, 9.0)                 # stage 1 also turned at epoch 2; the newer stage-2
+                                           # run is found first, so this does not test the stage
+                                           # filter on its own (a stage-1 run differs in lambda too)
+    ws.extend(need=NEED, k_domain=K_DOMAIN, device="cpu")
+    ws.train(corpus_b, recipe=tiny_recipe(base_dir, epochs=3), device="cpu")
+    _turned_at(ws, 2, 14.021)
+    _ends_falling(monkeypatch)
+    with caplog.at_level("INFO"):
+        entry = ws.train(corpus_b, recipe=tiny_recipe(base_dir, epochs=3), epochs=2, device="cpu")
+
+    assert (entry["stage"], Path(entry["output_dir"]).name) == (2, "stage2_run2")
+    assert entry["lambda_applied"] == ws.history[1]["lambda_applied"] != 10.0
+    assert entry["rerun_of"] == {"run": "stage2", "epoch": 2, "final": 14.021}
+    assert _end_of_run(caplog).startswith("This run is the re-run at stage2's turn (epoch 2)")
+
+
+def test_a_resumed_rerun_at_the_turn_is_matched(tmp_path, base_dir, corpus_a, monkeypatch,
+                                                caplog):
+    """The re-run at --epochs 2 stopped after one epoch and was resumed to 2: the resume skips
+    its own directory, finds the earlier run, and ends with the stop verdict (the review's O2)."""
+    ws = new_workspace(tmp_path, base_dir)
+    ws.train(corpus_a, recipe=tiny_recipe(base_dir, epochs=3), device="cpu")
+    _turned_at(ws, 2, 14.021)
+    _ends_falling(monkeypatch)
+    cut_short = ws.train(corpus_a, recipe=tiny_recipe(base_dir, epochs=3), epochs=1,
+                         device="cpu")
+    assert cut_short["rerun_of"] is None              # one epoch is not the turn's epoch count
+    with caplog.at_level("INFO"):
+        resumed = ws.train(corpus_a, recipe=tiny_recipe(base_dir, epochs=3), epochs=2,
+                           resume=True, device="cpu")
+
+    assert resumed["output_dir"] == cut_short["output_dir"]
+    assert resumed["rerun_of"] == {"run": "stage1", "epoch": 2, "final": 14.021}
+    assert _end_of_run(caplog).startswith("This run is the re-run at stage1's turn (epoch 2)")
+
+
+def test_a_lambda_flag_equal_to_the_recipes_value_is_still_the_rerun(
+        tmp_path, base_dir, corpus_a, monkeypatch, caplog):
+    """`--lambda 10` on a recipe whose lambda is 10 is the same frame: the applied lambda is
+    compared, not whether a flag was given (the review's O2)."""
+    ws = new_workspace(tmp_path, base_dir)
+    ws.train(corpus_a, recipe=tiny_recipe(base_dir, epochs=3), device="cpu")
+    _turned_at(ws, 2, 14.021)
+    _ends_falling(monkeypatch)
+    with caplog.at_level("INFO"):
+        entry = ws.train(corpus_a, recipe=tiny_recipe(base_dir, epochs=3), epochs=2,
+                         lambda_=10.0, device="cpu")
+
+    assert entry["lambda_override"] == entry["lambda_applied"] == 10.0     # the flag was given
+    assert entry["rerun_of"] == {"run": "stage1", "epoch": 2, "final": 14.021}
+
+
+# ------------------------------------------ fuse and evaluate on an earlier run of the stage
+
+def _two_runs(tmp_path, base_dir, corpus_a):
+    ws = new_workspace(tmp_path, base_dir)
+    ws.train(corpus_a, recipe=tiny_recipe(base_dir), device="cpu")
+    ws.train(corpus_a, recipe=tiny_recipe(base_dir), epochs=2, device="cpu")
+    return ws
+
+
+def test_fuse_run_exports_the_named_run_with_its_own_base_and_dtype(tmp_path, base_dir,
+                                                                    corpus_a, monkeypatch):
+    """`fuse(run="stage1")` while stage1_run2 is the latest: the adapter, the base model and the
+    dtype all come from stage1's own entry, into the stage's default directory."""
+    ws = _two_runs(tmp_path, base_dir, corpus_a)
+    # Make the two entries tell apart on every field fuse reads from them.
+    ws.history[0]["dtype"], ws.history[0]["base_model"] = "bfloat16", "the/stage1-base"
+    ws._save_history()
+    calls = []
+    monkeypatch.setattr(workspace_module, "fuse",
+                        lambda adapter, base, out, dtype: calls.append(
+                            (Path(adapter), base, Path(out), dtype)))
+
+    out = Workspace.open(ws.path).fuse(run="stage1")
+    Workspace.open(ws.path).fuse()
+
+    default = ws.path / "models" / "stage1_fused_export"
+    assert out == default
+    assert calls == [
+        (ws.path / "runs" / "stage1" / "final_model", "the/stage1-base", default, torch.bfloat16),
+        (ws.path / "runs" / "stage1_run2" / "final_model", str(base_dir), default, torch.float32),
+    ]
+
+
+def test_a_resumed_run_is_named_by_its_directory_and_read_at_its_last_entry(tmp_path, base_dir,
+                                                                            corpus_a):
+    ws = new_workspace(tmp_path, base_dir)
+    ws.train(corpus_a, recipe=tiny_recipe(base_dir), device="cpu")
+    ws.train(corpus_a, recipe=tiny_recipe(base_dir), epochs=2, resume=True, device="cpu")
+    ws.train(corpus_a, recipe=tiny_recipe(base_dir), device="cpu")
+
+    assert [Path(e["output_dir"]).name for e in ws.history] == ["stage1", "stage1",
+                                                                  "stage1_run2"]
+    assert ws._stage_run("stage1") is ws.history[1]
+    assert ws._stage_run("stage1/") is ws.history[1]          # as a shell completes the name
+    assert ws._stage_run(None) is ws._stage_run("stage1_run2") is ws.history[2]
+
+
+def test_fuse_run_refuses_a_name_the_stage_has_no_run_by(tmp_path, base_dir, corpus_a):
+    ws = _two_runs(tmp_path, base_dir, corpus_a)
+    with pytest.raises(ValueError) as refusal:
+        ws.fuse(run="stage1_run3")
+    assert str(refusal.value) == ("Stage 1 has no run named 'stage1_run3': its runs are stage1, "
+                                  "stage1_run2.")
+    assert not (ws.path / "models").exists()
+
+
+def test_fuse_run_refuses_a_run_of_an_earlier_stage(flow):
+    ws, _, _, _ = flow
+    with pytest.raises(ValueError) as refusal:
+        ws.fuse(run="stage1")
+    assert str(refusal.value) == (
+        "stage1 is a run of stage 1, and run= names a run of the latest stage, 2: stage2. "
+        "Stage 1 was folded into the chain when it was extended, and the stages after it build "
+        "on that.")
+    with pytest.raises(ValueError, match="is a run of stage 1"):
+        ws.evaluate(n_windows=None, device="cpu", run="stage1")
+
+
+def test_evaluate_run_reads_the_named_run_and_records_its_numbers_there(
+        tmp_path, base_dir, corpus_a, monkeypatch, caplog):
+    ws = _two_runs(tmp_path, base_dir, corpus_a)
+    run1 = ws.path / "runs" / "stage1"
+    scored = []
+    monkeypatch.setattr(Workspace, "_score",
+                        lambda self, base, adapter, *a: scored.append(adapter) or
+                        {"general": None, "domain": 1.0})
+    with caplog.at_level("INFO", logger="lfa.workspace"):
+        ws.evaluate(n_windows=None, device="cpu", run="stage1")
+
+    assert scored == [None, str(run1 / "final_model")]
+    assert any(r.message.startswith(f"The run read: {run1} ") for r in caplog.records)
+    history = json.loads((ws.path / "history.json").read_text())
+    assert "perplexity" in history[0] and "perplexity" not in history[1]
 
 
 def test_the_wells_runs_line_reads_as_train_said_it(tmp_path, base_dir, corpus_a):

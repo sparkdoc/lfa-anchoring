@@ -71,7 +71,7 @@ from .models import (
     resolve_device,
     resolve_teacher_mode,
 )
-from .recipe import BUNDLED_DIR, Recipe, check_anchor_weight
+from .recipe import BUNDLED_DIR, SPEAKS_TO_CLI, Recipe, check_anchor_weight
 from .sampler import Sampler
 from .selfgen.artifact_corpus import SelfGenOptions
 from .supplements import beside_corpus, supplement_for
@@ -819,7 +819,8 @@ class Workspace:
             logger.info(
                 "Stage %d already has a run (%s): this one writes %s, and from here on `lfa "
                 "evaluate`, `lfa fuse`, `lfa extend` and `lfa regenerate-artifact` read this one "
-                "-- a stage's latest run. The earlier run stays on disk, unread by them.", stage,
+                "-- a stage's latest run. The earlier run stays on disk, and `lfa evaluate` and "
+                "`lfa fuse` read it when `--run` names it.", stage,
                 ", ".join(str(path) for path in earlier), output_dir)
         # Read before the run rather than after it: it is meant to name the code that trained the
         # stage, and an edit landing on disk while the run is in flight is not that code.
@@ -1141,8 +1142,10 @@ class Workspace:
                   epochs: int) -> EarlierTurn | None:
         """The earlier run of ``stage`` that this run re-runs at its turn, or ``None``.
 
-        It is one when its held-out curve turned (verdict ``"turned"``) at the epoch count this
-        run trains for, and it trained in the same frame apart from the epochs
+        It is one when its held-out curve was lowest at the epoch count this run trains for and
+        its end-of-run line advised a re-run there -- it turned (verdict ``"turned"``), or it
+        diverged after a finite lowest epoch (``"diverged"``, which advises the same
+        ``--epochs``) -- and it trained in the same frame apart from the epochs
         (:func:`_run_frame`: the recipe, the applied lambda and mu, the training mode, the loader
         setting and the supplement). A run at another lambda with the same ``--epochs`` is a rung,
         not a re-run, and keeps the generic verdict. A run directory is read at its LAST history
@@ -1157,13 +1160,14 @@ class Workspace:
                 continue
             seen.add(directory)
             record = entry.get("held_out") or {}
-            if (record.get("verdict") == "turned" and record.get("best_epoch") == epochs
+            if (record.get("verdict") in ("turned", "diverged")
+                    and record.get("best_epoch") == epochs
                     and _run_frame(entry["recipe"], entry.get("lambda_applied"),
                                    entry.get("lambda_mlp_applied"), entry.get("mu_applied"),
                                    entry.get("full_weight"), entry.get("keep_short_whole"),
                                    (entry.get("supplement") or {}).get("path")) == frame):
                 return EarlierTurn(run=Path(directory).name, epoch=epochs,
-                                   final=record["final"])
+                                   final=record.get("final"))
         return None
 
     def _run_training(self, config, corpus_path, base_model, output_dir, *, placement, dtype,
@@ -1496,6 +1500,7 @@ class Workspace:
         compare_unanchored: bool = False,
         n_windows: int | None = 100,
         device: str | dict = DEFAULT_DEVICE,
+        run: str | None = None,
     ) -> dict:
         """Read the last stage on both axes: what it learned, and what it kept.
 
@@ -1524,6 +1529,10 @@ class Workspace:
                 ``None`` in its cell) when the split cannot be fetched -- an offline machine
                 should still get the domain number.
             device: where to run the evaluations.
+            run: the run of the latest stage to read, by its directory name under ``runs/``
+                (``stage1`` while ``stage1_run2`` is the latest); default the latest run. It is
+                how an earlier run's table is had after a re-run at its turn, whose end-of-run
+                line asks for the two runs' tables side by side.
 
         Returns:
             ``{"before": {...}, "after": {...}, "unanchored": {...} | None,
@@ -1533,11 +1542,15 @@ class Workspace:
             beneath it, one line restating the run's own held-out verdict as ``train`` gave it
             (:func:`_held_out_line`; none for a history entry that does not record one), then
             the control's dose note when there is one. The read stage is the latest
-            run in the history -- after a repeat of a stage, its latest run -- and the log names
-            its directory, lambda and mu. The numbers are written into that history entry under
-            ``"perplexity"`` (and the control's curve under ``"unanchored"``).
+            run in the history -- after a repeat of a stage, its latest run -- unless ``run``
+            names another, and the log names its directory, lambda and mu. The numbers are
+            written into that run's history entry under ``"perplexity"`` (and the control's curve
+            under ``"unanchored"``).
+
+        Raises:
+            ValueError: ``run`` names no run of the latest stage (:meth:`_stage_run`).
         """
-        entry = self._require_trained_stage()
+        entry = self._stage_run(run)
         placement = resolve_device(device)
         dtype = _dtype_for(placement)
         recipe = Recipe(**entry["recipe"])
@@ -1709,9 +1722,46 @@ class Workspace:
             )
         return self.history[-1]
 
+    def _stage_run(self, run: str | None) -> dict:
+        """The history entry :meth:`evaluate` and :meth:`fuse` act on: the latest stage's latest
+        run, or, when ``run`` names one, that run of the latest stage.
+
+        ``run`` is a run directory's name as it stands under ``runs/`` (``stage1`` while
+        ``stage1_run2`` is the latest). A run is read at its LAST history entry, since a resumed
+        run's later entry holds its finished state. Only the latest stage's runs can be named:
+        an earlier stage was folded into the chain when it was extended, and the workspace's
+        later stages build on that fold, not on whichever run is named now.
+
+        Raises:
+            WorkspaceNotReady: nothing has been trained here yet.
+            ValueError: ``run`` names no run of the latest stage -- the message lists the runs
+                that stage has, and says when the name is a run of an earlier stage.
+        """
+        latest = self._require_trained_stage()
+        if run is None:
+            return latest
+        run = Path(run).name   # `stage1/`, as a shell completes it, names the same run
+        stage = latest["stage"]
+        runs: dict[str, dict] = {}
+        for entry in self.history:
+            if entry["stage"] == stage:
+                runs[Path(entry["output_dir"]).name] = entry
+        if run in runs:
+            return runs[run]
+        flag = "--run" if SPEAKS_TO_CLI.get() else "run="
+        names = ", ".join(runs)
+        elsewhere = [entry["stage"] for entry in self.history
+                     if Path(entry["output_dir"]).name == run]
+        if elsewhere:
+            raise ValueError(
+                f"{run} is a run of stage {elsewhere[-1]}, and {flag} names a run of the latest "
+                f"stage, {stage}: {names}. Stage {elsewhere[-1]} was folded into the chain when "
+                f"it was extended, and the stages after it build on that.")
+        raise ValueError(f"Stage {stage} has no run named {run!r}: its runs are {names}.")
+
     # ----------------------------------------------------------------------------------- fuse
 
-    def fuse(self, out_dir: str | Path | None = None) -> Path:
+    def fuse(self, out_dir: str | Path | None = None, *, run: str | None = None) -> Path:
         """Export the current model with the last stage's adapter merged into it.
 
         The result is a plain checkpoint -- no PEFT wrapper, no adapter files -- that loads with
@@ -1719,15 +1769,26 @@ class Workspace:
         the same model at ``models/stage{N}_fused`` as a side effect of preparing the next stage;
         this is the export for a stage that is not being extended, or for shipping.
 
-        The stage's LATEST run is the one exported. The default directory is the stage's, not
-        the run's, so a ``fuse`` after a re-run writes over the export of the run before it, and
-        says so -- naming the run the directory now holds.
+        The stage's LATEST run is the one exported, unless ``run`` names another run of that
+        stage -- the earlier run, when a re-run came out worse. Either way the export is made
+        from that run's own history entry: its adapter, the base model it trained on, and the
+        dtype it trained in. :meth:`extend` has no such choice; it folds in the latest run.
+
+        The default directory belongs to the stage, not the run: it holds whichever run of the
+        stage was fused last. A ``fuse`` into a directory that already holds an export replaces
+        it and says so, naming the run the directory now holds and whether that is the latest.
 
         Args:
             out_dir: where to write it (default ``models/stage{N}_fused_export``).
+            run: the run of the latest stage to export, by its directory name under ``runs/``
+                (``stage1`` while ``stage1_run2`` is the latest); default the latest run.
+
+        Raises:
+            ValueError: ``run`` names no run of the latest stage (:meth:`_stage_run`).
         """
-        entry = self._require_trained_stage()
-        stage = self.state["stage"]
+        entry = self._stage_run(run)
+        latest = self.history[-1]
+        stage = entry["stage"]
         out = Path(out_dir) if out_dir else self.path / "models" / f"stage{stage}_fused_export"
         adapter_dir = Path(entry["adapter"])
         # An export already there is a model directory with a config; the next write replaces it.
@@ -1742,8 +1803,10 @@ class Workspace:
             shutil.copytree(adapter_dir, out, dirs_exist_ok=True)
             load_tokenizer(str(entry["base_model"])).save_pretrained(out)
         if replacing:
+            which = ("the stage's latest" if entry["output_dir"] == latest["output_dir"]
+                     else f"not the stage's latest, {latest['output_dir']}")
             logger.info("%s held an earlier export, which this one replaced: it now holds stage "
-                        "%d's run %s, the stage's latest.", out, stage, entry["output_dir"])
+                        "%d's run %s, %s.", out, stage, entry["output_dir"], which)
         return out
 
     # ---------------------------------------------------------------------------------- chain

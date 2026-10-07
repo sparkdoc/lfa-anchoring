@@ -27,7 +27,8 @@ against a p(h) that does not describe what it is anchoring. Training the **same*
 more epochs on the domain in progress — is the same stage, keeps the same λ, and gets its own run
 directory (`runs/stage2_run2`) so neither run's history is overwritten. That latest run is the one
 `lfa evaluate`, `lfa fuse`, `lfa extend` and `lfa regenerate-artifact` then read; `train` says so
-when it starts and when it ends, and the earlier run stays on disk, unread by them. `--resume`
+when it starts and when it ends. The earlier run stays on disk: `lfa evaluate` and `lfa fuse` read
+it when `--run` names it, and `lfa extend` and `lfa regenerate-artifact` never do. `--resume`
 continues the latest run in its own directory instead.
 
 ## What `extend` does

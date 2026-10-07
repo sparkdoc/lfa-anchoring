@@ -206,7 +206,8 @@ def _train(args) -> int:
     if earlier:
         print(f"This is the latest of stage {entry['stage']}'s runs: `lfa evaluate`, `lfa fuse`, "
               f"`lfa extend` and `lfa regenerate-artifact` read it, not "
-              f"{', '.join(map(str, earlier))}.")
+              f"{', '.join(map(str, earlier))} (`lfa evaluate` and `lfa fuse` read an earlier "
+              f"run when `--run` names it).")
     return 0
 
 
@@ -243,12 +244,13 @@ def _regenerate_artifact(args) -> int:
 
 def _evaluate(args) -> int:
     print(_open(args).evaluate(args.corpus, compare_unanchored=args.compare_unanchored,
-                               n_windows=args.n_windows, device=args.device)["table"])
+                               n_windows=args.n_windows, device=args.device,
+                               run=args.run)["table"])
     return 0
 
 
 def _fuse(args) -> int:
-    print(_open(args).fuse(args.out))
+    print(_open(args).fuse(args.out, run=args.run))
     return 0
 
 
@@ -502,7 +504,8 @@ def build_parser() -> argparse.ArgumentParser:
     # ------------------------------------------------------------------------------ evaluate
     evaluate = subcommands.add_parser(
         "evaluate", help="read the last stage on both axes: what it learned and what it kept "
-                         "(its latest run, when the stage was trained more than once)")
+                         "(its latest run, when the stage was trained more than once, or "
+                         "the run --run names)")
     _add_workspace(evaluate)
     evaluate.add_argument("--corpus", metavar="DIR",
                           help="text to measure domain perplexity on, scored whole "
@@ -518,17 +521,28 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--n-windows", type=_windows, default=100, metavar="N",
                           help="WikiText-2 windows for the general axis; 0 scores the whole "
                                "split and 'none' skips it (default: %(default)s)")
+    evaluate.add_argument("--run", metavar="NAME",
+                          help="read this run of the latest stage instead of its latest run, by "
+                               "its directory name under runs/ (stage1 while stage1_run2 is the "
+                               "latest), to get an earlier run's table after a re-run")
     _add_device(evaluate)
     evaluate.set_defaults(handler=_evaluate)
 
     # ---------------------------------------------------------------------------------- fuse
     fuse = subcommands.add_parser(
-        "fuse", help="export the current model with the last stage merged into it")
+        "fuse", help="export the current model with the last stage merged into it (its "
+                     "latest run, or the run --run names)")
     _add_workspace(fuse)
     fuse.add_argument("--out", metavar="DIR",
                       help="where to write the merged checkpoint (default: "
-                           "models/stage{N}_fused_export inside the workspace, which a fuse "
-                           "after a re-run of the stage replaces, and says so)")
+                           "models/stage{N}_fused_export inside the workspace; it belongs to the "
+                           "stage, holds whichever of its runs was fused last, and a fuse that "
+                           "replaces an export there says so, naming the run)")
+    fuse.add_argument("--run", metavar="NAME",
+                      help="export this run of the latest stage instead of its latest run, by "
+                           "its directory name under runs/ (stage1 while stage1_run2 is the "
+                           "latest), with that run's own base model and dtype. `lfa extend` "
+                           "always folds in the latest run")
     fuse.set_defaults(handler=_fuse)
 
     # --------------------------------------------------------------------------------- chain

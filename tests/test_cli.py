@@ -555,6 +555,62 @@ def test_a_second_fuse_after_a_rerun_says_it_replaced_the_first_export(
                     f"stage 1's run {workspace / 'runs' / 'stage1_run2'}, the stage's latest.")
 
 
+def test_fuse_and_evaluate_run_reach_the_earlier_run_from_the_command_line(
+        tmp_path, base_dir, corpus_a, recipe_path, caplog, capsys):
+    """`--run stage1` while stage1_run2 is the latest: fuse merges stage1's adapter into the
+    stage's default directory, says the export it replaced now holds a run that is not the
+    latest, and evaluate reads stage1. An unknown name and a missing run are one-line refusals
+    naming the flag."""
+    workspace = tmp_path / "ws"
+    assert main(["init", str(workspace), "--model", str(base_dir), "--artifact", TINY_ARTIFACT_PATH]) == 0
+    train = ["train", "--workspace", str(workspace), "--corpus", str(corpus_a),
+             "--recipe", str(recipe_path), "--device", "cpu"]
+    assert main(train) == 0
+    assert main(train) == 0                                             # the re-run: stage1_run2
+    run1, run2 = workspace / "runs" / "stage1", workspace / "runs" / "stage1_run2"
+    export = workspace / "models" / "stage1_fused_export"
+
+    assert main(["fuse", "--workspace", str(workspace)]) == 0             # the latest, first
+    caplog.clear()
+    with caplog.at_level("INFO"):
+        assert main(["fuse", "--workspace", str(workspace), "--run", "stage1"]) == 0
+    assert any(r.getMessage() == f"Fusing adapter {run1 / 'final_model'} into {base_dir}"
+               for r in caplog.records)
+    [line] = [r.getMessage() for r in caplog.records if "replaced" in r.getMessage()]
+    assert line == (f"{export} held an earlier export, which this one replaced: it now holds "
+                    f"stage 1's run {run1}, not the stage's latest, {run2}.")
+
+    caplog.clear()
+    with caplog.at_level("INFO", logger="lfa.workspace"):
+        assert main(["evaluate", "--workspace", str(workspace), "--run", "stage1",
+                     "--n-windows", "none", "--device", "cpu"]) == 0
+    assert any(r.getMessage().startswith(f"The run read: {run1} ") for r in caplog.records)
+
+    capsys.readouterr()
+    assert main(["fuse", "--workspace", str(workspace), "--run", "stage2"]) == 2
+    assert error_lines(capsys) == [
+        "lfa: Stage 1 has no run named 'stage2': its runs are stage1, stage1_run2."]
+
+
+def test_a_run_of_an_earlier_stage_is_refused_naming_the_flag(tmp_path, base_dir, corpus_a,
+                                                               corpus_b, recipe_path, capsys):
+    workspace = tmp_path / "ws"
+    assert main(["init", str(workspace), "--model", str(base_dir), "--artifact", TINY_ARTIFACT_PATH]) == 0
+    for corpus in (corpus_a, corpus_b):
+        assert main(["train", "--workspace", str(workspace), "--corpus", str(corpus),
+                     "--recipe", str(recipe_path), "--device", "cpu"]) == 0
+        if corpus == corpus_a:
+            assert main(["extend", "--workspace", str(workspace), "--need", "400",
+                         "--k-domain", "2", "--device", "cpu"]) == 0
+    capsys.readouterr()
+
+    assert main(["fuse", "--workspace", str(workspace), "--run", "stage1"]) == 2
+    assert error_lines(capsys) == [
+        "lfa: stage1 is a run of stage 1, and --run names a run of the latest stage, 2: stage2. "
+        "Stage 1 was folded into the chain when it was extended, and the stages after it build "
+        "on that."]
+
+
 def test_an_override_note_on_the_command_line_names_the_flag_alone(tmp_path, base_dir, corpus_a,
                                                                     recipe_path, caplog):
     """The trial read "lambda 400000 set by --lambda (lambda_= from Python)" as if both were
@@ -920,7 +976,8 @@ def test_a_second_run_of_a_stage_says_which_run_later_commands_read(tmp_path, ba
     out = capsys.readouterr().out
     assert f"Stage 1 written to {workspace / 'runs' / 'stage1_run2'}" in out
     assert ("This is the latest of stage 1's runs: `lfa evaluate`, `lfa fuse`, `lfa extend` and "
-            f"`lfa regenerate-artifact` read it, not {workspace / 'runs' / 'stage1'}.") in out
+            f"`lfa regenerate-artifact` read it, not {workspace / 'runs' / 'stage1'} (`lfa "
+            "evaluate` and `lfa fuse` read an earlier run when `--run` names it).") in out
 
 
 def test_the_commands_the_control_note_prints_run_as_written(tmp_path, base_dir, corpus_a,

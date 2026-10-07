@@ -228,11 +228,12 @@ When the curve turned, the run advises a re-run with `--epochs <the lowest epoch
 when it ended 10 % or more above its lowest, as "likely to ship a better model on this domain" from
 1 % to 10 %, and as optional under 1 %. When it had not turned by the last epoch, more epochs may
 lower it further — unless the run is itself the re-run at an earlier run's turn, which usually ends
-at its own lowest: then it says to stop, and to keep whichever of the two runs ended lower
-([tuning.md](tuning.md#when-the-re-run-does-not-turn)). The learning-rate schedule is laid over
-whatever you say, so a re-run is a complete shorter run rather than a truncated long one. In the
-same workspace it writes `runs/stage1_run2`, and from then on `evaluate`, `fuse` and `extend` read
-that run; `--resume` instead continues an interrupted run in its own directory. On that book the
+at its own lowest: then it says to stop, and to keep whichever of the two runs is not worse on
+either axis ([tuning.md](tuning.md#when-the-re-run-does-not-turn)). The learning-rate schedule is
+laid over whatever you say, so a re-run is a complete shorter run rather than a truncated long one.
+In the same workspace it writes `runs/stage1_run2`, and from then on `evaluate`, `fuse` and
+`extend` read that run (`evaluate` and `fuse` read the earlier one with `--run stage1`); `--resume`
+instead continues an interrupted run in its own directory. On that book the
 re-run at `--epochs 8` was better on both axes (one seed). [tuning.md](tuning.md) is the whole
 procedure for your corpus: the dose, the control, and λ.
 
@@ -294,8 +295,9 @@ lfa fuse --workspace runs/world_history
 
 `fuse` writes a plain checkpoint with the adapter merged in — no PEFT wrapper, loads with
 `AutoModelForCausalLM.from_pretrained` like any other model — to
-`runs/world_history/models/stage1_fused_export`. It exports the stage's latest run; after a
-re-run, a second `fuse` replaces the first export there and says so, naming the run it now holds.
+`runs/world_history/models/stage1_fused_export`. It exports the stage's latest run, or the run
+`--run NAME` names (`--run stage1`, when a re-run came out worse). That directory belongs to the
+stage: a second `fuse` replaces the export there and says so, naming the run it now holds.
 
 To ask it a question, render the question through the model's chat template and decode greedily:
 
@@ -306,7 +308,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 path = "runs/world_history/models/stage1_fused_export"
 tokenizer = AutoTokenizer.from_pretrained(path)
 model = AutoModelForCausalLM.from_pretrained(path, dtype=torch.bfloat16, device_map="cuda:0")
-messages = [{"role": "user", "content": "Who first measured the size of the earth?"}]
+messages = [{"role": "user", "content": "Who discovered the four largest moons of Jupiter?"}]
 text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True,
                                      enable_thinking=False)
 inputs = tokenizer(text, return_tensors="pt").to(model.device)
@@ -318,10 +320,17 @@ print(tokenizer.decode(output[0][inputs["input_ids"].shape[1]:], skip_special_to
 block before it answers, and the supplement's pairs were trained with thinking off (a template
 without the switch ignores it). `do_sample=False` is greedy decoding, so the same question gets the
 same answer. The snippet was run as written, but on a CPU (`device_map="cpu"`), against a fused
-Qwen3-0.6B trained on *A Short History of Astronomy*. Loading the tokenizer may print a warning
-about "an incorrect regex pattern";
-[faq.md](faq.md#loading-the-fused-model-warns-about-an-incorrect-regex-pattern-is-its-tokenizer-broken)
-says what it means and how to check your export.
+Qwen3-0.6B trained on *A Short History of Astronomy* (the 10-epoch re-run of
+[tuning.md](tuning.md#when-the-re-run-does-not-turn)), and answered "The four largest moons were
+discovered by Galilei, who observed them in 1610." That is right, but it is one small model on one
+book: asked about other things the book covers, it dated Herschel's discovery of Uranus to 1787
+(the book says 1781) and gave Kepler's laws of planetary motion to Ptolemy. The package measures
+what a run learned and kept by perplexity, not by answers like these. Loading the tokenizer may
+print a warning about "an incorrect regex pattern"
+([faq.md](faq.md#loading-the-fused-model-warns-about-an-incorrect-regex-pattern-is-its-tokenizer-broken)
+says what it means and how to check your export), and generating prints "The following generation
+flags are not valid and may be ignored: ['temperature', 'top_p', 'top_k']": the export's
+`generation_config.json` carries Qwen3's sampling settings, which greedy decoding does not use.
 
 The same flow as Python is [`examples/quickstart.py`](../examples/quickstart.py); nothing in the
 CLI is decided differently from the way the library decides it for a caller who imports it.

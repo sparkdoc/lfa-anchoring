@@ -71,7 +71,8 @@ X at epoch k of n; final Y (+z % over the lowest).` `final_model` is the last ep
 curve turned the run advises a re-run with `--epochs k`: with a warning when it ended 10 % or more
 above its lowest, as "likely to ship a better model" from 1 % to 10 %, and as optional under 1 %.
 When the curve was still falling at the last epoch, more epochs may lower it. A re-run in the same
-workspace writes `runs/stage1_run2`, and `evaluate` and `fuse` then read that run.
+workspace writes `runs/stage1_run2`, and `evaluate` and `fuse` then read that run, or the earlier
+one with `--run stage1`.
 
 **`evaluate`** reads the stage on both axes against the model it started from. The before and
 after columns of the walkthrough's stage 1 (Qwen3-0.6B on Darwin, a 4-epoch demo where the recipe

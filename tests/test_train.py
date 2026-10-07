@@ -527,39 +527,63 @@ def _rerun_said(final, earlier_final, run="stage1", epoch=10):
     return held_out_messages(summary, EarlierTurn(run=run, epoch=epoch, final=earlier_final))
 
 
-def test_a_rerun_at_the_turn_that_did_not_turn_is_told_to_stop_and_keep_the_lower_final():
-    """The trial's numbers: stage1_run2 at --epochs 10 ended at 13.839, stage1 at 14.021."""
+def test_a_rerun_at_the_turn_that_did_not_turn_is_told_to_stop_and_choose_on_both_axes():
+    """The trial's numbers: stage1_run2 at --epochs 10 ended at 13.839, stage1 at 14.021. The
+    held-out finals are read, then called one axis: the choice is put on both, against the
+    run-to-run spread, and both exports are named, since either run can be the keeper."""
     (_, curve), (level, advice) = _rerun_said(13.839, 14.021)
     assert curve == "lowest 13.839 at epoch 10 of 10; final 13.839 (+0.0 % over the lowest)."
     assert level == logging.INFO
     assert advice == (
         "This run is the re-run at stage1's turn (epoch 10), and not turning is what such a "
-        "re-run shows, not a sign that more epochs would help: stop here. Compare the two finals "
-        "and keep the lower: this run's 13.839 against stage1's 14.021: this run is 1.3 % lower; "
-        "keep it.")
+        "re-run shows, not a sign that more epochs would help: stop here. On the held-out curve "
+        "this run ended at 13.839 and stage1 at 14.021, so this run is 1.3 % lower. That is one "
+        "axis: keep the run that is not worse on either axis by more than the run-to-run spread "
+        "measured on Qwen3-1.7B, three repeats at one seed (about 0.5 % on WikiText-2 and 0.15 % "
+        "on the held-out domain; docs/tuning.md, 'When to "
+        "stop'), setting this run's `lfa evaluate` table beside stage1's (the one evaluate "
+        "printed for it, or `lfa evaluate --run stage1`). When each run is better on one axis, "
+        "docs/tuning.md (step 2) says what to weigh. `lfa fuse` exports this run, the stage's "
+        "latest, and `lfa fuse --run stage1` exports stage1.")
     assert "raise" not in advice and "larger --epochs" not in advice
+    # One colon to a sentence (the review's O4).
+    assert all(sentence.count(":") <= 1 for sentence in advice.split(". "))
 
 
-def test_a_rerun_that_ended_above_the_earlier_runs_final_says_how_to_keep_that_one():
+def test_a_rerun_that_ended_above_the_earlier_runs_final_names_the_earlier_runs_export():
     [_, (_, advice)] = _rerun_said(14.5, 14.021, run="stage1_run2", epoch=8)
     assert "re-run at stage1_run2's turn (epoch 8)" in advice
-    assert advice.endswith(": stage1_run2 is 3.4 % lower. `lfa fuse` reads this run, the "
-                           "stage's latest; docs/tuning.md (step 2) says how to ship stage1_run2 "
-                           "instead.")
+    assert ("this run ended at 14.500 and stage1_run2 at 14.021, so stage1_run2 is 3.4 % lower."
+            in advice)
+    assert "`lfa evaluate --run stage1_run2`" in advice
+    assert advice.endswith("`lfa fuse --run stage1_run2` exports stage1_run2.")
 
 
 def test_two_finals_within_the_run_to_run_spread_are_called_the_same():
-    """Under 0.15 % apart (docs/tuning.md 'When to stop') is noise, and the verdict says so."""
-    from lfa.train import HELD_OUT_SPREAD
+    """Under 0.15 % apart (docs/tuning.md 'When to stop') is noise on that axis, and the verdict
+    says so; WikiText-2 is still to be read."""
+    from lfa.train import GENERAL_SPREAD, HELD_OUT_SPREAD
 
-    assert HELD_OUT_SPREAD == 0.0015
+    assert (HELD_OUT_SPREAD, GENERAL_SPREAD) == (0.0015, 0.005)
     [_, (_, advice)] = _rerun_said(14.030, 14.021)
-    assert advice.endswith("this run's 14.030 against stage1's 14.021, 0.06 % apart -- within "
-                           "the run-to-run spread of about 0.15 % (docs/tuning.md, 'When to "
-                           "stop'), so on this axis they are the same, and either can be kept.")
+    assert ("this run ended at 14.030 and stage1 at 14.021, 0.06 % apart, within the run-to-run "
+            "spread of about 0.15 % (measured on Qwen3-1.7B). That is one axis:") in advice
     [_, (_, beyond)] = _rerun_said(14.050, 14.021)                     # 0.21 %: not noise
-    assert beyond.endswith("stage1 is 0.2 % lower. `lfa fuse` reads this run, the stage's "
-                           "latest; docs/tuning.md (step 2) says how to ship stage1 instead.")
+    assert "this run ended at 14.050 and stage1 at 14.021, so stage1 is 0.2 % lower." in beyond
+
+
+def test_a_rerun_at_the_lowest_epoch_of_a_run_that_diverged_keeps_this_run():
+    """A diverged run advises --epochs <its lowest> too (the review's O1). Its final is not
+    finite and it is not to be shipped, so there is nothing to compare: keep the re-run."""
+    from lfa.train import EarlierTurn, held_out_messages
+
+    summary = HeldOutSummary("still_falling", 4, 9.5, 4, 9.5, 0.0)
+    [_, (level, advice)] = held_out_messages(summary, EarlierTurn("stage1", 4, None))
+    assert level == logging.INFO
+    assert advice == (
+        "This run is the re-run at stage1's lowest epoch (epoch 4), before it diverged, and not "
+        "turning is what such a re-run shows, not a sign that more epochs would help: stop here. "
+        "The earlier run, stage1, diverged and should not be shipped, so keep this run.")
 
 
 @pytest.mark.parametrize("summary", [
