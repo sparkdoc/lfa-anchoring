@@ -45,6 +45,7 @@ alone, so every artifact built with an earlier release of the same format still 
 ```bash
 git tag -a v0.2.0 -m "lfa-anchoring 0.2.0"
 pip install -e ".[dev]"    # `build` is in the dev extra; `python -m build` needs it installed
+rm -rf build dist          # stale build/lib can be swept into a wheel
 python -m build            # sdist + wheel
 ```
 
@@ -68,8 +69,11 @@ absolute links. The metadata should read `License-Expression: Apache-2.0` with
 python -m venv /tmp/lfa-release
 /tmp/lfa-release/bin/pip install -c constraints-tested.txt dist/lfa_anchoring-0.2.0-*.whl
 /tmp/lfa-release/bin/lfa --help
-/tmp/lfa-release/bin/python -m lfa.examples.quickstart --help     # the wheel ships these
+(cd /tmp && /tmp/lfa-release/bin/python -m lfa.examples.quickstart --help)   # the wheel ships these
 ```
+
+Run the last line outside the checkout: `-m` puts the working directory first on `sys.path`, so
+from the checkout the source tree's `lfa/` (which has no `examples` package) shadows the wheel's.
 
 **Install with `-c constraints-tested.txt`**, which is what the README and the quickstart tell a
 user to do. Without it pip resolves the newest torch and peft it can, and the numbers in
@@ -196,7 +200,8 @@ supplement); rank 4, one seed (the regenerate route).
 * **General text cleaning** before the markup steps: line breaks normalised, invisible and control
   characters removed, Unicode space variants made a plain space, NFC last. Content — a licence, a
   table of contents, an index — is the user's to cut; `docs/preparing-your-data.md` says what and
-  how, with a Project Gutenberg checklist.
+  how, with a Project Gutenberg checklist. A corpus prepared under 0.1.x re-prepares to different
+  text wherever those characters occur, and so to a different training-side hash.
 * **Every run ends with its held-out verdict** — turned by 10 % or more (a warning), 1–10 % (a
   re-run is likely better), under 1 % (optional), still falling, diverged, or no curve — kept under
   `held_out` in the stage's history entry and restated by `evaluate` under its table. A run trained
@@ -211,6 +216,11 @@ supplement); rank 4, one seed (the regenerate route).
 * **The supplement drops pairs that carry the writer's JSON field syntax** (`leaked_json`, counted
   with the other rejections); the filters' hash joins the reuse key, so a supplement written before
   this release is rewritten. `n_train_docs` counts domain documents only.
+* New flags not named above: `train --supplement JSONL` (mix in a prepared supplement instead of
+  writing one) and `--domain-description TEXT`; `init` / `build-artifact --self-generated` take
+  `--n-raw`, `--n-chat` and `--max-new-tokens`, and `build-artifact` `--gen-seed`.
+  `build-artifact --max-samples` has no fixed default: 600,000 on the self-generated route, 1,500,000
+  over a seed corpus as before.
 * Messages: download and store sizes in decimal MB; the toolchain warning names the running
   Python's `-dev` package; the `--lambda` note names the flag on the CLI and the argument from
   Python; the corpus-shape note leads with the run's own corpus.
@@ -237,8 +247,8 @@ supplement); rank 4, one seed (the regenerate route).
   model, then the full pipeline, step by step), `docs/preparing-your-data.md` (new: formats,
   corpus shapes, the supplement), `docs/the-artifact.md` (renamed and rewritten: the
   self-generated build, the store, published artifacts, per-model cost, checking an artifact with
-  `lfa probe-artifact`, a real-text artifact), `docs/model-integration-cookbook.md` (the procedure
-  for a model with no bundled recipe, Qwen3-1.7B worked through), `docs/recipes.md`,
+  `lfa probe-artifact`, a real-text artifact), `docs/model-integration-cookbook.md` (replaces
+  `docs/adding-a-model.md`: the procedure for a model with no bundled recipe, Qwen3-1.7B worked through), `docs/recipes.md`,
   `docs/concepts.md` (the building blocks; what the supplement does: reachability; what it does
   not: protect skills), `docs/multi-domain-chains.md` (the regenerate route), `docs/faq.md` (8 GB cards, bf16 on Turing,
   the toolchain warning, what self-generation costs, memory per model), `docs/tuning.md` (new: the

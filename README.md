@@ -1,5 +1,7 @@
 # lfa-anchoring
 
+[![tests](https://github.com/sparkdoc/lfa-anchoring/actions/workflows/tests.yml/badge.svg)](https://github.com/sparkdoc/lfa-anchoring/actions/workflows/tests.yml)
+
 **Layerwise Function Anchoring (LFA)** — adapt a language model to a new domain while preserving
 what its sub-modules compute on the hidden states it actually sees.
 
