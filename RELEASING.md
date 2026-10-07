@@ -189,6 +189,34 @@ supplement); rank 4, one seed (the regenerate route).
   on the question alone, as in the research writer.
 * **`evaluate --compare-unanchored`**: the λ = μ = 0 control mixes the stage's own supplement at
   the stage's fraction, so it is still the same run without the anchor.
+* **`prepare-domain --split-chars N`** cuts each file into documents of about N characters at
+  paragraph boundaries (floor 500; 3,500 suggested for a book), so one long file can hold documents
+  out. A corpus that cannot hold any document out is refused before the supplement is written, and a
+  sentence-overlap check refuses text already in `--out` or given twice.
+* **General text cleaning** before the markup steps: line breaks normalised, invisible and control
+  characters removed, Unicode space variants made a plain space, NFC last. Content — a licence, a
+  table of contents, an index — is the user's to cut; `docs/preparing-your-data.md` says what and
+  how, with a Project Gutenberg checklist.
+* **Every run ends with its held-out verdict** — turned by 10 % or more (a warning), 1–10 % (a
+  re-run is likely better), under 1 % (optional), still falling, diverged, or no curve — kept under
+  `held_out` in the stage's history entry and restated by `evaluate` under its table. A run trained
+  at an earlier same-frame run's turn epoch that ends still falling is told to stop and to choose
+  between the two on both axes (`rerun_of`).
+* **`train --lambda` / `--mu`** set the stage's values exactly, with no stage multiplier on top; a
+  resume without them keeps the run's own, and an explicit one that differs is refused. A repeat of
+  a stage writes `runs/stage{N}_run{k}` instead of overwriting.
+* **`evaluate --run NAME` / `fuse --run NAME`** read or export a named earlier run of the latest
+  stage, and `fuse` says when it replaces an export. `evaluate --compare-unanchored` prints a dose
+  note, with the commands to train the control at its own best epoch, when the control turned.
+* **The supplement drops pairs that carry the writer's JSON field syntax** (`leaked_json`, counted
+  with the other rejections); the filters' hash joins the reuse key, so a supplement written before
+  this release is rewritten. `n_train_docs` counts domain documents only.
+* Messages: download and store sizes in decimal MB; the toolchain warning names the running
+  Python's `-dev` package; the `--lambda` note names the flag on the CLI and the argument from
+  Python; the corpus-shape note leads with the run's own corpus.
+* **CI** runs the default test tier on Python 3.11, 3.12 and 3.13 (CPU) on every push to `main`
+  and every pull request; the default tier runs with `HF_HUB_OFFLINE` set (`tests/conftest.py`).
+  `CONTRIBUTING.md` and a bug-report template are new.
 * **Not ported**: `--enforce-spec` (a comparison-only device) and the reasoning and instruction
   supplement modes (a supplement written in a skill's mode left that skill no better).
   Self-generated rehearsal, a replay method, is out of scope.
@@ -213,7 +241,8 @@ supplement); rank 4, one seed (the regenerate route).
   for a model with no bundled recipe, Qwen3-1.7B worked through), `docs/recipes.md`,
   `docs/concepts.md` (the building blocks; what the supplement does: reachability; what it does
   not: protect skills), `docs/multi-domain-chains.md` (the regenerate route), `docs/faq.md` (8 GB cards, bf16 on Turing,
-  the toolchain warning, what self-generation costs, memory per model). `docs/verification.md`
+  the toolchain warning, what self-generation costs, memory per model), `docs/tuning.md` (new: the
+  dose, the control at its own dose, another λ). `docs/verification.md`
   gains only a dated header: nothing in 0.2.0 was checked bit-for-bit against the research code.
 
 ### 0.1.1
