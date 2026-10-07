@@ -16,6 +16,27 @@ def pytest_runtest_setup(item):
         pytest.skip("needs CUDA (marked gpu)")
 
 
+#: The markers whose tests may reach the Hugging Face Hub (they need a model or a dataset).
+NETWORK_MARKERS = ("gpu", "slow", "notebook")
+
+
+@pytest.fixture(autouse=True)
+def _default_tier_stays_off_the_hub(request, monkeypatch):
+    """Every other test runs with ``HF_HUB_OFFLINE`` and ``TRANSFORMERS_OFFLINE`` set.
+
+    Some library paths ask the Hub when it is reachable and skip the question when it is not:
+    PEFT's ``save_embedding_layers="auto"`` fetches the config of the adapter's base id to compare
+    vocabularies. A test that sets that id to a real model then passes offline and fails online,
+    which is a CI runner's case and a contributor's, but not a sandbox's. PEFT reads the variable
+    when it is called, so setting it here is enough for it. huggingface_hub and transformers read
+    theirs once, at import, which is before this runs: a test that downloads through them is not
+    stopped here, and still belongs under a network marker.
+    """
+    if not any(request.node.get_closest_marker(name) for name in NETWORK_MARKERS):
+        monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+        monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
+
+
 @pytest.fixture(scope="session")
 def tiny_model():
     torch.manual_seed(0)

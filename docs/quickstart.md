@@ -41,7 +41,8 @@ accelerate 1.14.0, peft 0.18.1) — nothing here has been run below them, and no
 either, so the install line's `-c constraints-tested.txt` holds to exactly the tested stack. The
 package itself accepts `transformers>=4.56,<5` and `peft>=0.18,<1`; the transformers floor is
 where `from_pretrained` learned the `dtype=` spelling this package loads with, and below it a
-model would load in the checkpoint's own dtype without saying so.
+model would load in the checkpoint's own dtype without saying so. On Python, CI runs the default test
+suite on 3.11, 3.12 and 3.13 (CPU only); the GPU runs and the recorded notebooks used 3.13.
 
 `lfa --version` says which version you have, which is the first thing a bug report needs.
 

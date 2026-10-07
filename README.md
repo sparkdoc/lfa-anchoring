@@ -224,12 +224,16 @@ model's on two of the three inward ones; the other three do not separate the arm
 ## Tests
 
 From the checkout, with the test tools installed (`pip install -c constraints-tested.txt -e
-'.[dev]'`):
+'.[dev,html]'`):
 
 ```bash
 pytest -q                                    # no GPU, no corpus, no network
 pytest tests/test_gpu_smoke.py -m gpu -q     # one stage on the card
 ```
+
+CI runs the first on Python 3.11, 3.12 and 3.13 on every push to `main` and every pull request.
+[CONTRIBUTING.md](https://github.com/sparkdoc/lfa-anchoring/blob/main/CONTRIBUTING.md) lists every
+tier and what a change needs to pass.
 
 ## Provenance
 

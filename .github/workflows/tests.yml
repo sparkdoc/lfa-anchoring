@@ -1,0 +1,55 @@
+# The default test suite on every supported Python, CPU only: no GPU, no corpus, no network
+# beyond the install (`-m 'not gpu and not slow and not notebook'` is the pytest default in
+# pyproject.toml, and tests/conftest.py sets HF_HUB_OFFLINE for every other test). The GPU and
+# notebook tiers need a card and run by hand (CONTRIBUTING.md).
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fast:
+    name: Python ${{ matrix.python }} [${{ matrix.extras }}]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+        extras: ["dev,html"]
+        include:
+          # Without [html], so the test of the missing-extra message runs instead of skipping.
+          - python: "3.13"
+            extras: "dev"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            constraints-tested.txt
+      # constraints-tested.txt pins torch==2.10.0, which from PyPI is the CUDA build (several GB
+      # with its nvidia-* wheels). The CPU build of the same release is 2.10.0+cpu, which still
+      # satisfies the pin, so the install below keeps it.
+      - name: Install torch (CPU build)
+        run: python -m pip install torch==2.10.0 --index-url https://download.pytorch.org/whl/cpu
+      - name: Install the package
+        run: python -m pip install -c constraints-tested.txt -e ".[${{ matrix.extras }}]"
+      - name: Versions
+        run: python -c "import sys, torch, transformers, peft; print(sys.version.split()[0], torch.__version__, transformers.__version__, peft.__version__)"
+      - name: Test
+        run: pytest -q -rs
