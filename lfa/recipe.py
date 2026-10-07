@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
+from contextvars import ContextVar
 from dataclasses import dataclass, fields
 from pathlib import Path
 
@@ -44,6 +45,12 @@ from .train import LR_SCHEDULES, TrainConfig
 
 __all__ = ["Recipe", "BUNDLED_DIR", "SELF_GENERATED_REFERENCE", "RECORDED_SELF_GENERATED_FRAME",
            "check_anchor_weight"]
+
+#: Whether the per-run notes speak to a command line: ``True`` names an override by its flag
+#: (``--lambda``, ``--mu``), ``False`` -- the default, for a caller who imported the package --
+#: by its argument (``lambda_=``, ``mu=``). :func:`lfa.cli.main` sets it for the command it runs,
+#: since the note is built far below the CLI and the same call serves both.
+SPEAKS_TO_CLI: ContextVar[bool] = ContextVar("lfa_speaks_to_cli", default=False)
 
 #: Where the bundled recipes live -- inside the package, so a wheel carries them.
 BUNDLED_DIR = Path(__file__).parent / "recipes"
@@ -457,7 +464,8 @@ class Recipe:
         ``stage`` (its lambdas after :attr:`stage2_lambda_multiplier`, its mu). Like
         :meth:`warnings`, a note rather than a refusal: an off-calibration value is allowed, it
         just is not the measured operating point. ``lambda_ = mu = 0`` is the unanchored control
-        and is said to be one.
+        and is said to be one. A value is named by the flag that set it on the command line and
+        by the argument from Python (:data:`SPEAKS_TO_CLI`).
 
         Raises:
             ValueError: a ``lambda_`` or ``mu`` that is not a finite number, 0 or above
@@ -474,15 +482,16 @@ class Recipe:
                            f"{_g(self.stage2_lambda_multiplier)})")
         lambda_moved = lambda_ is not None and (lambda_qkv, lambda_mlp) != (lambda_, lambda_)
         mu_moved = mu is not None and mu != self.mu
+        cli = SPEAKS_TO_CLI.get()
         if lambda_moved:
             notes.append(
-                f"lambda {_g(lambda_)} set by --lambda (lambda_= from Python); the recipe "
+                f"lambda {_g(lambda_)} set by {'--lambda' if cli else 'lambda_='}; the recipe "
                 f"calibrated {calibrated}. It applies as given, with no stage multiplier on top. "
                 "Read the run by its held-out curve and on both axes (`lfa evaluate`): a "
                 "lambda off the recipe's is a measurement on your corpus, not the shipped "
                 "operating point (docs/recipes.md, 'Trying another λ').")
         if mu_moved:
-            notes.append(f"mu {_g(mu)} set by --mu (mu= from Python); the recipe's is "
+            notes.append(f"mu {_g(mu)} set by {'--mu' if cli else 'mu='}; the recipe's is "
                          f"{_g(self.mu)}.")
         if not (lambda_moved or mu_moved):
             return notes

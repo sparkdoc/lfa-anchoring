@@ -58,9 +58,9 @@ layer count, and λ absorbs it. The schedule is scale compensation rather than a
 | `checkpoint_mode` | `rolling` | overwrite `latest_model` every `checkpoint_every` epochs (`none` writes only `final_model`; `all` accumulates `checkpoint_epoch_N`) |
 | `checkpoint_every` | 5 | both periodic modes also write `training_state.pt`, which is what makes `--resume` possible |
 
-`final_model` is what ships. There is no separately-kept "best" checkpoint: a checkpoint chosen by
-the lowest training loss is chosen on one axis of a method whose whole point is the trade between
-two.
+`final_model` is what ships. There is no separately-kept "best" checkpoint, and a re-run at the
+lowest epoch takes its place: [tuning.md](tuning.md#2-run-the-recipe-once-and-read-its-last-line)
+gives the reasons (the schedule, the one axis, the held-out number) and the measured re-runs.
 
 > ⚠ **`epochs: 15` is a dose, and the corpus and λ together set how much of it a run can
 > carry.** At the recipe's λ the walkthrough's Darwin text (~189 k training tokens an epoch)
@@ -97,7 +97,11 @@ two.
 >     λ = 1,000,000, three runs; the Qwen3-1.7B section below) is about 0.15 % on
 >     held-out domain perplexity and about 0.5 % on WikiText-2.
 > * **It had not turned** (the lowest epoch is the last, which a one-epoch run always is): more
->   epochs may lower it further, and the run says the dose can be raised with `--epochs`.
+>   epochs may lower it further, and the run says the dose can be raised with `--epochs`. The
+>   exception is a re-run at an earlier run's turn, which usually ends at its own lowest: when the
+>   workspace holds that earlier run (same stage, same frame but the epochs), the run names it,
+>   says to stop there, and compares the two finals — keep the lower, and two less than about
+>   0.15 % apart are the same ([tuning.md](tuning.md#when-the-re-run-does-not-turn)).
 > * **It diverged** (the last held-out value is not finite): a warning that the run diverged and
 >   its `final_model` should not be shipped, with the lowest finite epoch named for a re-run at
 >   `--epochs <that epoch>`, or a stronger anchor or a lower learning rate. The summary is not
@@ -110,8 +114,9 @@ two.
 > Re-run at the epoch rather than truncating the run you have, because the learning-rate schedule
 > is laid over the epoch count (`--epochs 3` is a complete three-epoch run, not the first three
 > epochs of fifteen). The same reading — verdict, lowest epoch and value, final value, gap — is
-> kept in the stage's entry in the workspace's `history.json`, under `held_out`. Re-tuning the dose
-> does not re-tune λ: they are separate knobs, and λ's couplings are below.
+> kept in the stage's entry in the workspace's `history.json`, under `held_out`, and a re-run at
+> an earlier run's turn names that run, its turn epoch and its final under `rerun_of`. Re-tuning
+> the dose does not re-tune λ: they are separate knobs, and λ's couplings are below.
 > [tuning.md](tuning.md) puts the dose, the control and λ together as one procedure for your
 > corpus.
 >
@@ -396,12 +401,12 @@ multiplier on top (at stage 2, `--lambda 3000000` is what the shipped recipes wo
 `--mu Y` does the same for μ. From Python: `ws.train(corpus, lambda_=2.5e6, mu=0.05)`. Every
 other field is the recipe's.
 
-The run starts with a note naming both values — *"lambda 2.5e+06 set by --lambda (lambda_= from
-Python); the recipe calibrated 1e+06. It applies as given, with no stage multiplier on top. …"*
-(at stage 2, *"… the recipe calibrated 3e+06 for stage 2 (1e+06 x its stage-2 multiplier 3)"*) —
-and ends with its held-out verdict, as every run does. What ran is recorded: the stage's
-`history.json` entry carries `lambda_applied`, `lambda_mlp_applied` and `mu_applied` (the values
-the trainer used, which the run's `config.json` also holds as `lambda_qkv`, `lambda_mlp` and `mu`),
+The run starts with a note naming both values — *"lambda 2.5e+06 set by --lambda; the recipe
+calibrated 1e+06. It applies as given, with no stage multiplier on top. …"* (from Python, *"set by
+lambda_="*; at stage 2, *"… the recipe calibrated 3e+06 for stage 2 (1e+06 x its stage-2 multiplier
+3)"*) — and ends with its held-out verdict, as every run does. What ran is recorded: the stage's
+`history.json` entry carries `lambda_applied`, `lambda_mlp_applied` and `mu_applied` (the values the
+trainer used, which the run's `config.json` also holds as `lambda_qkv`, `lambda_mlp` and `mu`),
 `lambda_override` and `mu_override` (the values given, `null` where the recipe's were used), and
 `recipe`, the recipe as written. `lfa evaluate` logs the λ and μ of the run it reads and where each
 came from.
@@ -416,7 +421,8 @@ In one workspace, each value is a run of the same stage (`runs/stage1_run2`, …
 [above](#run-length-and-checkpointing)). Run `lfa evaluate` after each: the numbers land in that
 run's entry. The last run trained is the one `fuse` and `extend` take, so finish on the value you
 choose, or give each value its own workspace (`lfa init <new> --model <id> --artifact <first
-workspace>/artifacts/v1.pt` reuses the artifact without rebuilding it).
+workspace>/artifacts/v1.pt` copies the very file the first workspace anchored on, where
+`--artifact self-generated` would look it up in the store again).
 
 **`--lambda 0 --mu 0` is the unanchored control**, at whatever `--epochs` says. At λ 0 the
 function anchor has no term to compute, so the artifact is not sampled (a workspace still needs one

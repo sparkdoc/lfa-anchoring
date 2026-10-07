@@ -30,10 +30,10 @@ package is not on PyPI yet; publication is pending.
 **Prerequisites: Python ≥ 3.11 and a CUDA card.** Development headers and a C compiler are
 needed only by torch paths that compile a small CUDA shim on the first kernel launch; the
 package's own training and generation paths do not, so `lfa` warns once if they are missing and
-proceeds. A distribution `python3`
-installed without `python3-dev` / `python3.13-dev` (and `build-essential`) has no `Python.h`,
-while a uv- or conda-managed interpreter ships its own headers. `LFA_SKIP_TOOLCHAIN_CHECK=1`
-silences the warning.
+proceeds. A distribution's Python installed without its development package (`python3.X-dev` for
+Python 3.X on Debian and Ubuntu, and `build-essential`) has no `Python.h`, while a uv- or
+conda-managed interpreter ships its own headers; the warning names the package for the Python it
+runs under. `LFA_SKIP_TOOLCHAIN_CHECK=1` silences the warning.
 
 The versions this was built and tested against are pinned in
 [`constraints-tested.txt`](../constraints-tested.txt) (torch 2.10.0+cu128, transformers 4.57.6,
@@ -197,7 +197,8 @@ out and no held-out curve to choose the epochs by. `--split-chars 3500` cuts eve
 documents of about 3,500 characters at paragraph boundaries. A corpus with nothing to hold out is
 refused before the supplement is written, with this fix in the message. Cut boilerplate — a
 Project Gutenberg licence, a table of contents, an index — out of the file first: cleaning removes
-markup, not content.
+markup, not content ([preparing-your-data.md](preparing-your-data.md#a-project-gutenberg-book) has
+a checklist for a Gutenberg book, with the commands).
 [preparing-your-data.md](preparing-your-data.md) has the formats, the cleaning, the corpus shapes
 that train badly and everything about the supplement.
 
@@ -214,7 +215,7 @@ training tokens an epoch) turned late and shallowly: lowest at epoch 10 (17.62),
 above it at epoch 15; no 10-epoch run was measured
 ([recipes.md](recipes.md#run-length-and-checkpointing)). On a smaller
 corpus, or at a lower λ, the held-out perplexity can bottom out early and then climb, and
-`final_model` is the last epoch by design (no best checkpoint is kept — recipes.md says why).
+`final_model` is the last epoch by design (no best checkpoint is kept — tuning.md says why).
 Every run ends with one line that reads the curve and one that says what it means; for a 757 KB
 book (H. G. Wells, *A Short History of the World*) at the recipe:
 
@@ -226,12 +227,14 @@ The held-out curve turned at epoch 8: a re-run with --epochs 8 is likely to ship
 When the curve turned, the run advises a re-run with `--epochs <the lowest epoch>`: with a warning
 when it ended 10 % or more above its lowest, as "likely to ship a better model on this domain" from
 1 % to 10 %, and as optional under 1 %. When it had not turned by the last epoch, more epochs may
-lower it further. The learning-rate schedule is laid over whatever you say, so a re-run is a
-complete shorter run rather than a truncated long one. In the same workspace it writes
-`runs/stage1_run2`, and from then on `evaluate`, `fuse` and `extend` read that run; `--resume`
-instead continues an interrupted run in its own directory. On that book the re-run at `--epochs 8`
-was better on both axes (one seed). [tuning.md](tuning.md) is the whole procedure for your corpus:
-the dose, the control, and λ.
+lower it further — unless the run is itself the re-run at an earlier run's turn, which usually ends
+at its own lowest: then it says to stop, and to keep whichever of the two runs ended lower
+([tuning.md](tuning.md#when-the-re-run-does-not-turn)). The learning-rate schedule is laid over
+whatever you say, so a re-run is a complete shorter run rather than a truncated long one. In the
+same workspace it writes `runs/stage1_run2`, and from then on `evaluate`, `fuse` and `extend` read
+that run; `--resume` instead continues an interrupted run in its own directory. On that book the
+re-run at `--epochs 8` was better on both axes (one seed). [tuning.md](tuning.md) is the whole
+procedure for your corpus: the dose, the control, and λ.
 
 The supplement is mixed into the training side at the recipe's `supplement_fraction` (0.13 of
 training tokens, the frame the recipe's λ was tuned at); the held-out tenth is split off first and
@@ -290,7 +293,35 @@ lfa fuse --workspace runs/world_history
 ```
 
 `fuse` writes a plain checkpoint with the adapter merged in — no PEFT wrapper, loads with
-`AutoModelForCausalLM.from_pretrained` like any other model.
+`AutoModelForCausalLM.from_pretrained` like any other model — to
+`runs/world_history/models/stage1_fused_export`. It exports the stage's latest run; after a
+re-run, a second `fuse` replaces the first export there and says so, naming the run it now holds.
+
+To ask it a question, render the question through the model's chat template and decode greedily:
+
+```python
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+path = "runs/world_history/models/stage1_fused_export"
+tokenizer = AutoTokenizer.from_pretrained(path)
+model = AutoModelForCausalLM.from_pretrained(path, dtype=torch.bfloat16, device_map="cuda:0")
+messages = [{"role": "user", "content": "Who first measured the size of the earth?"}]
+text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True,
+                                     enable_thinking=False)
+inputs = tokenizer(text, return_tensors="pt").to(model.device)
+output = model.generate(**inputs, max_new_tokens=200, do_sample=False)
+print(tokenizer.decode(output[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True))
+```
+
+`enable_thinking=False` because Qwen3's template otherwise lets the model reason in a `<think>`
+block before it answers, and the supplement's pairs were trained with thinking off (a template
+without the switch ignores it). `do_sample=False` is greedy decoding, so the same question gets the
+same answer. The snippet was run as written, but on a CPU (`device_map="cpu"`), against a fused
+Qwen3-0.6B trained on *A Short History of Astronomy*. Loading the tokenizer may print a warning
+about "an incorrect regex pattern";
+[faq.md](faq.md#loading-the-fused-model-warns-about-an-incorrect-regex-pattern-is-its-tokenizer-broken)
+says what it means and how to check your export.
 
 The same flow as Python is [`examples/quickstart.py`](../examples/quickstart.py); nothing in the
 CLI is decided differently from the way the library decides it for a caller who imports it.

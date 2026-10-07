@@ -529,6 +529,51 @@ def test_fuse_defaults_the_workspace_to_the_working_directory(trained, tmp_path,
     assert not (out / "adapter_config.json").exists()      # merged, not an adapter
 
 
+def test_a_second_fuse_after_a_rerun_says_it_replaced_the_first_export(
+        tmp_path, base_dir, corpus_a, recipe_path, caplog):
+    """The trial's second `fuse` overwrote the first export without a word: it now names the run
+    the default directory holds and says the earlier export was replaced. The first fuse into an
+    empty directory says nothing of the kind."""
+    workspace = tmp_path / "ws"
+    assert main(["init", str(workspace), "--model", str(base_dir), "--artifact", TINY_ARTIFACT_PATH]) == 0
+    train = ["train", "--workspace", str(workspace), "--corpus", str(corpus_a),
+             "--recipe", str(recipe_path), "--device", "cpu"]
+    assert main(train) == 0
+    export = workspace / "models" / "stage1_fused_export"
+
+    with caplog.at_level("INFO", logger="lfa.workspace"):
+        assert main(["fuse", "--workspace", str(workspace)]) == 0
+    assert (export / "config.json").is_file()
+    assert not [r for r in caplog.records if "replaced" in r.getMessage()]
+
+    assert main(train) == 0                                             # the re-run: stage1_run2
+    caplog.clear()
+    with caplog.at_level("INFO", logger="lfa.workspace"):
+        assert main(["fuse", "--workspace", str(workspace)]) == 0
+    [line] = [r.getMessage() for r in caplog.records if "replaced" in r.getMessage()]
+    assert line == (f"{export} held an earlier export, which this one replaced: it now holds "
+                    f"stage 1's run {workspace / 'runs' / 'stage1_run2'}, the stage's latest.")
+
+
+def test_an_override_note_on_the_command_line_names_the_flag_alone(tmp_path, base_dir, corpus_a,
+                                                                    recipe_path, caplog):
+    """The trial read "lambda 400000 set by --lambda (lambda_= from Python)" as if both were
+    used. On the CLI the note names the flag; Python's spelling is not mentioned."""
+    from lfa.recipe import SPEAKS_TO_CLI
+
+    workspace = tmp_path / "ws"
+    assert main(["init", str(workspace), "--model", str(base_dir), "--artifact", TINY_ARTIFACT_PATH]) == 0
+    with caplog.at_level("WARNING", logger="lfa.workspace"):
+        assert main(["train", "--workspace", str(workspace), "--corpus", str(corpus_a),
+                     "--recipe", str(recipe_path), "--device", "cpu",
+                     "--lambda", "25", "--mu", "0.5"]) == 0
+    notes = [r.getMessage() for r in caplog.records if " set by " in r.getMessage()]
+    assert notes[0].startswith("lambda 25 set by --lambda; the recipe calibrated 10.")
+    assert notes[1] == "mu 0.5 set by --mu; the recipe's is 0.05."
+    assert not any("Python" in note or "lambda_=" in note or "mu=" in note for note in notes)
+    assert SPEAKS_TO_CLI.get() is False                     # and the CLI's context is left behind
+
+
 def test_build_artifact_refuses_both_a_corpus_and_self_generated(capsys):
     with pytest.raises(SystemExit) as exit_info:
         main(["build-artifact", "--model", "m", "--out", "x.pt", "--corpus", "c.jsonl",

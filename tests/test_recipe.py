@@ -210,7 +210,7 @@ def test_no_override_note_when_nothing_moved():
 
 def test_an_off_recipe_lambda_names_the_value_set_and_the_one_calibrated():
     [note] = Recipe.load("qwen3-0.6b").override_notes(1, lambda_=2.5e6)
-    assert note.startswith("lambda 2.5e+06 set by --lambda")
+    assert note.startswith("lambda 2.5e+06 set by lambda_=;")       # from Python: the argument
     assert "the recipe calibrated 1e+06." in note
     assert "no stage multiplier on top" in note
 
@@ -223,12 +223,30 @@ def test_at_stage_two_the_note_quotes_the_multiplied_value_and_says_where_it_cam
 def test_mu_and_the_unanchored_control_are_named():
     recipe = Recipe.load("qwen3-0.6b")
     [mu_note] = recipe.override_notes(1, mu=0.2)
-    assert mu_note == "mu 0.2 set by --mu (mu= from Python); the recipe's is 0.05."
+    assert mu_note == "mu 0.2 set by mu=; the recipe's is 0.05."
     lambda_note, mu_note, control = recipe.override_notes(1, lambda_=0, mu=0)
-    assert lambda_note.startswith("lambda 0 set by --lambda")
+    assert lambda_note.startswith("lambda 0 set by lambda_=;")
     assert "unanchored control" in control and "not sampled" in control
     *_, backstop_only = recipe.override_notes(1, lambda_=0)
     assert "only mu's weight backstop" in backstop_only
+
+
+def test_on_the_command_line_an_override_is_named_by_its_flag_alone():
+    """The trial's user read "set by --lambda (lambda_= from Python)" as if both had been used:
+    the CLI names the flag, Python the argument, and neither names the other."""
+    from lfa.recipe import SPEAKS_TO_CLI
+
+    recipe = Recipe.load("qwen3-0.6b")
+    token = SPEAKS_TO_CLI.set(True)
+    try:
+        lambda_note, mu_note = recipe.override_notes(1, lambda_=4e5, mu=0.2)
+    finally:
+        SPEAKS_TO_CLI.reset(token)
+    assert lambda_note.startswith("lambda 400000 set by --lambda;")
+    assert mu_note == "mu 0.2 set by --mu; the recipe's is 0.05."
+    assert "Python" not in lambda_note + mu_note and "lambda_=" not in lambda_note
+    # and back outside the CLI's context, the argument again
+    assert recipe.override_notes(1, mu=0.2) == ["mu 0.2 set by mu=; the recipe's is 0.05."]
 
 
 # ==============================================================================================

@@ -53,7 +53,7 @@ from .prepare_domain import (
     prepare_domain,
 )
 from .probe import probe_artifact
-from .recipe import Recipe, check_anchor_weight
+from .recipe import SPEAKS_TO_CLI, Recipe, check_anchor_weight
 from .seed_corpus import SourceUnavailable, prepare_seed_corpus
 # CorpusFrameMismatch is a ValueError, so the tuple below already reports it; imported to name it.
 from .selfgen.artifact_corpus import (  # noqa: F401
@@ -527,7 +527,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_workspace(fuse)
     fuse.add_argument("--out", metavar="DIR",
                       help="where to write the merged checkpoint (default: "
-                           "models/stage{N}_fused_export inside the workspace)")
+                           "models/stage{N}_fused_export inside the workspace, which a fuse "
+                           "after a re-run of the stage replaces, and says so)")
     fuse.set_defaults(handler=_fuse)
 
     # --------------------------------------------------------------------------------- chain
@@ -702,6 +703,8 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
+    # The library's per-run notes name an override by its flag here, by its argument from Python.
+    speaking = SPEAKS_TO_CLI.set(True)
     try:
         return args.handler(args)
     except USER_FACING_ERRORS as error:
@@ -720,6 +723,8 @@ def main(argv: list[str] | None = None) -> int:
               "command is run again, and an interrupted download of a published artifact "
               "starts again.", file=sys.stderr)
         return 130
+    finally:
+        SPEAKS_TO_CLI.reset(speaking)
 
 
 if __name__ == "__main__":                                          # pragma: no cover

@@ -75,7 +75,8 @@ from .recipe import BUNDLED_DIR, Recipe, check_anchor_weight
 from .sampler import Sampler
 from .selfgen.artifact_corpus import SelfGenOptions
 from .supplements import beside_corpus, supplement_for
-from .train import OPTIONAL_RERUN_GAP, HeldOutSummary, held_out_messages, held_out_summary
+from .train import (OPTIONAL_RERUN_GAP, EarlierTurn, HeldOutSummary, held_out_messages,
+                    held_out_summary)
 from .train import train as run_training
 
 logger = logging.getLogger("lfa.workspace")
@@ -289,17 +290,34 @@ def _held_out_line(entry: dict) -> str | None:
     """The run's own held-out verdict, restated beneath ``evaluate``'s table.
 
     The words are :func:`lfa.train.held_out_messages` of the summary the stage recorded
-    (``entry["held_out"]``), so the line says what the train log said at the end of the run --
-    the curve, then the advice for its verdict -- where a user reading only the table would see
-    it -- one paragraph, wrapped like the control's note (:func:`_wrap_note`). ``None`` when the
-    entry records no summary.
+    (``entry["held_out"]``) and of the earlier run it re-ran at a turn (``entry["rerun_of"]``,
+    when it was one), so the line says what the train log said at the end of the run -- the
+    curve, then the advice for its verdict -- where a user reading only the table would see it --
+    one paragraph, wrapped like the control's note (:func:`_wrap_note`). ``None`` when the entry
+    records no summary.
     """
     record = entry.get("held_out")
     if record is None:
         return None
-    (_, curve), *advice = held_out_messages(HeldOutSummary(**record))
+    rerun_of = entry.get("rerun_of")
+    (_, curve), *advice = held_out_messages(
+        HeldOutSummary(**record), None if rerun_of is None else EarlierTurn(**rerun_of))
     return _wrap_note(" ".join([f"This run's held-out curve: {curve}",
                                 *(message for _, message in advice)]))
+
+
+def _run_frame(recipe: dict, lambda_qkv, lambda_mlp, mu, full_weight, keep_short_whole,
+               supplement) -> dict:
+    """What two runs of a stage must share, apart from the epochs, for one to be the other's
+    re-run: the recipe as resolved (its ``epochs`` dropped), the lambdas and mu the trainer
+    used, the training mode, the loader setting and the supplement file mixed in. Read through
+    JSON, as ``history.json`` stores it, so a tuple in this process's recipe equals the list a
+    later process reads back."""
+    return json.loads(json.dumps({
+        "recipe": {**recipe, "epochs": None}, "lambda_qkv": lambda_qkv,
+        "lambda_mlp": lambda_mlp, "mu": mu, "full_weight": full_weight,
+        "keep_short_whole": keep_short_whole,
+        "supplement": None if supplement is None else str(supplement)}))
 
 
 def _wrap_note(prose: str) -> str:
@@ -828,12 +846,18 @@ class Workspace:
                            "calibrated at supplement_fraction %g and this run mixes none.",
                            resolved.supplement_fraction)
 
+        # Found before the run: the end-of-run verdict of a re-run at an earlier run's turn
+        # says to stop rather than to raise --epochs (lfa.train.held_out_messages).
+        rerun_of = self._rerun_of(stage, output_dir, _run_frame(
+            dataclasses.asdict(resolved), config.lambda_qkv, config.lambda_mlp, config.mu,
+            config.full_weight, config.keep_short_whole, supplement_path), config.num_epochs)
         training, corpus_counts = self._run_training(
             config, corpus_path, base_model, output_dir, placement=placement, dtype=dtype,
             allow_sharding=allow_sharding, resume=resume,
             # At lambda 0 the anchor has no term to compute, so the artifact is not sampled.
             anchored=config.lambda_qkv > 0 or config.lambda_mlp > 0,
-            supplement=supplement_path, supplement_fraction=resolved.supplement_fraction)
+            supplement=supplement_path, supplement_fraction=resolved.supplement_fraction,
+            rerun_of=rerun_of)
         report = corpus_counts.pop("supplement_report")
 
         entry = {
@@ -888,6 +912,9 @@ class Workspace:
             # trainer logged at the end of the run (verdict, minimum, end, gap) -- so a stage
             # that ended past its minimum stays visible after the log is gone.
             "held_out": held_out_summary(training.history).to_dict(),
+            # The earlier run of this stage whose turn this run re-ran at (its directory name,
+            # turn epoch and final held-out perplexity), or None: it words the verdict above.
+            "rerun_of": None if rerun_of is None else rerun_of.to_dict(),
             # Where and in what precision this stage ran: an export merges in the dtype it was
             # trained in rather than in a default that may not be the same one.
             "device": placement,
@@ -1110,9 +1137,38 @@ class Workspace:
                 seen.append(path)
         return seen
 
+    def _rerun_of(self, stage: int, output_dir: Path, frame: dict,
+                  epochs: int) -> EarlierTurn | None:
+        """The earlier run of ``stage`` that this run re-runs at its turn, or ``None``.
+
+        It is one when its held-out curve turned (verdict ``"turned"``) at the epoch count this
+        run trains for, and it trained in the same frame apart from the epochs
+        (:func:`_run_frame`: the recipe, the applied lambda and mu, the training mode, the loader
+        setting and the supplement). A run at another lambda with the same ``--epochs`` is a rung,
+        not a re-run, and keeps the generic verdict. A run directory is read at its LAST history
+        entry, since a resumed run's later entry holds its finished curve. With several such runs
+        the most recent is named: it is the one whose advice this run followed.
+        """
+        seen: set[str] = set()
+        for entry in reversed(self.history):
+            directory = entry["output_dir"]
+            if (entry["stage"] != stage or directory in seen
+                    or Path(directory) == Path(output_dir)):
+                continue
+            seen.add(directory)
+            record = entry.get("held_out") or {}
+            if (record.get("verdict") == "turned" and record.get("best_epoch") == epochs
+                    and _run_frame(entry["recipe"], entry.get("lambda_applied"),
+                                   entry.get("lambda_mlp_applied"), entry.get("mu_applied"),
+                                   entry.get("full_weight"), entry.get("keep_short_whole"),
+                                   (entry.get("supplement") or {}).get("path")) == frame):
+                return EarlierTurn(run=Path(directory).name, epoch=epochs,
+                                   final=record["final"])
+        return None
+
     def _run_training(self, config, corpus_path, base_model, output_dir, *, placement, dtype,
                       allow_sharding, resume, anchored, supplement=None,
-                      supplement_fraction=0.0):
+                      supplement_fraction=0.0, rerun_of=None):
         """Load teacher, student, sampler and corpus for one run, and train it.
 
         A resume passes the bare student through: the trainer re-attaches the saved adapter
@@ -1208,7 +1264,7 @@ class Workspace:
 
             training = run_training(teacher, student, dataset, sampler, adapter, config,
                                     output_dir, resume=resume, tokenizer=tokenizer,
-                                    val_dataset=holdout)
+                                    val_dataset=holdout, rerun_of=rerun_of)
             return training, counts
         finally:
             del teacher, student, sampler, reference
@@ -1663,6 +1719,10 @@ class Workspace:
         the same model at ``models/stage{N}_fused`` as a side effect of preparing the next stage;
         this is the export for a stage that is not being extended, or for shipping.
 
+        The stage's LATEST run is the one exported. The default directory is the stage's, not
+        the run's, so a ``fuse`` after a re-run writes over the export of the run before it, and
+        says so -- naming the run the directory now holds.
+
         Args:
             out_dir: where to write it (default ``models/stage{N}_fused_export``).
         """
@@ -1670,15 +1730,20 @@ class Workspace:
         stage = self.state["stage"]
         out = Path(out_dir) if out_dir else self.path / "models" / f"stage{stage}_fused_export"
         adapter_dir = Path(entry["adapter"])
+        # An export already there is a model directory with a config; the next write replaces it.
+        replacing = (out / "config.json").is_file()
 
         if (adapter_dir / "adapter_config.json").is_file():
-            return fuse(adapter_dir, str(entry["base_model"]), out, dtype=_stage_dtype(entry))
-
-        # Full weight: there is nothing to merge, so the export is the checkpoint plus the
-        # tokenizer that a released model is expected to carry.
-        logger.info("Stage %d trained full weights; exporting the checkpoint itself", stage)
-        shutil.copytree(adapter_dir, out, dirs_exist_ok=True)
-        load_tokenizer(str(entry["base_model"])).save_pretrained(out)
+            fuse(adapter_dir, str(entry["base_model"]), out, dtype=_stage_dtype(entry))
+        else:
+            # Full weight: there is nothing to merge, so the export is the checkpoint plus the
+            # tokenizer that a released model is expected to carry.
+            logger.info("Stage %d trained full weights; exporting the checkpoint itself", stage)
+            shutil.copytree(adapter_dir, out, dirs_exist_ok=True)
+            load_tokenizer(str(entry["base_model"])).save_pretrained(out)
+        if replacing:
+            logger.info("%s held an earlier export, which this one replaced: it now holds stage "
+                        "%d's run %s, the stage's latest.", out, stage, entry["output_dir"])
         return out
 
     # ---------------------------------------------------------------------------------- chain

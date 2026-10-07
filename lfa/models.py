@@ -123,21 +123,29 @@ def check_gpu_toolchain(device: str | dict) -> None:
                      if candidate and (found := shutil.which(candidate))), None)
     missing = []
     if not header.is_file():
-        missing.append(f"the Python development headers ({header} does not exist)")
+        missing.append(f"no Python development headers for {sys.executable} ({header} does not "
+                       f"exist)")
     if compiler is None:
-        missing.append("a C compiler on PATH (gcc, cc or clang)")
+        missing.append("no C compiler on PATH (gcc, cc or clang)")
     if not missing:
         return
 
     _toolchain_warned = True
     logger.warning(
-        "This machine cannot compile for the GPU: %s is missing for %s. This package's own "
-        "training and generation paths ran without it, but a torch path that JIT-compiles "
-        "(torch.compile, custom triton kernels) would fail in gcc mid-run. Install your "
-        "distribution's development package for this interpreter (`python3-dev` / "
-        "`python3.13-dev`, plus `build-essential`) if that happens. Set %s=1 to silence this.",
-        " and ".join(missing), sys.executable, TOOLCHAIN_CHECK_OFF,
+        "This machine cannot compile for the GPU: it has %s. This package's own training and "
+        "generation paths ran without them, but a torch path that JIT-compiles (torch.compile, "
+        "custom triton kernels) would fail in gcc mid-run. If that happens, install the "
+        "development package for this Python (`%s` on Debian and Ubuntu, plus "
+        "`build-essential`). Set %s=1 to silence this.",
+        " and ".join(missing), _dev_package(), TOOLCHAIN_CHECK_OFF,
     )
+
+
+def _dev_package() -> str:
+    """The Debian/Ubuntu package holding this interpreter's headers: ``python3.12-dev`` under
+    Python 3.12. The generic ``python3-dev`` is the distribution's default Python's, which need
+    not be the one running."""
+    return f"python{sys.version_info.major}.{sys.version_info.minor}-dev"
 
 
 def _single_device(device: str | dict) -> str:

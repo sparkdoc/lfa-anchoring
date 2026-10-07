@@ -1701,7 +1701,7 @@ def test_an_explicit_lambda_and_mu_are_what_the_stage_trains_at_and_records(tmp_
     assert Workspace.open(ws.path).history[-1]["lambda_override"] == 25.0
     warned = [r.message for r in caplog.records if r.name == "lfa.workspace"]
     assert warned == recipe.override_notes(1, 25.0, 0.5)
-    assert warned[0].startswith("lambda 25 set by --lambda") and "calibrated 10." in warned[0]
+    assert warned[0].startswith("lambda 25 set by lambda_=") and "calibrated 10." in warned[0]
 
 
 def test_a_stage_without_overrides_records_the_recipes_values_and_no_override(flow):
@@ -1929,7 +1929,7 @@ def test_a_lambda_spelt_as_a_string_from_python_is_read_as_its_number(tmp_path, 
 
     assert (entry["lambda_applied"], entry["lambda_override"]) == (2.5e6, 2.5e6)
     assert (entry["mu_applied"], entry["mu_override"]) == (0.5, 0.5)
-    assert any(r.message.startswith("lambda 2.5e+06 set by --lambda") for r in caplog.records)
+    assert any(r.message.startswith("lambda 2.5e+06 set by lambda_=") for r in caplog.records)
     with pytest.raises(ValueError, match="lambda must be a number"):
         ws.train(corpus_a, recipe=tiny_recipe(base_dir), lambda_=True, device="cpu")
 
@@ -2123,6 +2123,110 @@ def test_evaluate_restates_the_runs_own_held_out_verdict(tmp_path, base_dir, cor
     # The train log's words, not a second wording of them.
     (_, curve), *advice = held_out_messages(summary)
     assert line == " ".join([f"This run's held-out curve: {curve}", *(m for _, m in advice)])
+
+
+# ------------------------------------- a re-run at an earlier run's turn is told to stop there
+
+def _ends_falling(monkeypatch, final=13.839):
+    """Every run from here on reads its curve as still falling, ending at ``final`` -- the shape
+    of a re-run at a turn -- in the trainer's end-of-run lines and in the stage's record alike.
+    The tiny model's own curve is not a shape a test can choose."""
+    from lfa.train import HeldOutSummary
+
+    def summary(history):
+        return HeldOutSummary("still_falling", len(history), final, len(history), final, 0.0)
+
+    import lfa.train as train_module
+    monkeypatch.setattr(train_module, "held_out_summary", summary)
+    monkeypatch.setattr(workspace_module, "held_out_summary", summary)
+
+
+def _turned_at(ws, epoch, final, epochs=3):
+    """Record the latest run's curve as turned at ``epoch`` and ending at ``final``."""
+    from lfa.train import HeldOutSummary
+
+    _with_curve(ws, HeldOutSummary("turned", epoch, final * 0.98, epochs, final, 1 / 0.98 - 1))
+
+
+def _end_of_run(caplog):
+    return [r.getMessage() for r in caplog.records if r.name == "lfa.train"][-1]
+
+
+def test_a_rerun_at_the_earlier_runs_turn_is_told_to_stop_in_train_and_evaluate(
+        tmp_path, base_dir, corpus_a, monkeypatch, caplog):
+    """The trial: the 15-epoch run turned at 10, the re-run at --epochs 10 ended at its own lowest
+    and was told to raise --epochs again. Now both the train log and evaluate say to stop and
+    compare the two finals, from the one builder."""
+    from lfa.train import EarlierTurn, HeldOutSummary, held_out_messages
+
+    ws = new_workspace(tmp_path, base_dir)
+    ws.train(corpus_a, recipe=tiny_recipe(base_dir, epochs=3), device="cpu")
+    _turned_at(ws, 2, 14.021)
+    _ends_falling(monkeypatch)
+    with caplog.at_level("INFO"):
+        entry = ws.train(corpus_a, recipe=tiny_recipe(base_dir, epochs=3), epochs=2, device="cpu")
+
+    assert Path(entry["output_dir"]).name == "stage1_run2"
+    assert entry["rerun_of"] == {"run": "stage1", "epoch": 2, "final": 14.021}
+    said = _end_of_run(caplog)
+    assert said.startswith("This run is the re-run at stage1's turn (epoch 2)")
+    assert "stop here" in said and "this run's 13.839 against stage1's 14.021" in said
+    assert "had not turned" not in said
+
+    table = Workspace.open(ws.path).evaluate(n_windows=None, device="cpu")["table"]
+    (_, curve), *advice = held_out_messages(HeldOutSummary(**entry["held_out"]),
+                                            EarlierTurn(**entry["rerun_of"]))
+    assert _own_line(table) == " ".join([f"This run's held-out curve: {curve}",
+                                         *(m for _, m in advice)])
+    assert said in _own_line(table)
+
+
+@pytest.mark.parametrize("second", [
+    dict(epochs=3),                     # a re-run, but not at the turn's epoch count
+    dict(epochs=2, lambda_=25.0),       # at the turn's epochs, but another lambda: a rung
+], ids=["other-epochs", "other-lambda"])
+def test_a_run_that_is_not_the_rerun_at_the_turn_keeps_the_generic_verdict(
+        tmp_path, base_dir, corpus_a, monkeypatch, caplog, second):
+    ws = new_workspace(tmp_path, base_dir)
+    ws.train(corpus_a, recipe=tiny_recipe(base_dir, epochs=3), device="cpu")
+    _turned_at(ws, 2, 14.021)
+    _ends_falling(monkeypatch)
+    with caplog.at_level("INFO"):
+        entry = ws.train(corpus_a, recipe=tiny_recipe(base_dir, epochs=3), device="cpu", **second)
+
+    assert entry["rerun_of"] is None
+    assert _end_of_run(caplog).startswith("The held-out curve had not turned by the last epoch")
+    table = Workspace.open(ws.path).evaluate(n_windows=None, device="cpu")["table"]
+    assert "had not turned by the last epoch" in _own_line(table)
+    assert "re-run at stage1's turn" not in table
+
+
+def test_a_first_run_has_no_earlier_turn_and_keeps_the_generic_verdict(
+        tmp_path, base_dir, corpus_a, monkeypatch, caplog):
+    ws = new_workspace(tmp_path, base_dir)
+    _ends_falling(monkeypatch)
+    with caplog.at_level("INFO"):
+        entry = ws.train(corpus_a, recipe=tiny_recipe(base_dir, epochs=2), device="cpu")
+
+    assert entry["rerun_of"] is None
+    assert _end_of_run(caplog).startswith("The held-out curve had not turned by the last epoch")
+
+
+def test_with_several_earlier_turns_the_most_recent_is_named(tmp_path, base_dir, corpus_a,
+                                                              monkeypatch, caplog):
+    """Two earlier runs both turned at epoch 2: the re-run follows the advice of the later one,
+    and is compared against its final."""
+    ws = new_workspace(tmp_path, base_dir)
+    ws.train(corpus_a, recipe=tiny_recipe(base_dir, epochs=3), device="cpu")
+    _turned_at(ws, 2, 14.021)
+    ws.train(corpus_a, recipe=tiny_recipe(base_dir, epochs=3), device="cpu")
+    _turned_at(ws, 2, 14.5)
+    _ends_falling(monkeypatch)
+    with caplog.at_level("INFO"):
+        entry = ws.train(corpus_a, recipe=tiny_recipe(base_dir, epochs=3), epochs=2, device="cpu")
+
+    assert entry["rerun_of"] == {"run": "stage1_run2", "epoch": 2, "final": 14.5}
+    assert "re-run at stage1_run2's turn (epoch 2)" in _end_of_run(caplog)
 
 
 def test_the_wells_runs_line_reads_as_train_said_it(tmp_path, base_dir, corpus_a):

@@ -516,6 +516,79 @@ def test_a_still_falling_curve_says_more_epochs_may_help(caplog):
     assert "more epochs may lower it further" in message and "--epochs" in message
 
 
+# A re-run at an earlier run's turn: the trial's 15-epoch run turned at epoch 10 and advised
+# `--epochs 10`; that re-run ended at its own lowest and was told to raise --epochs again, back
+# toward 15. With the earlier run named, the verdict is to stop and compare the two finals.
+
+def _rerun_said(final, earlier_final, run="stage1", epoch=10):
+    from lfa.train import EarlierTurn, held_out_messages
+
+    summary = HeldOutSummary("still_falling", epoch, final, epoch, final, 0.0)
+    return held_out_messages(summary, EarlierTurn(run=run, epoch=epoch, final=earlier_final))
+
+
+def test_a_rerun_at_the_turn_that_did_not_turn_is_told_to_stop_and_keep_the_lower_final():
+    """The trial's numbers: stage1_run2 at --epochs 10 ended at 13.839, stage1 at 14.021."""
+    (_, curve), (level, advice) = _rerun_said(13.839, 14.021)
+    assert curve == "lowest 13.839 at epoch 10 of 10; final 13.839 (+0.0 % over the lowest)."
+    assert level == logging.INFO
+    assert advice == (
+        "This run is the re-run at stage1's turn (epoch 10), and not turning is what such a "
+        "re-run shows, not a sign that more epochs would help: stop here. Compare the two finals "
+        "and keep the lower: this run's 13.839 against stage1's 14.021: this run is 1.3 % lower; "
+        "keep it.")
+    assert "raise" not in advice and "larger --epochs" not in advice
+
+
+def test_a_rerun_that_ended_above_the_earlier_runs_final_says_how_to_keep_that_one():
+    [_, (_, advice)] = _rerun_said(14.5, 14.021, run="stage1_run2", epoch=8)
+    assert "re-run at stage1_run2's turn (epoch 8)" in advice
+    assert advice.endswith(": stage1_run2 is 3.4 % lower. `lfa fuse` reads this run, the "
+                           "stage's latest; docs/tuning.md (step 2) says how to ship stage1_run2 "
+                           "instead.")
+
+
+def test_two_finals_within_the_run_to_run_spread_are_called_the_same():
+    """Under 0.15 % apart (docs/tuning.md 'When to stop') is noise, and the verdict says so."""
+    from lfa.train import HELD_OUT_SPREAD
+
+    assert HELD_OUT_SPREAD == 0.0015
+    [_, (_, advice)] = _rerun_said(14.030, 14.021)
+    assert advice.endswith("this run's 14.030 against stage1's 14.021, 0.06 % apart -- within "
+                           "the run-to-run spread of about 0.15 % (docs/tuning.md, 'When to "
+                           "stop'), so on this axis they are the same, and either can be kept.")
+    [_, (_, beyond)] = _rerun_said(14.050, 14.021)                     # 0.21 %: not noise
+    assert beyond.endswith("stage1 is 0.2 % lower. `lfa fuse` reads this run, the stage's "
+                           "latest; docs/tuning.md (step 2) says how to ship stage1 instead.")
+
+
+@pytest.mark.parametrize("summary", [
+    HeldOutSummary("turned", 6, 13.435, 10, 13.906, 13.906 / 13.435 - 1),
+    HeldOutSummary("turned", 5, 13.517, 6, 13.526, 13.526 / 13.517 - 1),
+    HeldOutSummary("diverged", 2, 8.0, 5),
+    HeldOutSummary("no_curve"),
+], ids=["turned-likely", "turned-optional", "diverged", "no-curve"])
+def test_every_other_verdict_ignores_an_earlier_turn(summary):
+    from lfa.train import EarlierTurn, held_out_messages
+
+    earlier = EarlierTurn(run="stage1", epoch=summary.final_epoch or 1, final=14.021)
+    assert held_out_messages(summary, earlier) == held_out_messages(summary)
+
+
+def test_the_trainer_logs_the_rerun_verdict_it_is_handed(caplog):
+    """`train` passes `rerun_of` to the end-of-run lines; without it they stay generic."""
+    from lfa.train import EarlierTurn
+
+    summary = held_out_summary(_curve([15.0, 14.0, 13.839]))
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="lfa.test.held_out"):
+        _log_held_out_summary(summary, logging.getLogger("lfa.test.held_out"),
+                              EarlierTurn(run="stage1", epoch=3, final=14.021))
+    said = [r.getMessage() for r in caplog.records]
+    assert said[0].startswith("Held-out perplexity: lowest 13.839 at epoch 3 of 3;")
+    assert said[1].startswith("This run is the re-run at stage1's turn (epoch 3)")
+
+
 def test_a_one_point_curve_is_read_as_not_yet_turned(caplog):
     said = _said(caplog, [7.5])
     assert said[0][1].startswith("Held-out perplexity: lowest 7.500 at epoch 1 of 1;")

@@ -268,9 +268,32 @@ def test_a_cuda_run_without_python_headers_warns_once_and_proceeds(no_headers, c
 
     messages = [r.getMessage() for r in caplog.records if "Python development headers" in r.getMessage()]
     assert len(messages) == 1                            # once per process
-    assert "python3-dev" in messages[0]
     assert TOOLCHAIN_CHECK_OFF in messages[0]
     assert resolve_device("cuda:0") == "cuda:0"          # and the resolver proceeds
+
+
+def test_the_toolchain_warning_names_the_running_pythons_package_in_one_clean_sentence(
+        no_headers, monkeypatch, caplog):
+    """The trial's interpreter was 3.12 and the warning named `python3.13-dev`, inside "the
+    Python development headers (... does not exist) is missing". It names the package of the
+    Python that is running, and says what is missing as a sentence."""
+    import sys
+
+    import lfa.models as models_module
+
+    monkeypatch.setattr(models_module.shutil, "which", lambda name: None)    # no compiler either
+    models_module._toolchain_warned = False
+    with caplog.at_level("WARNING", logger="lfa.models"):
+        check_gpu_toolchain("cuda:0")
+    [message] = [r.getMessage() for r in caplog.records if "cannot compile" in r.getMessage()]
+
+    package = f"python{sys.version_info.major}.{sys.version_info.minor}-dev"
+    assert f"`{package}` on Debian and Ubuntu" in message
+    assert "python3.13-dev" not in message or package == "python3.13-dev"
+    assert message.startswith("This machine cannot compile for the GPU: it has no Python "
+                              f"development headers for {sys.executable} ({no_headers / 'Python.h'}"
+                              " does not exist) and no C compiler on PATH (gcc, cc or clang).")
+    assert "is missing" not in message
 
 
 def test_the_preflight_also_mentions_a_missing_compiler(monkeypatch, caplog):

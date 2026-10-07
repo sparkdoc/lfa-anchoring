@@ -409,7 +409,7 @@ your recipe with `lambda_qkv`, `lambda_mlp` and `mu` at 0 (§5 step 1 makes the 
 `recipes/your-model-lam0.yaml`):
 
 ```bash
-lfa init runs/witness --model your/model --artifact self-generated --recipe recipes/your-model-lam0.yaml
+lfa init runs/witness --model your/model --artifact runs/your-model/artifacts/v1.pt --recipe recipes/your-model-lam0.yaml
 lfa train --workspace runs/witness --corpus data/darwin/train --epochs 4
 ```
 
@@ -523,19 +523,21 @@ because the unanchored curve turns much sooner than the anchored one.
    state. An 8-epoch control is an optional third point on the curve.
 
    ```bash
-   lfa init     runs/lam0-e15 --model your/model --artifact self-generated --recipe recipes/your-model-lam0.yaml
+   lfa init     runs/lam0-e15 --model your/model --artifact runs/your-model/artifacts/v1.pt --recipe recipes/your-model-lam0.yaml
    lfa train    --workspace runs/lam0-e15 --corpus data/darwin/train --epochs 15
    lfa evaluate --workspace runs/lam0-e15 --corpus data/darwin/heldout
    lfa evaluate --workspace runs/witness  --corpus data/darwin/heldout
    ```
 
-   `init` reuses the stored artifact; `evaluate` reports WikiText-2 and held-out domain perplexity,
-   base and trained. It logs that a named corpus is "a fit, not a held-out measurement", because a
-   named corpus is not split; `heldout/` was never in the training directory, so here it is held
-   out. `lfa evaluate --compare-unanchored` would re-run each stage with λ = μ = 0 as a third
-   column; separate control runs are cheaper when every arm is read against them. Record each
-   run's validation curve as well: the run's `training_history.json` holds the per-epoch
-   perplexity on the share of the training text that `train` held out (`val_fraction`).
+   `init` copies the artifact `runs/your-model` built — the very file, where `--artifact
+   self-generated` would look it up in the store again; `evaluate` reports WikiText-2 and held-out
+   domain perplexity, base and trained. It logs that a named corpus is "a fit, not a held-out
+   measurement", because a named corpus is not split; `heldout/` was never in the training
+   directory, so here it is held out. `lfa evaluate --compare-unanchored` would re-run each stage
+   with λ = μ = 0 as a third column; separate control runs are cheaper when every arm is read
+   against them. Record each run's validation curve as well: the run's `training_history.json` holds
+   the per-epoch perplexity on the share of the training text that `train` held out
+   (`val_fraction`).
 
    **Keep one WikiText-2 window count across everything you compare.** `evaluate` scores 100
    windows of 512 tokens (51,200 tokens) by default, and the whole test split with
@@ -547,7 +549,7 @@ because the unanchored curve turns much sooner than the anchored one.
    2–3 apart. Arms can run in parallel, one per card.
 
    ```bash
-   lfa init     runs/lam1e6 --model your/model --artifact self-generated --recipe recipes/your-model-lam1e6.yaml
+   lfa init     runs/lam1e6 --model your/model --artifact runs/your-model/artifacts/v1.pt --recipe recipes/your-model-lam1e6.yaml
    lfa train    --workspace runs/lam1e6 --corpus data/darwin/train --epochs 15
    lfa evaluate --workspace runs/lam1e6 --corpus data/darwin/heldout
    ```
@@ -590,7 +592,7 @@ because the unanchored curve turns much sooner than the anchored one.
    `stage2_lambda_multiplier` 1 and 3, the recipe dose (15 epochs) in each stage:
 
    ```bash
-   lfa init     runs/chain-m3 --model your/model --artifact self-generated --recipe recipes/your-model-m3.yaml
+   lfa init     runs/chain-m3 --model your/model --artifact runs/your-model/artifacts/v1.pt --recipe recipes/your-model-m3.yaml
    lfa train    --workspace runs/chain-m3 --corpus data/darwin/train --epochs 15
    lfa extend   --workspace runs/chain-m3
    lfa train    --workspace runs/chain-m3 --corpus data/cookery/train --epochs 15

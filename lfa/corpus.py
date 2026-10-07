@@ -469,16 +469,17 @@ class ChunkedCorpus(Dataset):
         if (epochs is not None and epochs > SMALL_CORPUS_EPOCHS
                 and n_tokens < SMALL_CORPUS_TOKENS):
             notes.append(
-                f"Corpus shape: {epochs} epochs over {n_tokens:,} training token(s) "
-                f"({n_chunks:,} chunk(s), {self._document_count()}). At the bundled "
-                f"recipes' lambda (1,000,000) this package's two-domain walkthrough's Darwin text "
-                f"(~189 k tokens an epoch) turned late and shallowly over 15 epochs: its held-out "
-                f"minimum at epoch 10-11 and its last epoch 0.2-2.6 % above it; at lambda = "
-                f"100,000 the same text turned by epoch 4-5. If lambda is lowered or the corpus is "
-                f"smaller still, keep val_fraction above 0 and let the held-out perplexity in "
-                f"training_history.json choose the dose — when the run ends the trainer reports "
-                f"the epoch it bottomed at and the gap to the final epoch, and says whether a "
-                f"re-run at that epoch is advised."
+                f"Corpus shape: this run is {epochs} epochs over {n_tokens:,} training token(s) "
+                f"an epoch ({n_chunks:,} chunk(s), {self._document_count()}) -- under "
+                f"{SMALL_CORPUS_TOKENS:,} tokens at more than {SMALL_CORPUS_EPOCHS} epochs, where "
+                f"a run can train past its held-out minimum and ship a model worse on its own "
+                f"domain than one it passed through. Read the held-out line the trainer prints "
+                f"when the run ends: it names the epoch the curve bottomed at and the gap to the "
+                f"final epoch, and says whether a re-run at that epoch is advised (keep "
+                f"val_fraction above 0, so there is a curve). For scale, at the bundled lambda "
+                f"(1,000,000) the walkthrough's Darwin text (~189 k tokens an epoch) bottomed at "
+                f"epoch 10-11 of 15 and ended 0.2-2.6 % above it; at lambda 100,000 it turned by "
+                f"epoch 4-5."
             )
 
         return notes

@@ -33,13 +33,18 @@ what every text shares, whatever its source.
   run of spaces becomes one.
 * Last, the characters are put in Unicode normal form NFC, so an accent typed as a letter plus a
   combining mark and the same accent as one character are the same text.
-* Markup the extractors leave behind (footnote wrappers, link targets, image references, stray
-  tags) is removed, and mid-paragraph line breaks are unwrapped, so a paragraph is one line.
+* Markup the extractors leave behind is removed: `<sup>`, `<sub>` and `<span>` tags (their text
+  kept), Markdown footnote wrappers and `[[…]]` editorial brackets, link targets (the link text
+  kept), Markdown image references (`![alt](path)`), horizontal rules, and a line that is bold
+  Markdown and nothing else (an affiliation, an e-mail address). Mid-paragraph line breaks are
+  unwrapped, so a paragraph is one line.
 
 What it does not touch is content: a licence, a table of contents, an index, page headers, a
-transcriber's note are text like any other, and cutting them is yours to do (below). A document
-that cleans down to less than `--min-length` characters (default 1000) is dropped — a page that
-extracted to a nav bar and a cookie notice is not training data.
+transcriber's note are text like any other, and so is a caption in plain text such as Project
+Gutenberg's `[Illustration: …]` — it is not an image reference in the sense above, and it is kept.
+Cutting them is yours to do ([a Project Gutenberg book](#a-project-gutenberg-book), below). A
+document that cleans down to less than `--min-length` characters (default 1000) is dropped — a
+page that extracted to a nav bar and a cookie notice is not training data.
 
 **One long file — a book, a report — split it.** A file is one document, and training holds out
 whole documents (a tenth of them, at the bundled recipes' `val_fraction` 0.1), so a corpus needs at
@@ -73,7 +78,9 @@ them is read.
 
 **Strip the boilerplate first.** A Project Gutenberg licence, a table of contents or an index
 left in the file is trained on like the text around it, and the supplement writes questions about
-it. Cut them out of the file before preparing it.
+it. Cut them out of the file before preparing it;
+[a Project Gutenberg book](#a-project-gutenberg-book) below lists what one carries and how to cut
+each part.
 
 **The layout.** The output is a flat directory of `.txt` files, and the loader reads each file as
 one document. A directory of `.txt` or `.md` files you already have is a corpus as it stands.
@@ -108,6 +115,58 @@ its size on disk**, for the whole run. A corpus too large for the machine is ref
 tokenized rather than killed part-way through. [faq.md](faq.md#how-large-a-corpus-can-i-train-on)
 has the measurements and the override.
 
+### A Project Gutenberg book
+
+A Gutenberg plain-text book carries more than its licence, and cleaning keeps all of it. What to
+look for, with what each step did to *A Short History of Astronomy* (Arthur Berry, 1898; eBook
+#59212, `pg59212.txt`, 18,695 lines):
+
+* **The START and END markers, and the licence around them.** Everything up to the line
+  `*** START OF THE PROJECT GUTENBERG EBOOK … ***` and everything from `*** END OF THE PROJECT
+  GUTENBERG EBOOK … ***` on is Gutenberg's, not the book's. One line cuts both, the marker lines
+  included:
+
+  ```bash
+  sed '1,/\*\*\* START OF/d; /\*\*\* END OF/,$d' pg59212.txt > book.txt
+  ```
+
+  On that book it kept 18,315 lines. The walkthrough's `strip_gutenberg()` is the same cut in
+  Python ([`examples/two_domain_walkthrough.ipynb`](../examples/two_domain_walkthrough.ipynb),
+  section 2, the cell that downloads the two books). Two lines of Gutenberg's survive it there: a
+  producer's credit ("Produced by … Distributed Proofreading Team …") just after the START marker
+  and an "End of Project Gutenberg's …" line just before the END one; `grep -n -i gutenberg
+  book.txt` finds the second.
+* **Front matter.** A transcriber's note, a frontispiece caption, the title page, the table of
+  contents and a LIST OF ILLUSTRATIONS: notes and lists, not the book's prose. Cut them by hand.
+* **Illustration captions in the text**, such as `[Illustration: FIG. 1.—The celestial sphere.]`.
+  They are short descriptions of figures the text cannot show. To drop them, cut from a line that
+  starts `[Illustration` through the first line holding a `]`, which covers a caption wrapped over
+  several lines:
+
+  ```bash
+  awk '/^\[Illustration/ {skip = 1} skip {if (/\]/) skip = 0; next} {print}' book.txt > book_cut.txt
+  ```
+
+  On that book it removed all 114 captions, 37 of them wrapped over two to five lines (159 lines
+  in all), and nothing else. `sed '/^\[Illustration/,/\]/d'` is not the same: sed looks for the
+  closing `]` only from the line after the first, so it runs a one-line caption on into the text
+  below. A caption holding a `]` of its own before its end stops the cut early, so check that
+  `grep -c Illustration book_cut.txt` prints 0.
+* **Footnotes collected at the end** (a FOOTNOTES section, with markers `[1]`, `[2]`, … in the
+  text): your call. Kept, they are trained on as text of their own, away from the passage each one
+  annotates; after `--split-chars` they make documents of their own, and the held-out split may
+  take some. Cut, the book loses what they say and the markers stay in the prose, where
+  `sed 's/\[[0-9]\+\]//g'` removes them.
+* **Indexes** (that book has an INDEX OF NAMES and a GENERAL INDEX): names and page numbers. Cut
+  them.
+
+To cut a section by hand, find where it starts with `grep -n` — `grep -n -E
+'^(CONTENTS|LIST OF ILLUSTRATIONS|CHAPTER I\.|INDEX|GENERAL INDEX|FOOTNOTES)' book.txt` on that
+book printed lines 196, 1127, 1361, 14970, 15809 and 17454 — and delete the range with `sed -i
+'14970,17453d' book.txt`, working from the end of the file up so the earlier numbers stay right.
+Gutenberg's CRLF line ends make no difference to these commands, and cleaning turns them into
+newlines.
+
 ## Three shapes that train badly
 
 Three shapes train badly without failing — the losses fall, the counts look ordinary, and the
@@ -128,15 +187,16 @@ refusal.
   documents and the supplement pairs separately. Split it at its own section boundaries, or with
   `prepare-domain --split-chars 3500` into a fresh directory.
 * **More epochs than the text can carry.** Under 500,000 training tokens (~2 MB of English) at more
-  than five epochs. At the bundled recipes' λ (1,000,000, both models) the two-domain walkthrough's
-  Darwin text (~189 k training tokens an epoch) turned late and shallowly over 15 epochs — its
-  held-out perplexity lowest at epoch 10 and ending 2.6 % above it (Qwen3-0.6B), lowest at epoch
-  11 and ending 0.2 % above it (Qwen3-1.7B); no run at 10 or 11 epochs was measured — while at
-  λ = 100,000 the same text turned by epoch 4–5. If λ is lowered or the corpus is smaller still,
-  keep `val_fraction` above 0 and let the held-out curve pick the dose — at the end of every run
-  the trainer reports the epoch it bottomed at, the final value and the gap between them, and,
-  when the run did not end at its best, advises a re-run at that epoch (1 % or more above the
-  lowest) or calls one optional (under 1 %)
+  than five epochs. The warning opens with your run's own numbers — its epochs and its training
+  tokens an epoch — and says to read the held-out line at the end of the run. At the bundled
+  recipes' λ (1,000,000, both models) the two-domain walkthrough's Darwin text (~189 k training
+  tokens an epoch) turned late and shallowly over 15 epochs — its held-out perplexity lowest at
+  epoch 10 and ending 2.6 % above it (Qwen3-0.6B), lowest at epoch 11 and ending 0.2 % above it
+  (Qwen3-1.7B); no run at 10 or 11 epochs was measured — while at λ = 100,000 the same text turned
+  by epoch 4–5. If λ is lowered or the corpus is smaller still, keep `val_fraction` above 0 and let
+  the held-out curve pick the dose — at the end of every run the trainer reports the epoch it
+  bottomed at, the final value and the gap between them, and, when the run did not end at its best,
+  advises a re-run at that epoch (1 % or more above the lowest) or calls one optional (under 1 %)
   ([recipes.md](recipes.md#run-length-and-checkpointing) has the rule).
 
 A sound corpus produces none of them. To read them without starting a run,
@@ -152,6 +212,14 @@ the model. The writer is the model the stage starts from — the one you will tr
 **What it is for.** Reaching the domain's knowledge when the model is asked about it: the pairs
 make what the corpus says answerable in question-and-answer form. The recipe mixes them in at its
 `supplement_fraction`, 0.13 of training tokens, which is the frame the recipe's λ was tuned at.
+
+**How many pairs a run uses.** The writer writes every pair it can, and `train` mixes in only as
+many as the fraction asks for: pairs from the start of the file until they are 0.13 of the
+training tokens. The rest are not used by that run. On *A Short History of Astronomy* the
+supplement held 1,355 pairs and each run mixed in 389 of them; the stage's `history.json` entry
+records both (`n_pairs_available`, `n_pairs_used`), and a corpus-shape warning
+([above](#three-shapes-that-train-badly)), when one fires, counts the pairs mixed in
+(`189 document(s) + 389 supplement pair(s)`).
 
 **What it is not for.** It does not protect skills. A supplement written in a skill's mode left
 that skill no better, measured on instruction following and reasoning — one model (Qwen3-0.6B),
@@ -194,7 +262,10 @@ a pair whose question or answer carries the writer's own JSON field syntax — `
 `{"question"` inside the text, where the writer botched an object's quoting and the next field ran
 into this one (`leaked_json`; braces and quotes alone are kept) — an answer too short or too long
 (`short_answer`, `long_answer`), and a question already written (`duplicate`). The same counts end
-the log of a write; no pair is printed.
+the log of a write; no pair is printed. `short_answer` is an answer under 40 characters, a bare
+name or date, say. How many are dropped depends on the text: 3 on the walkthrough's Darwin text
+(1,537 pairs kept), 24 on its cookery book (610 kept), 211 on *A Short History of Astronomy* (1,355
+kept).
 
 **When `train` reuses it.** `train` looks for a supplement first in the workspace's
 `supplements/`, then beside the corpus, and reuses one only when five things match: the training

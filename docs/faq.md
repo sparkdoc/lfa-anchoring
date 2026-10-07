@@ -139,18 +139,20 @@ quiet five is not.
 That is the toolchain check. It is a warning, printed once, not a refusal:
 
 ```
-This machine cannot compile for the GPU: the Python development headers (…/Python.h does not
-exist) is missing for …/python3. This package's own training and generation paths ran without
-it, but a torch path that JIT-compiles (torch.compile, custom triton kernels) would fail in gcc
-mid-run. …
+This machine cannot compile for the GPU: it has no Python development headers for …/python3.12
+(…/Python.h does not exist). This package's own training and generation paths ran without them,
+but a torch path that JIT-compiles (torch.compile, custom triton kernels) would fail in gcc
+mid-run. If that happens, install the development package for this Python (`python3.12-dev` on
+Debian and Ubuntu, plus `build-essential`). …
 ```
 
 Some torch paths compile a small CUDA shim on the first kernel launch and need `Python.h` and a C
 compiler. This package's own paths do not: a Qwen3-0.6B LoRA stage and an unconditional generation
 ran on an RTX 2070 under a Python with no development headers (2026-09-26). So the run proceeds.
 If a torch path of your own does compile and fails in gcc, install your distribution's development
-package for the interpreter (`python3-dev` / `python3.13-dev`, plus `build-essential`); a uv- or
-conda-managed interpreter ships its own headers. `LFA_SKIP_TOOLCHAIN_CHECK=1` silences the warning.
+package for the interpreter the warning names (`python3.X-dev` for Python 3.X on Debian and
+Ubuntu, plus `build-essential`); a uv- or conda-managed interpreter ships its own headers.
+`LFA_SKIP_TOOLCHAIN_CHECK=1` silences the warning.
 
 ## How long does self-generation take?
 

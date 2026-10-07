@@ -70,6 +70,7 @@ __all__ = [
     "validation_loss",
     "OVERTRAINING_RATIO",
     "HeldOutSummary",
+    "EarlierTurn",
     "held_out_summary",
     "held_out_messages",
     "train",
@@ -517,6 +518,11 @@ OVERTRAINING_RATIO = 1.10
 #: docs/recipes.md) is about 0.15 % on held-out domain perplexity and about 0.5 % on WikiText-2.
 OPTIONAL_RERUN_GAP = 0.01
 
+#: The run-to-run spread of held-out domain perplexity at a fixed recipe and seed: about 0.15 %
+#: (Qwen3-1.7B, lambda 1,000,000, three runs; docs/recipes.md, docs/tuning.md 'When to stop').
+#: Two finals closer than this are called the same on that axis.
+HELD_OUT_SPREAD = 0.0015
+
 #: The four answers :func:`held_out_summary` gives.
 HELD_OUT_VERDICTS = ("no_curve", "still_falling", "turned", "diverged")
 
@@ -547,6 +553,27 @@ class HeldOutSummary:
     final_epoch: int | None = None
     final: float | None = None
     gap: float | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class EarlierTurn:
+    """An earlier run of the same stage whose held-out curve turned at the epoch count this run
+    was trained with -- what makes this run the re-run its end-of-run line advised.
+
+    Only a workspace can say so: it holds the stage's history, and :meth:`lfa.Workspace.train`
+    finds the run (:func:`held_out_messages` then words the verdict for it). :func:`train` called
+    directly has no history and is handed none.
+
+    ``run`` is the earlier run's directory name (``stage1``), ``epoch`` its lowest epoch, which is
+    this run's ``--epochs``, and ``final`` its final held-out perplexity.
+    """
+
+    run: str
+    epoch: int
+    final: float
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -593,7 +620,8 @@ _LAST_EPOCH_BY_DESIGN = (
 )
 
 
-def held_out_messages(summary: HeldOutSummary) -> list[tuple[int, str]]:
+def held_out_messages(summary: HeldOutSummary,
+                      rerun_of: EarlierTurn | None = None) -> list[tuple[int, str]]:
     """What a run's held-out curve says about its dose, as ``[(logging level, sentence), ...]``.
 
     The first message is the curve itself, worded to follow a label (the trainer logs it after
@@ -603,6 +631,12 @@ def held_out_messages(summary: HeldOutSummary) -> list[tuple[int, str]]:
     function builds the words so the train log and ``evaluate`` can never say two things about
     the same run. The messages carry no measured evidence -- the docs do (docs/recipes.md, "Run
     length and checkpointing").
+
+    ``rerun_of`` names the earlier run of the stage whose turn this run's ``--epochs`` re-ran at
+    (:class:`EarlierTurn`; found by :meth:`lfa.Workspace.train`). It changes one verdict: a
+    re-run at a turn that did not turn itself is told to stop and compare the two finals
+    (:func:`_rerun_at_turn`), not to raise ``--epochs`` -- which would advise the epoch count it
+    was re-run to leave. Every other verdict ignores it.
     """
     if summary.verdict == "no_curve":
         return [(logging.INFO,
@@ -628,6 +662,9 @@ def held_out_messages(summary: HeldOutSummary) -> list[tuple[int, str]]:
 
     curve = (f"lowest {summary.best:.3f} at epoch {summary.best_epoch} of {summary.final_epoch}; "
              f"final {summary.final:.3f} ({_format_gap(summary.gap)} over the lowest).")
+
+    if summary.verdict == "still_falling" and rerun_of is not None:
+        return [(logging.INFO, curve), (logging.INFO, _rerun_at_turn(summary, rerun_of))]
 
     if summary.verdict == "still_falling":
         return [(logging.INFO, curve),
@@ -662,10 +699,37 @@ def held_out_messages(summary: HeldOutSummary) -> list[tuple[int, str]]:
              f"one. {advice}")]
 
 
-def _log_held_out_summary(summary: HeldOutSummary, run_logger: logging.Logger) -> None:
+def _rerun_at_turn(summary: HeldOutSummary, rerun_of: EarlierTurn) -> str:
+    """The verdict on a re-run at an earlier run's turn that ended at its own lowest.
+
+    Such a re-run is expected not to turn -- a curve that was lowest at epoch k, re-run with its
+    schedule laid over k epochs, usually is lowest at its own last epoch -- and the generic
+    advice ("raise --epochs") would send the user back toward the run they just left. So: stop,
+    compare the two finals, keep the lower. The comparison is made on the printed (three-decimal)
+    figures, and two finals within :data:`HELD_OUT_SPREAD` of each other are called the same.
+    """
+    this, earlier = round(summary.final, 3), round(rerun_of.final, 3)
+    apart = abs(this / earlier - 1.0)
+    said = (f"This run is the re-run at {rerun_of.run}'s turn (epoch {rerun_of.epoch}), and not "
+            f"turning is what such a re-run shows, not a sign that more epochs would help: stop "
+            f"here. Compare the two finals and keep the lower: this run's {summary.final:.3f} "
+            f"against {rerun_of.run}'s {rerun_of.final:.3f}")
+    if apart < HELD_OUT_SPREAD:
+        return (f"{said}, {apart * 100:.2f} % apart -- within the run-to-run spread of about "
+                f"{HELD_OUT_SPREAD * 100:.2f} % (docs/tuning.md, 'When to stop'), so on this axis "
+                f"they are the same, and either can be kept.")
+    if this < earlier:
+        return f"{said}: this run is {apart * 100:.1f} % lower; keep it."
+    return (f"{said}: {rerun_of.run} is {apart * 100:.1f} % lower. `lfa fuse` reads this run, "
+            f"the stage's latest; docs/tuning.md (step 2) says how to ship {rerun_of.run} "
+            f"instead.")
+
+
+def _log_held_out_summary(summary: HeldOutSummary, run_logger: logging.Logger,
+                          rerun_of: EarlierTurn | None = None) -> None:
     """Say, at the end of every run, what its held-out curve says about its dose
     (:func:`held_out_messages`, the curve labelled ``"Held-out perplexity: "``)."""
-    (level, curve), *advice = held_out_messages(summary)
+    (level, curve), *advice = held_out_messages(summary, rerun_of)
     run_logger.log(level, "Held-out perplexity: %s", curve)
     for level, message in advice:
         run_logger.log(level, "%s", message)
@@ -925,6 +989,7 @@ def train(
     resume: bool = False,
     tokenizer=None,
     val_dataset: ChunkedCorpus | None = None,
+    rerun_of: EarlierTurn | None = None,
 ) -> TrainingState:
     """Train ``student`` against the frozen ``teacher`` and write the run to ``output_dir``.
 
@@ -959,6 +1024,10 @@ def train(
             model object, so a resumed run's trained model is the one in
             :attr:`TrainingState.model` (and on disk under ``final_model/``), not the ``student``
             the caller passed in.
+        rerun_of: the earlier run of the same stage that this one re-runs at its turn
+            (:class:`EarlierTurn`), which words the end-of-run verdict for a re-run
+            (:func:`held_out_messages`). :meth:`lfa.Workspace.train` finds it in the stage's
+            history; a direct caller has none, and the default ``None`` gives the generic text.
 
     Returns:
         The final :class:`TrainingState`, with ``history``, ``baseline`` and the trained ``model``.
@@ -1198,6 +1267,6 @@ def train(
     history_path.write_text(json.dumps(state.history, indent=2))
     run_logger.info("Training history saved to %s", history_path)
 
-    _log_held_out_summary(held_out_summary(state.history), run_logger)
+    _log_held_out_summary(held_out_summary(state.history), run_logger, rerun_of)
 
     return state

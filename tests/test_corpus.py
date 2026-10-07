@@ -490,11 +490,15 @@ def test_too_many_epochs_for_the_amount_of_text_is_warned_before_the_run():
     ds = ChunkedCorpus(["20000"] * 10, ExactTokens(), max_length=512)
     note = one(ds.shape_warnings(batch_size=6, epochs=15), "epochs over")
 
-    assert "15 epochs over 200,000 training token(s)" in note
-    assert "400 chunk(s), 10 document(s)" in note
-    assert "held-out minimum at epoch 10-11" in note        # the measurements it rests on
+    # The trial's user read the note as boilerplate about Darwin: it leads with THIS corpus,
+    # the range it falls in, and what to read -- the walkthrough's measurements come after.
+    assert note.startswith("Corpus shape: this run is 15 epochs over 200,000 training token(s) "
+                           "an epoch (400 chunk(s), 10 document(s))")
+    assert "under 500,000 tokens at more than 5 epochs" in note      # the range it is in
+    assert "Read the held-out line" in note and "val_fraction" in note
+    assert note.index("Read the held-out line") < note.index("Darwin")
+    assert "bottomed at epoch 10-11 of 15" in note          # the measurements it rests on
     assert "turned by epoch 4-5" in note
-    assert "val_fraction" in note                           # and how to choose the dose
 
     assert ds.shape_warnings(batch_size=6, epochs=4) == []  # the same corpus at a sane dose
     assert ds.shape_warnings(batch_size=6) == []            # and no epochs, no epoch claim

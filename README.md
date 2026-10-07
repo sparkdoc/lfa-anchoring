@@ -30,10 +30,10 @@ Needs Python ≥ 3.11 and a CUDA card; the install takes a few minutes and a few
 file holds the tested stack (torch 2.10.0+cu128, transformers 4.57.6, accelerate 1.14.0, peft
 0.18.1). The package is not on PyPI yet; publication is pending.
 
-> Some torch paths compile a small CUDA shim on the first kernel launch and need your `python3`'s
-> development headers (`python3-dev` + `build-essential` on Debian; uv- and conda-managed
-> interpreters ship them). The package's own paths do not, so `lfa` warns once if the headers are
-> missing and proceeds.
+> Some torch paths compile a small CUDA shim on the first kernel launch and need your Python's
+> development headers (`python3.X-dev` for Python 3.X, plus `build-essential`, on Debian and
+> Ubuntu; uv- and conda-managed interpreters ship them). The package's own paths do not, so `lfa`
+> warns once if the headers are missing and proceeds.
 
 ## The pipeline
 
@@ -95,7 +95,9 @@ its gap is dose, and `evaluate` prints the commands that train it at its own bes
 `--n-windows none` skips the general axis offline (it reads WikiText-2 from the Hub).
 
 **`fuse`** writes a plain checkpoint with the adapter merged in; it loads with
-`AutoModelForCausalLM.from_pretrained` like any other model.
+`AutoModelForCausalLM.from_pretrained` like any other model, and
+[quickstart.md §6](https://github.com/sparkdoc/lfa-anchoring/blob/main/docs/quickstart.md#6-fuse)
+asks it a question (the chat template, Qwen3's thinking switched off, greedy decoding).
 
 The same thing from Python, which the CLI calls into and decides nothing differently from:
 
