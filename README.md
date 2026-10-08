@@ -61,8 +61,9 @@ document; an input file that cleans to under 1,000 characters is dropped (`--min
 holds out whole documents, so **one long file — a book, a report — needs `--split-chars 3500`**,
 which cuts it into documents at paragraph boundaries. Cut boilerplate such as a Project Gutenberg
 licence, a table of contents or an index out of the file first. With `--supplement`, the model then
-writes question-and-answer pairs over the corpus, which make the domain's knowledge answerable when
-the model is asked about it; they do not protect skills, which is the anchor's job. Without
+writes questions about the corpus and answers them in its own chat format, and those pairs make the
+domain's knowledge answerable when the model is asked about it; they do not protect skills, which
+is the anchor's job. Without
 `--supplement`, `train` writes the same pairs itself before the first epoch. A corpus with nothing
 to hold out is refused before any pairs are written, by either command, with the fix in the
 message (`train --no-supplement` trains it as it is, with no held-out curve).

@@ -232,6 +232,24 @@ def _stage_val_fraction(entry: dict) -> float:
     return float(entry["val_fraction"])
 
 
+def _scored_as(corpus_path: Path, entry: dict, *, named: bool, held_out_used: bool) -> str:
+    """What the domain number of ``evaluate`` measures, for its log line.
+
+    A corpus named to ``evaluate`` is scored whole, and the package cannot know what the user
+    kept out of training: the number is held out only if this text was. Naming the stage's own
+    training corpus is the one case it can tell, and that is a fit. Without a named corpus the
+    stage's held-out split is scored, or, when it has none, the training side -- a fit.
+    """
+    if named:
+        if corpus_path.resolve() == Path(entry["corpus"]).resolve():
+            return ("the corpus this stage trained on, scored whole -- its training documents "
+                    "included, so a fit, not a held-out measurement")
+        return "scored whole as named -- held out only if this text was kept out of training"
+    if held_out_used:
+        return "held out from training"
+    return "trained on -- a fit, not a held-out measurement"
+
+
 def _delta(before: float, after: float) -> str:
     return "n/a" if before == 0 else f"{(after - before) / before * 100:+.1f}%"
 
@@ -706,9 +724,9 @@ class Workspace:
             supplement: the question-and-answer pairs mixed into the training side at the
                 recipe's ``supplement_fraction``. ``True`` (the default) reuses the supplement
                 under ``supplements/``, or one prepared beside the corpus, when its manifest
-                matches this corpus's training side, the current model and the template, and
-                has the current model -- the stage's entry model -- write it into
-                ``supplements/`` otherwise (see :meth:`prepare_supplement`). A path is
+                matches this corpus's training side, the current model, the two templates and
+                the filters, and has the current model -- the stage's entry model -- write it
+                into ``supplements/`` otherwise (see :meth:`prepare_supplement`). A path is
                 mixed in as given. ``False`` trains on the raw corpus alone, off the frame the
                 recipe's lambda was calibrated at, and warns. Ignored when the recipe's
                 fraction is 0.
@@ -906,6 +924,8 @@ class Workspace:
                 "target_fraction": report["target_fraction"],
                 "achieved_fraction": report["achieved_fraction"],
                 "under_target": report["under_target"],
+                # The pairs used are a prefix of the file shuffled under this seed.
+                "shuffle_seed": report["shuffle_seed"],
                 "writer_sha256": (supplement_manifest or {}).get("writer_sha256"),
             },
             "final_loss": training.history[-1]["loss_total"] if training.history else None,
@@ -1283,9 +1303,10 @@ class Workspace:
         Looked for in the workspace's ``supplements/`` first, then beside the corpus (where
         ``lfa prepare-domain --supplement`` and ``lfa prepare-supplement --model`` put one), and
         written into the workspace when neither matches. A match is the training side's corpus
-        hash, the writer checkpoint's hash, the template's hash, the pair filters' hash and the
-        domain description (explicit, or derived from the corpus path), so a different ``domain_description``
-        rewrites rather than being silently ignored (:func:`lfa.supplements.supplement_for`).
+        hash, the writer checkpoint's hash, the question and answer templates' hashes, the
+        filters' hash and the domain description (explicit, or derived from the corpus path), so
+        a different ``domain_description`` rewrites rather than being silently ignored
+        (:func:`lfa.supplements.supplement_for`).
         The writer is the workspace's CURRENT model -- the stage's entry model -- so in a chain
         the fused model writes the next domain's pairs (each stage's pairs come from the model
         that stage starts from), and a later stage never reuses a supplement the base model
@@ -1509,12 +1530,14 @@ class Workspace:
         pair isolates the stage rather than the chain.
 
         Args:
-            corpus: text to measure domain perplexity on, scored whole. The default is the
-                stage's own held-out split -- the documents its ``val_fraction`` kept out of
-                training, rebuilt from the recorded corpus, seed and fraction -- so the domain
-                number is a held-out measurement. A stage trained with ``val_fraction=0.0`` has
-                no such split and is scored on what it trained on, which is a *fit*; the log line
-                says which of the two happened.
+            corpus: text to measure domain perplexity on, scored whole -- a held-out
+                measurement only if that text was kept out of training, which the log line says
+                in those words (and calls a fit when it is the stage's own training corpus). The
+                default is the stage's own held-out split -- the documents its ``val_fraction``
+                kept out of training, rebuilt from the recorded corpus, seed and fraction -- so
+                the domain number is a held-out measurement. A stage trained with
+                ``val_fraction=0.0`` has no such split and is scored on what it trained on, which
+                is a *fit*; the log line says which of the two happened.
             compare_unanchored: re-run the stage with lambda = mu = 0 into
                 ``runs/{run}_unanchored`` (named after the run it controls) and report it as a
                 third column. It is the control
@@ -1570,9 +1593,8 @@ class Workspace:
         held_out_used = held_out is not None and len(held_out) > 0
         heldout = held_out if held_out_used else trained_on
         logger.info("Evaluating stage %d on %s (%d chunks, %s)", entry["stage"], corpus_path,
-                    len(heldout),
-                    "held out from training" if held_out_used
-                    else "trained on -- a fit, not a held-out measurement")
+                    len(heldout), _scored_as(corpus_path, entry, named=bool(corpus),
+                                             held_out_used=held_out_used))
         logger.info("The run read: %s (%s)", entry["output_dir"], _anchor_in_words(entry))
 
         before = self._score(entry["base_model"], None, tokenizer, heldout, n_windows, placement,

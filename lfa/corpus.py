@@ -306,14 +306,43 @@ class ChunkedCorpus(Dataset):
                    for start in range(offset, n_tokens, self.stride)]
         return bounds
 
+    def _kept_bounds(self, n_tokens: int, offset: int) -> list[tuple[int, int]]:
+        """The spans of :meth:`_chunk_bounds` that become chunks: at least
+        :data:`MIN_CHUNK_TOKENS` long once cut at the document's end."""
+        return [(start, end) for start, end in self._chunk_bounds(n_tokens, offset)
+                if min(end, n_tokens) - start >= MIN_CHUNK_TOKENS]
+
+    def _document_offset(self, n_tokens: int, offset: int) -> int:
+        """The offset one document is cut at: a document that fits in one chunk gains nothing from
+        a positional offset, and would only be split into a fragment by one, so with
+        ``keep_short_whole`` it ignores the offset."""
+        return 0 if (n_tokens <= self.max_length and self.keep_short_whole) else offset
+
+    def _epoch_offset(self, epoch: int, seed: int) -> int:
+        """The offset :meth:`rechunk` cuts epoch ``epoch`` at: deterministic in ``(seed, epoch)``,
+        0 for epoch 0."""
+        rng = random.Random(seed + epoch)
+        return rng.randint(0, self.stride - 1) if epoch > 0 else 0
+
+    def chunk_count(self, epoch: int, seed: int = 42) -> int:
+        """How many chunks :meth:`rechunk` ``(epoch, seed)`` would give, without cutting them.
+
+        The same spans, counted rather than sliced: arithmetic over the token count of each
+        document, already tokenized, so it costs nothing next to an epoch. The current chunking is
+        left as it is. The trainer sizes its learning-rate schedule from this, epoch by epoch,
+        because a later epoch's offset can give more chunks than epoch 0 (a leading segment of
+        its own per long document).
+        """
+        offset = self._epoch_offset(epoch, seed)
+        return sum(len(self._kept_bounds(len(ids), self._document_offset(len(ids), offset)))
+                   for ids, _ in self._docs)
+
     def _chunk_document(self, input_ids: torch.Tensor, attention_mask: torch.Tensor,
                         offset: int) -> int:
         """Append this document's chunks to ``self.examples``; return how many were appended."""
         n_appended = 0
-        for start, end in self._chunk_bounds(len(input_ids), offset):
+        for start, end in self._kept_bounds(len(input_ids), offset):
             chunk_ids = input_ids[start:end]
-            if len(chunk_ids) < MIN_CHUNK_TOKENS:
-                continue
             self.examples.append({
                 "input_ids": chunk_ids,
                 "attention_mask": attention_mask[start:end],
@@ -332,10 +361,8 @@ class ChunkedCorpus(Dataset):
         for input_ids, attention_mask in self._docs:
             is_short = len(input_ids) <= self.max_length
             n_short += is_short
-            # A document that fits in one chunk gains nothing from a positional offset, and would
-            # only be split into a fragment by one, so with keep_short_whole it ignores the offset.
-            doc_offset = 0 if (is_short and self.keep_short_whole) else offset
-            n_chunks = self._chunk_document(input_ids, attention_mask, doc_offset)
+            n_chunks = self._chunk_document(input_ids, attention_mask,
+                                            self._document_offset(len(input_ids), offset))
             self._doc_chunks.append(n_chunks)
             if n_chunks == 0 and is_short:
                 n_dropped += 1
@@ -364,9 +391,7 @@ class ChunkedCorpus(Dataset):
         the chunking a freshly constructed corpus starts with. It moves where the cuts fall, and
         nothing is left out of an epoch by moving them.
         """
-        rng = random.Random(seed + epoch)
-        offset = rng.randint(0, self.stride - 1) if epoch > 0 else 0
-        self._chunk_all(offset=offset, epoch=epoch)
+        self._chunk_all(offset=self._epoch_offset(epoch, seed), epoch=epoch)
 
     # -- Dataset interface -------------------------------------------------------------
 
@@ -576,7 +601,9 @@ def select_supplement_prefix(raw_tokens: list[int], pair_tokens: list[int],
 
     Ported verbatim from the research mixer (``prepare_domain_qa.select_qa_for_fraction``):
     pairs are added in order, the largest count under the need is compared with the first count
-    over it, and the closer one wins.
+    over it, and the closer one wins. The research mixer hands it a pool it has already shuffled
+    under its seed, and so does :func:`load_corpus`: a prefix of the pool as written would take
+    every pair from the first passages of the file.
 
     ``under_target`` is True only when the pool was exhausted and still fell short of ``target``.
     This deliberately departs from the research *expression* (``achieved < target``), which also
@@ -740,11 +767,13 @@ def load_corpus(
     mixing a written supplement in.
 
     The held-out split is taken from the RAW documents first (:func:`split_documents`), so the
-    held-out perplexity stays a raw-text number comparable across runs; then a prefix of the
-    supplement is chosen for ``supplement_fraction`` of training tokens
-    (:func:`select_supplement_prefix`) and shuffled into the training side under ``seed``. The
-    training corpus's ``supplement_report`` says what was used (``None`` when nothing was
-    mixed); a pool short of the target is logged at WARNING and used whole, never refused.
+    held-out perplexity stays a raw-text number comparable across runs; then the supplement's
+    pairs are shuffled under ``seed``, a prefix of that order is chosen for
+    ``supplement_fraction`` of training tokens (:func:`select_supplement_prefix`), and it is
+    shuffled into the training side under ``seed + 1``. The training corpus's
+    ``supplement_report`` says what was used, with the seed the pairs were shuffled under
+    (``None`` when nothing was mixed); a pool short of the target is logged at WARNING and used
+    whole, never refused.
 
     Returns ``(train, val)``; ``val`` is ``None`` when nothing is held out -- ``val_fraction <= 0``,
     or a one-document corpus, which cannot be split -- and never an empty corpus, which a trainer
@@ -759,13 +788,19 @@ def load_corpus(
     report, train_flags = None, None
     if supplement is not None and supplement_fraction > 0.0:
         pairs = load_supplement(supplement, tokenizer)
+        # Shuffled before the prefix is taken, as the research mixer does
+        # (prepare_domain_qa.py: `random.Random(args.seed).shuffle(qa)`, then the prefix), so the
+        # pairs used are drawn from passages across the whole file. The file is written passage
+        # by passage, so its own prefix would be the corpus's first few passages. The seed is the
+        # run's, as the research builder's was its own `--seed`.
+        random.Random(seed).shuffle(pairs)
         raw_tokens = [len(tokenizer(t, add_special_tokens=True)["input_ids"]) for t in train_texts]
         pair_tokens = [len(tokenizer(t, add_special_tokens=True)["input_ids"]) for t in pairs]
         chosen = select_supplement_prefix(raw_tokens, pair_tokens, supplement_fraction)
         report = {"n_available": len(pairs), "n_used": chosen.n_used,
                   "target_fraction": supplement_fraction,
                   "achieved_fraction": chosen.achieved_fraction,
-                  "under_target": chosen.under_target}
+                  "under_target": chosen.under_target, "shuffle_seed": seed}
         if chosen.under_target:
             logger.warning("Supplement pool short of the target: %d pairs give a token share of "
                            "%.3f against %.3f asked", chosen.n_used, chosen.achieved_fraction,

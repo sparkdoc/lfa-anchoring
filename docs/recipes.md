@@ -154,7 +154,13 @@ gives the reasons (the schedule, the one axis, the held-out number) and the meas
 | `seed` | 42 — the chunking, the document shuffle and the sampler's private generator |
 
 The schedule is always laid over the epochs *actually* trained, so `--epochs 5` is a different
-curve, not a truncation of this one.
+curve, not a truncation of this one. Its length is the run's real optimizer-step count, summed
+epoch by epoch: each epoch is cut at its own chunk offset, and a later epoch can hold more chunks
+than the first, so the cosine reaches its floor on the run's last step and never rises after it.
+The run's log states that count (`LR schedule: N optimizer steps: warmup(50) → cosine(N − 50)`).
+Earlier versions — and the research code — sized it from the first epoch's count alone: a
+four-epoch Darwin run (Qwen3-0.6B) took 566 steps against 516 planned, and past its end
+PyTorch's cosine climbs back up (a fifteen-epoch run ended at about 5 % of the peak, rising).
 
 ### Data
 
@@ -162,7 +168,7 @@ curve, not a truncation of this one.
 |---|---|---|
 | `keep_short_whole` | `true` | a document that fits in one chunk is trained **whole**, in every epoch, rather than being cut at the epoch's chunk offset into a chunk and a fragment that starts mid-sentence. It changes the training stream, so a run records which setting it used. Prefer `false` only when the documents are themselves arbitrary slices of something longer, so that keeping them whole preserves nothing and the extra positional variety is worth having |
 | `val_fraction` | 0.1 | share of *documents* (shuffled under `seed`) held out of training and scored after every epoch. Set it to `0.0` to train on everything — and then read the domain number as a fit |
-| `supplement_fraction` | 0.13 | share of training *tokens* made up of the question-and-answer pairs the stage's entry model writes from the training-side documents ([quickstart.md](quickstart.md)); `0.0` trains on the raw corpus alone. The shipped λ was tuned with a question-and-answer supplement at 0.13 of training tokens; every companion run before 0.2.0 trained at 0, off that frame. The held-out documents are split off before anything is mixed, so the domain number stays a raw-text measurement comparable across fractions. The pairs are taken as a prefix of the written file, the one whose achieved share is closest to the target; a pool too small to reach it trains at what it has and warns with the achieved share |
+| `supplement_fraction` | 0.13 | share of training *tokens* made up of the question-and-answer pairs the stage's entry model writes from the training-side documents ([quickstart.md](quickstart.md)); `0.0` trains on the raw corpus alone. The shipped λ was tuned with a question-and-answer supplement at 0.13 of training tokens; every companion run before 0.2.0 trained at 0, off that frame. The held-out documents are split off before anything is mixed, so the domain number stays a raw-text measurement comparable across fractions. The pairs are shuffled under the run's seed and taken as a prefix of that order, the one whose achieved share is closest to the target (as the research mixer does; builds before this release took the file's own prefix, its first passages); a pool too small to reach it trains at what it has and warns with the achieved share |
 
 ### Calibration record
 
@@ -191,6 +197,12 @@ Scope: Qwen3-0.6B; its self-generated artifact at the frame above; the Darwin te
 two-domain walkthrough](../examples/two_domain_walkthrough.ipynb) (*On the Origin of Species*)
 with the model's own question-and-answer supplement (1,549 pairs) at 0.13 of training tokens,
 188,840 training tokens an epoch; rank 32; batch 6; one seed; perplexity; RTX 3090; 2026-10-05.
+Three parts of that frame differ from what this release trains with, by amounts not measured:
+the ladder's supplement was the one-pass writer's (short third-person answers), where this
+release writes chat-format answers, longer, so fewer pairs make the same 0.13 of tokens
+([preparing-your-data.md](preparing-your-data.md#the-supplement)); its pairs were the file's own
+prefix, the first passages', where this release shuffles them first; and its schedule was sized
+from the first epoch's chunk count, so its cosine ran out before the run did (above).
 Every rung trained the recipe's 15 epochs and was scored on WikiText-2 over 100 windows (51,200
 tokens) and on held-out Darwin. Base: WikiText-2 17.93, held-out Darwin 30.12. The last column is
 the per-epoch validation perplexity (the training split's own 10 %), its lowest and its last.
@@ -267,7 +279,9 @@ out at the same `lambda_qkv` = `lambda_mlp` = **1,000,000**.
 **How λ was chosen.** Scope: Qwen3-1.7B; its self-generated artifact at the frame above; the
 Darwin text of [the two-domain walkthrough](../examples/two_domain_walkthrough.ipynb) (*On the
 Origin of Species*) prepared with its question-and-answer supplement; rank 32; one seed;
-perplexity; RTX 3090; 2026-10-04/05. Every rung trained the recipe's 15 epochs and was scored by
+perplexity; RTX 3090; 2026-10-04/05. The same three frame differences as the Qwen3-0.6B
+ladder's apply: a one-pass supplement, its pairs taken unshuffled, and a schedule sized from the
+first epoch. Every rung trained the recipe's 15 epochs and was scored by
 `lfa evaluate` at its defaults: WikiText-2 over 100 windows (51,200 tokens) and 27 held-out Darwin
 documents (26,147 tokens). Base: WikiText-2 15.09, held-out Darwin 21.45.
 The selection rule set beforehand assumed that the unanchored control improves the domain; at 15

@@ -31,6 +31,7 @@ from lfa.train import (
     _build_scheduler,
     _log_held_out_summary,
     held_out_summary,
+    run_optimizer_steps,
     train,
     train_epoch,
     train_step,
@@ -1073,6 +1074,63 @@ def test_the_cosine_schedule_matches_the_research_scheduler_step_for_step(
                 theirs_opt.param_groups[0]["lr"], rel=1e-12, abs=1e-15), f"step {step}"
             ours.step()
             theirs.step()
+
+
+def _spy_on_the_schedule(monkeypatch):
+    """The learning rate after every scheduler step of the next run, read off the optimizer."""
+    import lfa.train as train_module
+    seen = []
+    real = train_module._build_scheduler
+
+    def spy(optimizer, config, total_steps, run_logger):
+        scheduler = real(optimizer, config, total_steps, run_logger)
+        step = scheduler.step
+
+        def recorded(*args, **kwargs):
+            step(*args, **kwargs)
+            seen.append(optimizer.param_groups[0]["lr"])
+        scheduler.step = recorded
+        return scheduler
+    monkeypatch.setattr(train_module, "_build_scheduler", spy)
+    return seen
+
+
+def test_the_run_counts_its_optimizer_steps_epoch_by_epoch(setup):
+    """Each epoch is cut at its own offset, so later epochs can hold more chunks than the first;
+    the count is per epoch, ceil over the batch and then over the accumulation window."""
+    _, _, dataset, _, _ = setup
+    config = make_config(batch_size=3, gradient_accumulation_steps=2, num_epochs=6)
+    chunks = [dataset.chunk_count(epoch, config.seed) for epoch in range(6)]
+    assert max(chunks) > chunks[0], "this test needs a later epoch with more chunks"
+    assert run_optimizer_steps(dataset, config) == [
+        math.ceil(math.ceil(n / 3) / 2) for n in chunks]
+
+
+def test_the_cosine_ends_at_its_floor_on_the_runs_last_step(setup, tmp_path, monkeypatch,
+                                                           caplog):
+    """The schedule spans the steps the run takes. Sized from epoch 0's chunk count it ran out
+    before the run did, and CosineAnnealingLR past its T_max climbs back up (a four-epoch
+    Qwen3-0.6B run took 566 steps against 516 planned, 2026-10-07)."""
+    teacher, fresh_student, dataset, sampler, adapter = setup
+    config = make_config(num_epochs=4, warmup_steps=3, lr_floor=0.05)
+    dataset.rechunk(0, config.seed)
+    epoch_zero_estimate = math.ceil(len(dataset) / config.batch_size) * config.num_epochs
+    seen = _spy_on_the_schedule(monkeypatch)
+    student = apply_lora(fresh_student(), adapter, rank=config.lora_rank, alpha=config.lora_alpha)
+
+    with caplog.at_level("INFO"):
+        state = train(teacher, student, dataset, sampler, adapter, config, tmp_path)
+
+    total = sum(run_optimizer_steps(dataset, config))
+    assert total > epoch_zero_estimate                  # this corpus grows after epoch 0
+    assert state.global_step == len(seen) == total
+    floor = config.lr_floor * config.learning_rate
+    assert seen[-1] == pytest.approx(floor, rel=1e-9)
+    assert state.history[-1]["learning_rate"] == pytest.approx(floor, rel=1e-9)
+    after_warmup = seen[config.warmup_steps - 1:]
+    assert all(b <= a * (1 + 1e-12) for a, b in zip(after_warmup, after_warmup[1:]))
+    assert any(f"LR schedule: {total} optimizer steps: warmup(3) \u2192 cosine({total - 3}, "
+               f"floor=0.05)" == r.getMessage() for r in caplog.records)
 
 
 def test_a_constant_schedule_holds_the_peak_after_the_warmup():

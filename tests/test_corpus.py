@@ -21,6 +21,9 @@ The tokenizer is lossy on decode, so nothing here asserts on decoded text.
 
 import json
 
+import random
+import re
+
 import pytest
 import torch
 
@@ -780,6 +783,69 @@ def test_a_pool_larger_than_the_target_uses_a_prefix_and_reports_the_rest(tmp_pa
     assert abs(report["achieved_fraction"] - 0.1) < 0.05 and report["under_target"] is False
 
 
+def _pairs_mixed(train):
+    """The file indices of the supplement pairs a training corpus holds (prompts ``q<i>?``)."""
+    return sorted(int(re.search(r"q(\d+)\?", excerpt).group(1))
+                  for excerpt, is_pair in zip(train._excerpts, train._is_supplement) if is_pair)
+
+
+def _forty_pairs(tmp_path):
+    docs = tmp_path / "docs"; docs.mkdir()
+    for i in range(4):
+        (docs / f"d{i}.txt").write_text("raw document text " * 20)
+    supp = tmp_path / "supplement.jsonl"
+    supp.write_text("".join('{"prompt": "q%d?", "response": "a%d."}\n' % (i, i) for i in range(40)))
+    return docs, supp
+
+
+def test_the_pairs_mixed_in_are_drawn_across_the_pool_not_its_first_lines(tmp_path, tiny_model):
+    """The file is written passage by passage, so its first lines are its first passages; the
+    pool is shuffled under the run's seed before the prefix is taken, as the research mixer does."""
+    _, tokenizer = tiny_model
+    docs, supp = _forty_pairs(tmp_path)
+
+    def mixed(seed):
+        train, _ = load_corpus(docs, tokenizer, max_length=64, val_fraction=0.0, seed=seed,
+                               supplement=supp, supplement_fraction=0.1)
+        return train
+
+    train = mixed(0)
+    used, report = _pairs_mixed(train), train.supplement_report
+    n_used = report["n_used"]
+    assert 2 <= n_used < 40 and len(used) == n_used
+    assert used != list(range(n_used)) and max(used) >= n_used   # not the file's prefix
+    # Exactly the research mixer's permutation: random.Random(seed).shuffle over the pool, then
+    # its prefix (prepare_domain_qa.py), not merely some seed-dependent order.
+    order = list(range(40))
+    random.Random(0).shuffle(order)
+    assert used == sorted(order[:n_used])
+    assert report["shuffle_seed"] == 0
+    assert abs(report["achieved_fraction"] - 0.1) < 0.05 and report["under_target"] is False
+    assert _pairs_mixed(mixed(0)) == used                         # same seed, same pairs
+    assert _pairs_mixed(mixed(1)) != used                         # the seed decides them
+
+
+def test_the_shuffled_selection_still_hits_the_token_target(tmp_path, tiny_model):
+    """Pairs of different lengths: whatever order the shuffle gives, the chosen prefix's token
+    share is the one select_supplement_prefix reports, and it is the closest to the target."""
+    _, tokenizer = tiny_model
+    docs = tmp_path / "docs"; docs.mkdir()
+    for i in range(4):
+        (docs / f"d{i}.txt").write_text("raw document text " * 20)
+    supp = tmp_path / "supplement.jsonl"
+    supp.write_text("".join('{"prompt": "q%d?", "response": "%s"}\n' % (i, "a" * (5 + 7 * (i % 6)))
+                            for i in range(40)))
+    for seed in (0, 1, 2):
+        train, _ = load_corpus(docs, tokenizer, max_length=64, val_fraction=0.0, seed=seed,
+                               supplement=supp, supplement_fraction=0.15)
+        report = train.supplement_report
+        tokens = [(len(ids), flag) for (ids, _), flag in zip(train._docs, train._is_supplement)]
+        raw = sum(n for n, flag in tokens if not flag)
+        pair_tokens = sum(n for n, flag in tokens if flag)
+        assert report["achieved_fraction"] == pytest.approx(pair_tokens / (raw + pair_tokens))
+        assert abs(report["achieved_fraction"] - 0.15) < 0.03
+
+
 def test_the_held_out_split_is_taken_from_raw_documents_before_mixing(tmp_path, tiny_model):
     _, tokenizer = tiny_model
     docs = tmp_path / "docs"; docs.mkdir()
@@ -864,3 +930,21 @@ def test_load_supplement_renders_pairs_in_file_order_and_skips_blank_and_promptl
             raise ValueError("none")
 
     assert load_supplement(supp, NoTemplate()) == ["q1\na1", "q2\na2"]
+
+
+@pytest.mark.parametrize("keep_short_whole", [True, False])
+@pytest.mark.parametrize("stride", [0, 24])
+def test_chunk_count_is_what_rechunk_gives_and_cuts_nothing(tiny_model, tiny_texts,
+                                                            keep_short_whole, stride):
+    """The trainer sizes its schedule from these counts, so they must be exact for every epoch,
+    and asking must leave the current chunking alone."""
+    _, tokenizer = tiny_model
+    ds = ChunkedCorpus(tiny_texts, tokenizer, max_length=48, stride=stride,
+                       keep_short_whole=keep_short_whole)
+    for seed in (1, 42):
+        counts = [ds.chunk_count(epoch, seed) for epoch in range(10)]
+        assert len(ds) == counts[0]                       # still epoch 0's cut
+        for epoch, count in enumerate(counts):
+            ds.rechunk(epoch, seed)
+            assert len(ds) == count == ds.report["n_chunks"]
+        assert len(set(counts)) > 1, "the offsets should move the count on this corpus"

@@ -67,6 +67,7 @@ __all__ = [
     "EMBED_ANCHOR_DISABLED_NOTICE",
     "train_step",
     "train_epoch",
+    "run_optimizer_steps",
     "validation_loss",
     "OVERTRAINING_RATIO",
     "HeldOutSummary",
@@ -124,8 +125,9 @@ class TrainConfig:
     ``learning_rate``), then either cosine decay over every remaining step of ``num_epochs`` to a
     floor of ``lr_floor * learning_rate`` (``lr_schedule="cosine"``, the default) or a flat hold
     at the peak (``lr_schedule="constant"``). The schedule is always laid over the epochs actually
-    trained, so a change of ``num_epochs`` is a change of the whole curve, not only of where it
-    stops.
+    trained, counted epoch by epoch (each epoch is cut at its own offset, and a later one can
+    hold more chunks than the first), so it ends at its floor on the run's last step and a change
+    of ``num_epochs`` is a change of the whole curve, not only of where it stops.
 
     Checkpoint modes: ``"none"`` writes only ``final_model``; ``"rolling"`` overwrites
     ``latest_model`` every ``checkpoint_every`` epochs; ``"all"`` accumulates
@@ -847,14 +849,34 @@ def _load_training_state(output_dir: Path) -> dict:
 # The run
 # ==============================================================================================
 
+def run_optimizer_steps(dataset, config: TrainConfig) -> list[int]:
+    """The optimizer steps each epoch of the run will take, in order.
+
+    Each epoch is re-cut at its own offset (:meth:`lfa.corpus.ChunkedCorpus.rechunk`), and a
+    later epoch can give more chunks than epoch 0 -- a long document gains a leading segment of
+    its own. The counts come from :meth:`~lfa.corpus.ChunkedCorpus.chunk_count`, which is exact
+    and tokenizes nothing. Per epoch: ``ceil(chunks / batch_size)`` micro-batches (the loader
+    keeps a short last batch), then ``ceil(micro-batches / gradient_accumulation_steps)``
+    optimizer steps (a trailing partial window steps too); an epoch that chunks to nothing takes
+    none, as :func:`train_epoch` skips it.
+    """
+    steps = []
+    for epoch in range(config.num_epochs):
+        batches = -(-dataset.chunk_count(epoch, config.seed) // config.batch_size)
+        steps.append(-(-batches // config.gradient_accumulation_steps))
+    return steps
+
+
 def _build_scheduler(
     optimizer: torch.optim.Optimizer, config: TrainConfig, total_steps: int,
     run_logger: logging.Logger,
 ) -> torch.optim.lr_scheduler.LRScheduler:
     """Linear warmup, then cosine decay to the floor (or a flat hold at the peak).
 
-    ``total_steps`` is the whole run: ``steps_per_epoch * num_epochs``. A warmup longer than the
-    run is clamped to it, which is the only case in which ``"cosine"`` has no cosine phase at all.
+    ``total_steps`` is the whole run: every optimizer step it will take, summed epoch by epoch
+    (:func:`run_optimizer_steps`), so the cosine reaches its floor at the run's last step. A
+    warmup longer than the run is clamped to it, which is the only case in which ``"cosine"`` has
+    no cosine phase at all.
     """
     warmup_steps = min(config.warmup_steps, total_steps)
     post_warmup_steps = total_steps - warmup_steps
@@ -865,15 +887,16 @@ def _build_scheduler(
         eta_min = config.lr_floor * config.learning_rate
         floor_str = f", floor={config.lr_floor}" if config.lr_floor > 0 else ""
         decay = CosineAnnealingLR(optimizer, T_max=post_warmup_steps, eta_min=eta_min)
-        run_logger.info("LR schedule: warmup(%d) → cosine(%d%s)",
-                        warmup_steps, post_warmup_steps, floor_str)
+        run_logger.info("LR schedule: %d optimizer steps: warmup(%d) \u2192 cosine(%d%s)",
+                        total_steps, warmup_steps, post_warmup_steps, floor_str)
         return SequentialLR(optimizer, schedulers=[warmup, decay], milestones=[warmup_steps])
 
     constant = ConstantLR(optimizer, factor=1.0, total_iters=post_warmup_steps)
     # "constant(N)" once read as a constant learning rate of N; N is the number of steps the
     # constant phase covers, which is what the cosine line's own number means too.
-    run_logger.info("LR schedule: warmup(%d steps) → constant for %d steps",
-                    warmup_steps, post_warmup_steps)
+    run_logger.info("LR schedule: %d optimizer steps: warmup(%d steps) \u2192 constant for %d "
+                    "steps",
+                    total_steps, warmup_steps, post_warmup_steps)
     return SequentialLR(optimizer, schedulers=[warmup, constant], milestones=[warmup_steps])
 
 
@@ -1169,11 +1192,16 @@ def train(
                       make_dataloader(val_dataset, config.batch_size, False, config.seed,
                                       pad_token_id))
 
-    # Ceiling division: a trailing partial accumulation window takes an optimizer step too.
-    steps_per_epoch = ((len(dataloader) + config.gradient_accumulation_steps - 1)
-                       // config.gradient_accumulation_steps)
-    total_steps = steps_per_epoch * config.num_epochs
+    # The run's real length, epoch by epoch: a later epoch's offset can cut more chunks than
+    # epoch 0's, and a schedule sized from epoch 0 alone ran out before the run did -- past
+    # T_max, CosineAnnealingLR climbs back up.
+    epoch_steps = run_optimizer_steps(dataset, config)
+    total_steps = sum(epoch_steps)
     scheduler = _build_scheduler(optimizer, config, total_steps, run_logger)
+    if epoch_steps:
+        run_logger.info("  %d optimizer step(s) over %d epoch(s), %d to %d an epoch (each epoch "
+                        "is cut at its own offset)", total_steps, len(epoch_steps),
+                        min(epoch_steps), max(epoch_steps))
     if total_steps <= config.warmup_steps:
         # A run shorter than its own warmup never reaches the learning rate it was tuned at, so
         # whatever comes out is not the operating point in the recipe. Said in the recipe's own

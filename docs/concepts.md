@@ -19,7 +19,7 @@ is captured once, in advance, as a distribution — adaptation itself needs none
 | **Artifact** | The `p(h)` statistic for that model: per-site mean, covariance basis and K = 32 mixture, int8. Built from the model's own text, kept in the local store and reused by every workspace over that model ([the-artifact.md](the-artifact.md)). | `lfa.artifact` |
 | **Recipe** | The tuned operating point (rank, λ, μ, epochs, schedule) *and what it was tuned against*, so a run that changes rank or artifact is told λ no longer means what it meant. | `lfa.Recipe` |
 | **Corpus** | A flat directory of `.txt` files. `lfa prepare-domain` makes one from text, Markdown, HTML or PDF ([preparing-your-data.md](preparing-your-data.md)). | `lfa.corpus` |
-| **Supplement** | Question-and-answer pairs the model writes over the corpus's training side, mixed in at the recipe's token fraction. They make the domain's knowledge answerable when the model is asked about it; they do not protect skills ([below](#what-the-supplement-does-and-does-not-do)). | `lfa.supplements`, `lfa.selfgen` |
+| **Supplement** | Question-and-answer pairs the model writes over the corpus's training side — its own questions, answered in its own default chat format — mixed in at the recipe's token fraction. They make the domain's knowledge answerable when the model is asked about it; they do not protect skills ([below](#what-the-supplement-does-and-does-not-do)). | `lfa.supplements`, `lfa.selfgen` |
 | **Workspace** | The state machine that holds the others together across domains: which model the next stage adapts, which artifact version it anchors against, and a history entry per stage. | `lfa.Workspace` |
 | **Train / Evaluate / Fuse / Extend** | The four operations on a workspace: adapt one domain; read the stage on both axes; export a plain checkpoint; fold the stage into the model *and* into `p(h)` for the next domain (or `regenerate-artifact`: fold it into the model and refit `p(h)` on that model's own text). | `lfa.train`, `lfa.evaluate` |
 
@@ -148,14 +148,38 @@ A general perplexity *below* the base model's is not a win — see [faq.md](faq.
 ## What the supplement does, and does not do
 
 `train` mixes a question-and-answer supplement into the domain: the stage's entry model reads each
-training-side passage and writes six question-and-answer pairs about it, and those pairs make up
+training-side passage and writes six questions about it, then answers each one in an ordinary
+chat turn holding the passage and "Using the passage, answer: <question>" — no length or format
+instruction. Pairs drawn across the whole file (shuffled under the run's seed) make up
 `supplement_fraction` (0.13) of the training tokens. The domain content comes from the passage;
-only the question-forming, the answer construction and the assistant's voice come from the model.
+only the question-forming and the answer's construction come from the model.
+
+**Why the answers are in the model's own format.** The pairs are the only chat-formatted text in
+the mix, so their form is a small supervised fine-tune of the assistant turn. Answers written to a
+"2–5 sentences, third person" rule, as earlier versions wrote them, taught the model to answer
+*everything* in short plain prose — general prompts included, and with the anchor on: 0 of 40
+general prompts with any markdown after four epochs, against 39 of 40 for the base model (0 of 20
+Darwin prompts against 19 of 20, 0 of 80 Darwin questions against 78 of 80), and 6 of the 40
+general prompts declined as not in "the text". Trained on this writer's pairs instead, the model
+answered 36 of 40, 15 of 20 and 66 of 80 with markdown and declined none, at held-out Darwin
+perplexity 19.36 against the earlier writer's 19.26 and WikiText-2 perplexity 16.06 against 16.18.
+One model (Qwen3-0.6B), the walkthrough's Darwin data, four epochs, one seed, one greedy decode
+per prompt ([preparing-your-data.md](preparing-your-data.md#the-supplement)). The anchor reduced
+how far the model moved overall, but did not stop that format decision.
 
 **What it does: reachability.** Its measured effect is on whether the domain's knowledge can be
 reached when the model is asked about it: the new knowledge becomes answerable in
-question-and-answer form. The recipe's λ was tuned with a supplement at 0.13 in the mix, which is
-why `train` writes one by default.
+question-and-answer form. That was measured on the research's one-pass supplement (short
+third-person answers). For the chat-format answers this package writes, a judge over 80 Darwin
+questions scored correctness and completeness 1.337 of 4, against 1.575 for the one-pass writer
+(−0.237, paired p = 0.071: not separable at this n; zero-rates 0.350 and 0.338); the base
+model's level was 1.050. A variant
+that gave the passage as a system message and the question alone kept more of the format but
+scored below the one-pass writer on the judged score (correctness and completeness, p = 0.010;
+correctness alone p = 0.007), which is why this turn ships. The
+measured runs mixed each supplement's unshuffled prefix, under the filter of the time. The
+recipe's λ was tuned with a supplement at 0.13 in the mix, which is why `train` writes one by
+default.
 
 **What it does not do: protect skills.** A supplement written in a skill's mode left that skill no
 better, measured on instruction following (IFEval) and reasoning (GSM8K), under any method.

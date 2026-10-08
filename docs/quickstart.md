@@ -185,8 +185,9 @@ lfa prepare-domain ~/history --out data/world_history                 # corpus o
 ```
 
 The first turns text, Markdown, HTML or PDF into a flat directory of `.txt` files, one document
-per input file, and then has the model write the question-and-answer supplement over it, beside the
-corpus in `data/world_history.supplement/`, where `train` finds it. The second writes the corpus
+per input file, and then has the model write the question-and-answer supplement over it — its
+own questions about each passage, answered in its own chat format — beside the corpus in
+`data/world_history.supplement/`, where `train` finds it. The second writes the corpus
 alone, and `train` writes the supplement itself before the first epoch. The `--out` directory's
 name is what the supplement says the text is on (`world history` here), so name it after the
 domain.

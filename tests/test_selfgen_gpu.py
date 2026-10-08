@@ -144,7 +144,9 @@ def test_qwen3_writes_parseable_pairs_from_a_real_passage(small_supplement):
     rows = [json.loads(l) for l in out.read_text().splitlines()]
     assert manifest["n_passages"] >= 2 and manifest["n_pairs"] == len(rows) >= 2
     assert all(len(r["response"]) >= 40 and r["prompt"].strip() for r in rows)
-    assert "about a text on natural history" in manifest["template"]
+    assert all({"source_index", "passage_index"} <= set(r) for r in rows)
+    assert "about a text on natural history" in manifest["question_template"]
+    assert manifest["n_questions"] >= manifest["n_pairs"]
 
 
 def _small_recipe():

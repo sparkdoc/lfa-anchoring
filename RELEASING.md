@@ -126,7 +126,8 @@ trust.
 question-and-answer supplement the stage's entry model writes from the domain, at the recipe's
 `supplement_fraction`; `--no-supplement` trains on the raw corpus alone, as every 0.1.x run did,
 and warns that it is off the frame. The held-out split is taken before anything is mixed, so
-the domain number stays a raw-text measurement.
+the domain number stays a raw-text measurement. The learning-rate schedule now spans the steps a
+run actually takes, so the end of every cosine run moves too (below).
 
 `lfa init --artifact self-generated` builds the artifact from the model's own text, or, when the
 package pins a published one for that exact model, checkpoint and frame, downloads it with its
@@ -141,13 +142,16 @@ Self-generation: `init --artifact self-generated` / `build-artifact --self-gener
 writes the seed corpus p(h) is estimated on; no download), the supplement `train` now writes
 with the entry model and mixes in at the recipe's `supplement_fraction` (0.13, the frame the
 shipped λ was tuned at; every earlier companion run trained at 0), `prepare-supplement`,
-`regenerate-artifact` and the chain's `artifact: regenerate` route. Two recorded deviations
+`regenerate-artifact` and the chain's `artifact: regenerate` route. Four recorded deviations
 from the research frame: the template's wording is domain-neutral (it says "about a text on
 <domain>" where the research one said "a philosophy text", its rule against exam-style
 questions no longer names thought experiments, and it drops the research example "Chalmers
-argues that..." without naming another, since a small writer copies the example's name),
-and the contamination screen against an evaluation set is not ported. The measured
-supplement result was on the research wording. The default domain description skips a generic
+argues that..." without naming another, since a small writer copies the example's name); the
+question template adds a rule against citing the passage, and pairs that cite it anyway are
+dropped; the answers are the model's own chat answers to the passage and the question, written in
+a second pass (the native-format bullet below); and the contamination
+screen against an evaluation set is not ported. The measured
+supplement result was on the research wording and its one-pass template. The default domain description skips a generic
 directory name for the nearest named ancestor (`data/darwin/train` → `darwin`). The toolchain
 check is a warning. Recipe fields `supplement_fraction`, `self_generated_frame`; artifact meta
 fields `provenance`, `corpus_sha256`, `selfgen_frame`; history keys `supplement`,
@@ -184,10 +188,58 @@ supplement); rank 4, one seed (the regenerate route).
   same artifact (one generator used to be shared across a pass's sites, which made the draws
   depend on how layers were grouped), and a slot drawn twice in one batch now goes to the later
   vector every run instead of to whichever write landed last.
+* **The native-format supplement writer.** The writer asks for questions only (a JSON array of
+  strings), then answers each in one ordinary chat turn holding the passage and "Using the
+  passage, answer: <question>", thinking off, with no length, sentence, format or voice
+  instruction. Why: in the format-drift diagnostic (Qwen3-0.6B, the walkthrough's Darwin data,
+  four epochs, one seed, one greedy decode per prompt), a model trained on the one-pass writer's
+  short third-person answers answered in that style everywhere, under the anchor: 0 of 40 general
+  prompts with any markdown (base 39 of 40), 0 of 20 Darwin prompts (base 19 of 20), 0 of the
+  judge's 80 Darwin questions (base 78 of 80), 223-character general answers (base 1,095), and 6
+  of the 40 general prompts declined as not in "the text". Trained on this writer's supplement,
+  the model answered 36 of 40, 15 of 20 and 66 of 80 with markdown, wrote 625-character general
+  answers and declined none; its base-answer NLL shift was +0.106 against the one-pass writer's
+  +0.222, its held-out Darwin perplexity 19.36 against 19.26, and WikiText-2 16.06 against 16.18.
+  On correctness and completeness (`gpt-5.6-luna` at medium effort, 80 Darwin questions, blinded,
+  frozen rubric, 0–4) it scored 1.337 against the one-pass writer's 1.575 (−0.237, paired
+  p = 0.071: not separable at this n; zero-rates 0.350 and 0.338); the base model's level was
+  1.050. A variant with the
+  passage as a system message and the question alone kept more of the format but was behind the
+  one-pass writer on the judged score (correctness and completeness, p = 0.010; correctness
+  alone p = 0.007), which is why this turn ships. The measured arms
+  mixed their supplement's unshuffled prefix (next bullet), under the filter as it stood before
+  this release's guards and extended patterns. An instruction not to mention the passage
+  suppressed the model's format (markdown in 8 % and 14 % of the base model's answers under two
+  such wordings, against 72 % under this prompt), so source references are left to a filter. It
+  departs further from the research's supplement, whose measured judge result was on the one-pass
+  question-and-answer template. A question or answer that cites its source ("according to the
+  passage", "the text states", "the text also notes", "in the context of the text"; not "in the
+  text of the treaty" or "in the passage from Genesis 1") is dropped (`refers_to_source`; on the
+  Darwin text 750, 355 of the 1,591 questions and 395 of the 1,235 answers), as is an answer that
+  had not ended its turn at the 1,024-token cap (`truncated_answer`), and `leaked_json` now checks
+  an answer only for the writer's whole JSON shape; `long_answer` (a 100,000-character guard the
+  token cap made dead) is gone. The question parser reads an array to its own closing bracket,
+  prefers an array whose items all ask, takes a single-quoted array, and salvages only literals
+  ending in `?` from a broken one. Rows record `source_index` (the document) and `passage_index`
+  (the passage within it). Longer answers mean fewer pairs at the same token share (162 of 840
+  written, against 384, on the Darwin text, unshuffled). Writing it took 13 min 47 s on one RTX
+  3090 with Qwen3-0.6B for the Darwin text's 265 passages, timed from the first logged batch of
+  questions to the closing `supplement:` line. The bundled recipes' λ was calibrated with the
+  one-pass supplement, its pairs taken unshuffled.
+* **What a run mixes in changes: the supplement's pairs are shuffled before the prefix is
+  taken.** The research mixer shuffles its pool under its seed and then takes the prefix that
+  reaches the token fraction; earlier builds of this package took the prefix of the file as
+  written, which is passage by passage, so every run mixed only the first passages' pairs. The
+  pairs are now shuffled under the run's `seed` (the recipe's, 42), and the history's
+  `supplement` entry records `shuffle_seed`. On the Darwin text this writer's pairs mixed in went
+  from 162 pairs drawn from 51 of the 265 passages (32 of 173 documents) to 158 pairs drawn
+  from 125 passages (98 documents).
+  The walkthrough's recorded runs and the format-drift diagnostic's arms used the unshuffled
+  prefix.
 * **The supplement** lives under `<workspace>/supplements/<corpus sha256[:12]>/`, or beside the
   corpus in `<corpus>.supplement/` when it was prepared with the data, and is reused while the
-  training side's hash, the writer checkpoint's hash, the template's hash and the domain
-  description match;
+  training side's hash, the writer checkpoint's hash, the question and answer templates' hashes,
+  the filters' hash and the domain description match;
   `prepare-supplement --force` rewrites it. Its manifest records `chat_template_applied` (a writer
   without a chat template is warned about and is outside the recorded frame); duplicates are keyed
   on the question alone, as in the research writer.
@@ -213,9 +265,22 @@ supplement); rank 4, one seed (the regenerate route).
 * **`evaluate --run NAME` / `fuse --run NAME`** read or export a named earlier run of the latest
   stage, and `fuse` says when it replaces an export. `evaluate --compare-unanchored` prints a dose
   note, with the commands to train the control at its own best epoch, when the control turned.
-* **The supplement drops pairs that carry the writer's JSON field syntax** (`leaked_json`, counted
-  with the other rejections); the filters' hash joins the reuse key, so a supplement written before
-  this release is rewritten. `n_train_docs` counts domain documents only.
+* **The supplement drops questions that carry the writer's JSON field syntax, and answers written
+  in its JSON shape** (`leaked_json`, counted with the other rejections); the filters' hash and both templates' hashes
+  join the reuse key, so every supplement written before this release is rewritten.
+  `n_train_docs` counts domain documents only.
+* **The learning-rate schedule spans the run.** Its length was the first epoch's optimizer steps
+  times the epochs, as in the research code, but each epoch is cut at its own chunk offset and a
+  later one can hold more chunks, so runs outlasted their schedule (566 steps against 516 planned on
+  a four-epoch Darwin run, Qwen3-0.6B) and PyTorch's cosine rose again past its end (a
+  fifteen-epoch run ended at about 5 % of the peak, rising). The length is now the real count,
+  summed epoch by epoch (`ChunkedCorpus.chunk_count`, `lfa.train.run_optimizer_steps`), so the
+  cosine ends at its floor on the last step; the `LR schedule:` log line states it, and a resume
+  no longer depends on how the corpus it is handed happens to be chunked. The bundled recipes' λ
+  was calibrated under the old sizing.
+* **`evaluate --corpus` says what it scored.** A named corpus was logged as "trained on -- a fit,
+  not a held-out measurement" whatever it was; it is now "scored whole as named -- held out only if
+  this text was kept out of training", or a fit when it is the stage's own training corpus.
 * New flags not named above: `train --supplement JSONL` (mix in a prepared supplement instead of
   writing one) and `--domain-description TEXT`; `init` / `build-artifact --self-generated` take
   `--n-raw`, `--n-chat` and `--max-new-tokens`, and `build-artifact` `--gen-seed`.

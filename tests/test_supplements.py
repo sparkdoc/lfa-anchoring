@@ -16,8 +16,9 @@ def _fake_writer(calls):
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(json.dumps({"prompt": "q", "response": "a"}) + "\n")
         manifest = {"corpus_sha256": corpus_sha256, "writer_id": model_id,
-                    "writer_sha256": f"sha-of-{model_id}", "template_sha256": "t" * 64,
-                    "filters_sha256": filters_sha256(), "domain_description": domain_description}
+                    "writer_sha256": f"sha-of-{model_id}", "question_template_sha256": "q" * 64,
+                    "answer_template_sha256": "a" * 64, "filters_sha256": filters_sha256(),
+                    "domain_description": domain_description}
         (out_path.parent / (out_path.name + ".manifest.json")).write_text(json.dumps(manifest))
         return manifest
     return write
@@ -28,7 +29,8 @@ def patched(monkeypatch):
     calls = []
     monkeypatch.setattr(supplements, "write_supplement", _fake_writer(calls))
     monkeypatch.setattr(supplements, "checkpoint_sha256", lambda m: f"sha-of-{m}")
-    monkeypatch.setattr(supplements, "template_sha256", lambda: "t" * 64)
+    monkeypatch.setattr(supplements, "question_template_sha256", lambda: "q" * 64)
+    monkeypatch.setattr(supplements, "answer_template_sha256", lambda: "a" * 64)
     return calls
 
 
@@ -95,6 +97,35 @@ def test_a_supplement_written_under_other_filters_is_written_again(tmp_path, bas
     assert json.loads(manifest_path.read_text())["filters_sha256"] == filters_sha256()
     supplements.prepare_supplement(corpus, "base", recipe=recipe)
     assert len(patched) == 2                                          # and now reused
+
+
+@pytest.mark.parametrize("edit", ["one-pass-writer", "other-question-template",
+                                  "other-answer-template"])
+def test_a_supplement_written_under_other_templates_is_written_again(tmp_path, base_dir, patched,
+                                                                     edit):
+    """Every supplement the one-pass writer wrote -- its manifest has one ``template_sha256``
+    and neither of the two-pass writer's -- is written again, as is one whose question or answer
+    template differs: no older supplement is trained on."""
+    corpus = make_corpus(tmp_path / "my_domain", "cookery")
+    recipe = tiny_recipe(base_dir, val_fraction=0.1)
+    first = supplements.prepare_supplement(corpus, "base", recipe=recipe)
+    manifest_path = Path(str(first) + ".manifest.json")
+    manifest = json.loads(manifest_path.read_text())
+    if edit == "one-pass-writer":
+        del manifest["question_template_sha256"], manifest["answer_template_sha256"]
+        manifest["template_sha256"] = "t" * 64
+    elif edit == "other-question-template":
+        manifest["question_template_sha256"] = "0" * 64
+    else:
+        manifest["answer_template_sha256"] = "0" * 64
+    manifest_path.write_text(json.dumps(manifest))
+
+    again = supplements.prepare_supplement(corpus, "base", recipe=recipe)
+
+    assert len(patched) == 2 and again == first                       # rewritten in place
+    rewritten = json.loads(manifest_path.read_text())
+    assert (rewritten["question_template_sha256"], rewritten["answer_template_sha256"]) == \
+        ("q" * 64, "a" * 64)
 
 
 def test_no_recipe_anywhere_is_refused(tmp_path, patched):

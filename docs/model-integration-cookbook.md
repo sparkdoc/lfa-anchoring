@@ -157,16 +157,17 @@ print(boundary_markers(tok, prefix))
   template: the earliest special token in the assistant turn's close, where "special" includes
   added tokens marked `special=True` that are not in the special-tokens map. ChatML gives
   `<|im_end|>`, Llama-3-style templates `<|eot_id|>`. The supplement writer stops on it and cuts
-  each answer at it. **If `None` or wrong:** the writer stops only at EOS and the parsed answers
-  carry whatever the model wrote after its turn.
+  each output at it, and drops an answer that never reached it as `truncated_answer`. **If `None`
+  or wrong:** the writer stops only at EOS, so an answer carries whatever the model wrote after its
+  turn up to the EOS, and one with no EOS before the token cap is dropped.
 * **Boundary markers** (`boundary_markers`) — where a raw continuation is cut: the document
   boundary, EOS, and the opener's leading special token. **Check:** the boundary and the turn
   opener's special token are both in it.
 
 **Template quirks to look for.**
 
-* **Thinking flags.** The supplement prompt and the training rows are rendered with
-  `enable_thinking=False`. Under Qwen3's template that renders an *empty* think block in the
+* **Thinking flags.** Both supplement prompts (the questions, then each answer) and the training
+  rows are rendered with `enable_thinking=False`. Under Qwen3's template that renders an *empty* think block in the
   assistant turn; a template without the flag ignores the extra variable. Render one prompt with
   `tok.apply_chat_template([{"role": "user", "content": "x"}], tokenize=False,
   add_generation_prompt=True, enable_thinking=False)` and read it: a template whose thinking switch
@@ -531,8 +532,8 @@ because the unanchored curve turns much sooner than the anchored one.
 
    `init` copies the artifact `runs/your-model` built — the very file, where `--artifact
    self-generated` would look it up in the store again; `evaluate` reports WikiText-2 and held-out
-   domain perplexity, base and trained. It logs that a named corpus is "a fit, not a held-out
-   measurement", because a named corpus is not split; `heldout/` was never in the training
+   domain perplexity, base and trained. It logs that a named corpus is "scored whole as named --
+   held out only if this text was kept out of training"; `heldout/` was never in the training
    directory, so here it is held out. `lfa evaluate --compare-unanchored` would re-run each stage
    with λ = μ = 0 as a third column; separate control runs are cheaper when every arm is read
    against them. Record each run's validation curve as well: the run's `training_history.json` holds

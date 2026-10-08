@@ -163,7 +163,8 @@ On the card each row names:
 | Qwen3-0.6B | generation | 16 documents × 512 tokens | RTX 2070 (8 GB), 2026-09-26 | 54 s |
 | Qwen3-0.6B | an artifact corpus | 16 raw + 4 chat-format documents | RTX 2070 (8 GB), 2026-09-26 | 77 s |
 | Qwen3-0.6B | a small artifact build | 20k samples per site, K = 4, model loads included | RTX 2070 (8 GB), 2026-09-26 | about 3 min |
-| Qwen3-0.6B | a supplement | about six passages at 6 pairs each, batch 4 | RTX 2070 (8 GB), 2026-09-26 | 47 s |
+| Qwen3-0.6B | a supplement, the earlier one-pass writer | about six passages at 6 pairs each, batch 4 | RTX 2070 (8 GB), 2026-09-26 | 47 s |
+| Qwen3-0.6B | a supplement, this writer | the Darwin text: 265 passages, 1,235 questions, 840 pairs, batch 16 | RTX 3090 (24 GB), 2026-10-07 | 13 min 47 s: about 1.5 min of questions, 12 min of answers |
 | Qwen3-0.6B | the full frame: generation | 2,500 documents of up to 2,048 tokens | RTX 3090 (24 GB), 2026-10-04 | 83 min |
 | Qwen3-0.6B | the full frame: fit | 600k samples per site, K = 32 | RTX 3090 (24 GB), 2026-10-04 | 2 h 28 min: 27 min collecting hidden states, about 2 h fitting the mixtures |
 | Qwen3-0.6B | the full frame, cold | both of the above | RTX 3090 (24 GB), 2026-10-04 | 3 h 51 min |
@@ -172,16 +173,20 @@ On the card each row names:
 | Qwen3-1.7B | the full frame, cold | both of the above | RTX 3090 (24 GB), 2026-10-03/04 | 5 h 56 min |
 
 The RTX 2070 rows are not the recorded frame; the RTX 3090 rows are, one build per model, on a host
-with 125 GiB of RAM. The Qwen3-0.6B build ran alone on the host; the Qwen3-1.7B build shared it for
+with 125 GiB of RAM. The supplement row is timed from the writer's first logged batch of questions
+to its closing `supplement:` line (the model load and that first batch are outside it), with a
+second such run on the host's other card. The Qwen3-0.6B build ran alone on the host; the Qwen3-1.7B build shared it for
 most of its run with a second Qwen3-1.7B build (at 1.5 M samples per site). Qwen3-0.6B's build put
 all 28 layers in one layer group and Qwen3-1.7B's 25 of 28
 ([the-artifact.md](the-artifact.md#host-ram-the-layer-group)); the artifacts are 110.0 MB and 243.7
-MB. An 8 GB card has not been measured at the full frame. A supplement costs one generation per
-4,000-character passage of the training side (the default batch is 16 passages), once per corpus and
+MB. An 8 GB card has not been measured at the full frame. A supplement costs two passes of
+generation: one per 4,000-character passage of the training side (its questions), then one per
+question kept (its answer, up to 1,024 tokens), in batches of 16 prompts, once per corpus and
 writer: it is cached under `<workspace>/supplements/<corpus sha256[:12]>/` (or beside the corpus, in
 `<corpus>.supplement/<corpus sha256[:12]>/`, when it was prepared with the data) and reused while
-the training side's hash, the writer checkpoint's hash, the template's hash, the pair filters' hash
-and the domain description all match. `lfa prepare-supplement --force` rewrites it.
+the training side's hash, the writer checkpoint's hash, the question and answer templates' hashes,
+the filters' hash and the domain description all match. `lfa prepare-supplement --force` rewrites
+it.
 
 ## Why does the chunk count change from epoch to epoch?
 
@@ -196,7 +201,9 @@ like with like.
 The offset moves the chunk **boundaries** rather than each document's starting point: the leading
 segment `[0, offset)` is emitted as a chunk of its own beside the offset-aligned ones. That is why
 the chunk count rises with the offset while the token count stays flat — one extra chunk per
-multi-chunk document, not one extra pass over the text.
+multi-chunk document, not one extra pass over the text. The learning-rate schedule counts every
+epoch's chunks, so it spans the steps the run actually takes
+([below](#is-the-learning-rate-schedule-exactly-restored-when-i---resume)).
 
 ## The anchor loss spikes by orders of magnitude on some steps. Is that a divergence?
 
@@ -387,17 +394,17 @@ assert exported(text)["input_ids"] == base(text)["input_ids"]
 
 ## Is the learning-rate schedule exactly restored when I `--resume`?
 
-Nearly, and the caveat is inherited from the research code. The schedule's total is
-`steps_per_epoch × num_epochs`, and `steps_per_epoch` is read from the **chunk count the corpus
-has when the run starts** — so the whole cosine curve depends on that count. A resume through
-`Workspace.train` rebuilds the corpus the same way the first run did (same documents, same seed,
-same split, chunked at offset 0), so the two agree and the scheduler is then fast-forwarded to the
-saved `global_step`.
+Yes. The schedule's total is the run's real optimizer-step count, summed epoch by epoch from
+the chunk count each epoch's offset gives (`ChunkedCorpus.chunk_count(epoch, seed)`, arithmetic
+over the already-tokenized documents). That count depends only on the documents, the seed and the
+number of epochs, not on how the corpus happens to be chunked when the run starts, so a resume
+builds the same schedule as the run it continues and fast-forwards it to the saved `global_step`.
 
-Where it can drift is a direct `lfa.train.train` caller who hands in a `ChunkedCorpus` already
-re-chunked to some other epoch's offset: the chunk count differs, so the schedule's total differs,
-and the resumed run follows a slightly different curve from the one it is continuing. Hand the
-trainer a freshly built corpus, or call `dataset.rechunk(0, seed)` first.
+Earlier versions — and the research code — sized the schedule as `steps_per_epoch × num_epochs`
+from the chunk count at the start of the run. Later epochs can cut more chunks than the first, so
+the run outlasted its schedule (566 steps against 516 planned on the four-epoch Darwin run,
+Qwen3-0.6B), and PyTorch's cosine past its end rises again; a corpus handed in already re-chunked
+to another epoch's offset also gave a resumed run a slightly different curve. Neither happens now.
 
 Two other resume facts worth knowing. First, only `checkpoint_mode` `rolling` or `all` writes the
 `training_state.pt` a resume needs *during* a run; under `none` one is written when the run

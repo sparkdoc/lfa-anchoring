@@ -136,9 +136,10 @@ class Recipe:
             recorded frame with it field by field. Read only when :attr:`calibrated_artifact` is
             ``self-generated``.
         supplement_fraction: The share of training *tokens* made up of the question-and-answer
-            pairs the entry model writes from the domain, in ``[0, 1)``. 0.13 is the frame the
-            shipped lambda was tuned at; 0.0 trains on the raw corpus alone (off that frame). It
-            is read by the workspace, not by :meth:`to_train_config`.
+            pairs the entry model writes from the domain, in ``[0, 1)``. 0.13 is the fraction the
+            shipped lambda was tuned at, with the one-pass supplement of earlier versions (not
+            the two-pass writer's); 0.0 trains on the raw corpus alone (off that frame). It is
+            read by the workspace, not by :meth:`to_train_config`.
 
     Every other field is the corresponding :class:`lfa.train.TrainConfig` knob; see that class for
     what each does. Values are validated on construction, so a hand-edited YAML fails at load
@@ -180,8 +181,9 @@ class Recipe:
     keep_short_whole: bool = True
     val_fraction: float = 0.1
     # -- the supplement: the question-and-answer pairs the entry model writes from the domain,
-    #    mixed in at this share of training TOKENS. 0.13 is the frame the shipped lambda was
-    #    tuned at; 0.0 trains on the raw corpus alone (and is off that frame).
+    #    mixed in at this share of training TOKENS. 0.13 is the fraction the shipped lambda was
+    #    tuned at, with the one-pass supplement; 0.0 trains on the raw corpus alone (and is off
+    #    that frame).
     supplement_fraction: float = 0.13
 
     # -- what the point was calibrated at

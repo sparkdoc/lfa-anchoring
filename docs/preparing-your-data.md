@@ -204,26 +204,68 @@ A sound corpus produces none of them. To read them without starting a run,
 
 ## The supplement
 
-**What it is.** The model reads each training-side passage (up to 4,000 characters) and writes
-six question-and-answer pairs about it from a fixed template. The domain content comes from the
-passage; only the question-forming, the answer construction and the assistant's voice come from
-the model. The writer is the model the stage starts from — the one you will train.
+**What it is.** The model writes it in two passes over each training-side passage (up to 4,000
+characters). First it writes six questions about the passage from a fixed template, as a JSON
+array of strings. Then it answers each question in one ordinary chat turn: "Here is a passage from
+a text on <domain>:", the passage in triple quotes, and "Using the passage, answer: <question>".
+There is no length, sentence, format or voice instruction, so the answer comes in the model's own
+default chat format (bold lead-ins, lists and all, for Qwen3). The training pair is the question
+and that answer, without the passage, so a question or answer that cites "the passage" or "the
+text" is dropped — and under this prompt many answers do. The domain content comes from the
+passage; only the question-forming and the answer's construction come from the model. The writer
+is the model the stage starts from — the one you will train.
+
+**Why this answer turn.** The one-pass writer of earlier versions asked for the pairs as JSON,
+answers in the third person in 2–5 sentences. Its answers were short plain prose (191 characters on
+average on the Darwin text, none with markdown, 52.7 % speaking of "the passage", "the text" or "the
+author"), and a model trained on them answered in that style everywhere, under the anchor: 0 of 40
+general prompts with any markdown against 39 of 40 for the base model, 0 of 20 Darwin prompts
+against 19 of 20, 0 of the judge's 80 Darwin questions against 78 of 80, general answers of 223
+characters against 1,095, and 6 of the 40 general prompts declined as not in "the text". Trained on
+this writer's supplement, the model answered 36 of 40, 15 of 20 and 66 of 80 with markdown, wrote
+625-character general answers, declined none, and moved less from the base model's own answers (a
+base-answer NLL shift of +0.106 against the one-pass writer's +0.222). It read held-out Darwin
+perplexity 19.36 against the one-pass writer's 19.26, and WikiText-2 16.06 against 16.18. On
+correctness and completeness (`gpt-5.6-luna` at medium effort, 80 Darwin questions, blinded, a
+rubric frozen before judging, 0–4) it scored 1.337 against the one-pass writer's 1.575 (−0.237,
+paired p = 0.071: not separable at this n), with zero-rates 0.350 and 0.338; the base model's level
+was 1.050 (zero-rate 0.525). Qwen3-0.6B, the walkthrough's Darwin data, four epochs, one seed, one
+greedy decode per prompt (the format-drift diagnostic, 2026-10-07/08). A variant that gave the
+passage as a system message and the question alone kept more of the format, but was behind the
+one-pass writer on the judged score (correctness and completeness, p = 0.010; correctness alone p =
+0.007), which is why this turn ships. Telling the writer not to mention the passage suppressed the
+format (markdown in 8 % and 14 % of the base model's answers under two such wordings, against 72 %
+under this prompt), which is why the turn holds no such instruction and the filter does that job.
+The measured runs mixed their supplement's unshuffled prefix (below), under the `refers_to_source`
+filter as it stood before the "of"/"from" guards and the extended "the text" patterns. The
+research's judged reachability result (below) was measured on the one-pass template, not on this
+one.
 
 **What it is for.** Reaching the domain's knowledge when the model is asked about it: the pairs
 make what the corpus says answerable in question-and-answer form. The recipe mixes them in at its
 `supplement_fraction`, 0.13 of training tokens, which is the frame the recipe's λ was tuned at.
 
 **How many pairs a run uses.** The writer writes every pair it can, and `train` mixes in only as
-many as the fraction asks for: pairs from the start of the file until they are 0.13 of the
-training tokens. The rest are not used by that run. On *A Short History of Astronomy* the
-supplement held 1,355 pairs and each run mixed in 389 of them; the stage's `history.json` entry
-records both (`n_pairs_available`, `n_pairs_used`), and a corpus-shape warning
-([above](#three-shapes-that-train-badly)), when one fires, counts the pairs mixed in
-(`189 document(s) + 389 supplement pair(s)`).
+many as the fraction asks for. It shuffles the file's pairs under the run's `seed` (the recipe's,
+42), as the research mixer does, then takes pairs from the start of that order until they are 0.13
+of the training tokens; the rest are not used by that run. The file is written passage by
+passage, so without the shuffle a run would mix only the first passages' pairs — which is what
+earlier builds did, the walkthrough's recorded runs and the format-drift diagnostic's arms
+included. The fraction is of tokens, so longer answers mean fewer pairs: on the Darwin text the
+one-pass writer's answers (191 characters on average) put 384 pairs in the mix, and this writer's
+(657 characters on average, 67 % with markdown) 162 of the 840 it wrote, all from the file's
+first 51 passages in 32 documents (the diagnostic above, unshuffled). Shuffled under seed 42, the
+same file gives 158 pairs from 125 of the 265 passages, in 98 of the 173 training documents. With the
+one-pass writer, and before the shuffle, *A Short History of Astronomy*'s supplement held 1,355
+pairs and each run mixed in 389 of them. The
+stage's `history.json` entry records both counts (`n_pairs_available`, `n_pairs_used`) and the
+seed the pairs were shuffled under (`shuffle_seed`), and a
+corpus-shape warning ([above](#three-shapes-that-train-badly)), when one fires, counts the pairs
+mixed in (`189 document(s) + 389 supplement pair(s)`).
 
 **What it is not for.** It does not protect skills. A supplement written in a skill's mode left
 that skill no better, measured on instruction following and reasoning — one model (Qwen3-0.6B),
-one seed, one domain. The anchor is what keeps skills.
+one seed, one domain, on the research's one-pass supplement. The anchor is what keeps skills.
 
 The held-out tenth is split off before anything is mixed, and stays raw text, so the domain number
 is a raw-text measurement whether or not a supplement was mixed in.
@@ -253,25 +295,54 @@ supplement is minutes of generation, and the pairs would be written from text th
 hold anything out of. The refusal names the fix and writes nothing, so the same `prepare-domain`
 command re-run with `--split-chars 3500` starts clean.
 
-**Reading it.** `supplement.jsonl` holds one pair per line, `{"prompt": …, "response": …}`, in
-the order they were written. The manifest says who wrote it and from what: the writer's model id
-and checkpoint sha256, the training side's sha256, the domain description and the template it was
-rendered into, the decoding settings, and how many passages and pairs there were, with what it
-rejected counted by reason: a passage whose output held no parseable pair (`unparseable_passage`),
-a pair whose question or answer carries the writer's own JSON field syntax — `"answer": …` or
-`{"question"` inside the text, where the writer botched an object's quoting and the next field ran
-into this one (`leaked_json`; braces and quotes alone are kept) — an answer too short or too long
-(`short_answer`, `long_answer`), and a question already written (`duplicate`). The same counts end
-the log of a write; no pair is printed. `short_answer` is an answer under 40 characters, a bare
-name or date, say. How many are dropped depends on the text: 3 on the walkthrough's Darwin text
-(1,537 pairs kept), 24 on its cookery book (610 kept), 211 on *A Short History of Astronomy* (1,355
-kept).
+**Reading it.** `supplement.jsonl` holds one pair per line, `{"prompt": …, "response": …,
+"source_index": …, "passage_index": …}`, in the order they were written. `source_index` is the
+training-side *document* the pair came from and `passage_index` the passage within that document,
+counted as the writer cut it (`chunk_passages` at the manifest's `passage_chars` and
+`min_passage_chars`). The manifest says who wrote it and from what: the writer's model id and
+checkpoint sha256, the training side's sha256, the domain description, the question template and
+the answer template it was rendered into with their hashes, the decoding settings (thinking off),
+and how many passages, questions and pairs there were, with what it rejected counted by reason:
+
+* `unparseable_passage` — a passage whose first-pass output held no question;
+* `leaked_json` — a question carrying the writer's own JSON field syntax, `"answer": …` or
+  `{"question"` inside the text, where the writer botched an object's quoting and the next field
+  ran into this one; or an answer that is itself in that shape, opening on such an object or
+  ending on such a field (braces, quotes and those field names in the middle of an answer — an
+  example in a text about a JSON API — are kept; an answer whose closing code block ends on an
+  `"answer"` field, such as `{"id": 1, "answer": "42"}`, reads as that shape and is dropped);
+* `refers_to_source` — a question or answer that speaks of its source, which the training pair
+  does not hold: "according to the passage", "in the passage", "the text states", "the text does
+  not mention", and the like ("the passage of time", "in the text of the treaty" and "in the
+  passage from Genesis 1" are kept), or an answer reporting what "the author states" when the
+  question did not ask about the author; "the text also states", "the text references", "the
+  text's argument" and "in the context of the text" count too ("in the context of the text
+  messaging era" does not). A question caught here is never answered. Some domain phrasings can
+  still be dropped, since no pattern tells them from a reference to the writer's passage or text:
+  a passage of music or scripture spoken of as "the passage in bars 12–16", "the text is not
+  considered canonical", "within the text, Hamlet says", a philologist's "the text's earliest
+  surviving manuscript", "the text shows a chiastic structure";
+* `duplicate` — a question already written (it is answered once);
+* `truncated_answer` — an answer that had not ended its turn when it reached the writer's
+  1,024-token cap;
+* `short_answer` — an answer under 40 characters, a bare name or date, say.
+
+The same counts end the log of a write; no pair is printed. How many are dropped depends on the
+text. On the walkthrough's Darwin text (Qwen3-0.6B, the format-drift diagnostic's run of this
+writer) `refers_to_source` dropped 750: 355 of the 1,591 questions parsed (22.3 %), then 395 of
+the 1,235 answers (32.0 %) — answers to this prompt often cite the passage; one duplicate
+went, nothing else, and 840 pairs were written. That run used the filter before its "of"/"from"
+guards and its extended "the text" patterns; the guards change no verdict on the diagnostic's
+recorded answers, and the extended patterns would drop 2 more of those 840 pairs (two questions
+ending "in the context of the text?").
 
 **When `train` reuses it.** `train` looks for a supplement first in the workspace's
-`supplements/`, then beside the corpus, and reuses one only when five things match: the training
-side's hash, the writer checkpoint's hash, the template's hash, the pair filters' hash (which
-reasons drop a pair, and how leaked JSON is matched) and the domain description. A supplement
-written under other filters is written again rather than trained on. So a
+`supplements/`, then beside the corpus, and reuses one only when six things match: the training
+side's hash, the writer checkpoint's hash, the question template's hash, the answer template's
+hash, the filters' hash (which reasons drop a question or answer, and how leaked JSON and a
+reference to the source are matched) and the domain description. A supplement written under other
+templates or filters — every supplement an earlier version wrote — is written again rather than
+trained on. So a
 supplement prepared with the model a workspace starts from is used by that workspace's first stage
 as it is. A chain's later stage starts from a fused model, a different writer, so it writes its
 own into the workspace rather than training on pairs the base model wrote.
@@ -299,9 +370,9 @@ lfa train --workspace runs/world_history --corpus data/world_history --supplemen
 A file of your own is one JSON object per line with a `prompt` and a `response`; a line without a
 `prompt` is skipped. Each pair is rendered through the model's chat template as a user turn and an
 assistant turn (joined plainly when the model has no template), and mixed in at the recipe's
-fraction: the pairs are taken as a prefix of the file, the one whose achieved share is closest to
-the target, and a file too small to reach it trains at what it has and warns with the achieved
-share. Keep the file outside the corpus directory — anything under `--corpus` is read as a
+fraction: the pairs are shuffled under the run's seed and taken as a prefix of that order, the
+one whose achieved share is closest to the target, and a file too small to reach it trains at
+what it has and warns with the achieved share. Keep the file outside the corpus directory — anything under `--corpus` is read as a
 document.
 
 ### Training without one
@@ -318,6 +389,11 @@ recipe level and is not warned.
 
 ### What it costs
 
-One generation per 4,000-character passage of the training side, in batches of 16 passages, once
-per corpus and writer. [faq.md](faq.md#how-long-does-self-generation-take) has what the timed
-pieces cost on an 8 GB card.
+Two passes of generation, once per corpus and writer: one for each 4,000-character passage of the
+training side (its questions), then one for each question kept (its answer), in batches of 16
+prompts. The answers are the larger part: about six per passage, each up to 1,024 tokens. On the
+walkthrough's Darwin text (265 passages, 1,235 questions, 840 pairs) it took 13 min 47 s on one
+RTX 3090 with Qwen3-0.6B (2026-10-07; timed from the first logged batch of questions to the
+closing `supplement:` line, so the model load and that first batch are outside it, with a second
+such run on the host's other card): about 1.5 min of questions and 12 min of answers. [faq.md](faq.md#how-long-does-self-generation-take) has
+the other timed pieces.

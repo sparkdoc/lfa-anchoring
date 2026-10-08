@@ -1028,6 +1028,31 @@ def test_a_named_corpus_is_scored_whole(tmp_path, base_dir, corpus_a, corpus_b,
     assert scored == [len(whole), len(whole)]
 
 
+def test_a_named_corpus_is_labelled_as_scored_whole_not_as_a_fit(tmp_path, base_dir, corpus_a,
+                                                                 corpus_b, monkeypatch, caplog):
+    """A named corpus is the user's text, held out if they kept it out of training: the log says
+    that, not "trained on -- a fit". Naming the stage's own training corpus is a fit, and says so."""
+    ws = new_workspace(tmp_path, base_dir)
+    ws.train(corpus_a, recipe=tiny_recipe(base_dir, val_fraction=0.5), device="cpu")
+    monkeypatch.setattr(workspace_module, "domain_perplexity", lambda *a, **kw: 1.0)
+
+    def label(*args):
+        caplog.clear()
+        with caplog.at_level("INFO", logger="lfa.workspace"):
+            ws.evaluate(*args, n_windows=None, device="cpu")
+        [line] = [r.getMessage() for r in caplog.records
+                  if r.getMessage().startswith("Evaluating stage 1 on ")]
+        return line
+
+    named = label(corpus_b)
+    assert named.endswith("chunks, scored whole as named -- held out only if this text was kept "
+                          "out of training)")
+    assert "a fit" not in named and "trained on" not in named
+    own = label(corpus_a)
+    assert "the corpus this stage trained on, scored whole" in own and "a fit" in own
+    assert label().endswith("chunks, held out from training)")
+
+
 # ---------------------------------------------------------------------------------------- fuse
 
 def test_fuse_exports_a_plain_model_that_loads_on_its_own(flow):
@@ -1360,7 +1385,8 @@ def _fake_supplement_writer(calls, writer_hash):
         Path(out_path).write_text('{"prompt": "q?", "response": "%s", "source_index": 0}\n'
                                   % ("an answer " * 8) * 6)
         manifest = {"writer_sha256": writer_hash(model_id), "corpus_sha256": corpus_sha256,
-                    "template_sha256": "t" * 64, "filters_sha256": filters_sha256(),
+                    "question_template_sha256": "q" * 64,
+                    "answer_template_sha256": "a" * 64, "filters_sha256": filters_sha256(),
                     "domain_description": domain_description, "n_pairs": 6,
                     "lfa_version": "0.2.0"}
         Path(str(out_path) + ".manifest.json").write_text(json.dumps(manifest))
@@ -1383,7 +1409,8 @@ def supplement_writer(monkeypatch, base_dir):
     monkeypatch.setattr(supplements_module, "write_supplement",
                         _fake_supplement_writer(calls, writer_hash))
     monkeypatch.setattr(supplements_module, "checkpoint_sha256", writer_hash)
-    monkeypatch.setattr(supplements_module, "template_sha256", lambda: "t" * 64)
+    monkeypatch.setattr(supplements_module, "question_template_sha256", lambda: "q" * 64)
+    monkeypatch.setattr(supplements_module, "answer_template_sha256", lambda: "a" * 64)
     return calls
 
 
@@ -1402,6 +1429,7 @@ def test_train_writes_the_supplement_from_the_training_side_and_records_it(tmp_p
     supp = entry["supplement"]
     assert supp["n_pairs_available"] == 6 and 0 < supp["n_pairs_used"] <= 6
     assert supp["target_fraction"] == 0.2 and supp["writer_sha256"] == "w" * 64
+    assert supp["shuffle_seed"] == recipe.seed           # the pool's order before the prefix
     assert Path(supp["path"]).is_relative_to(tmp_path / "ws" / "supplements")
     assert entry["n_val_docs"] == 2                                 # held-out count untouched
 

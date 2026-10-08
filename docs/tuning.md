@@ -34,7 +34,9 @@ Cut a Project Gutenberg licence, a table of contents or an index out of the file
 removes markup, not content, and the supplement writes questions about whatever is there
 ([preparing-your-data.md](preparing-your-data.md#a-project-gutenberg-book) lists what a Gutenberg
 book carries and how to cut it). A corpus with nothing to hold out is refused before the supplement
-is written, and the message names the fix. Cost: minutes (under 4 for the Wells book's supplement).
+is written, and the message names the fix. Cost: minutes (under 4 for the Wells book's supplement
+under the earlier one-pass writer; this writer's longer answers took 13 min 47 s for the Darwin
+text's 265 passages on one RTX 3090 with Qwen3-0.6B, [faq.md](faq.md#how-long-does-self-generation-take)).
 [preparing-your-data.md](preparing-your-data.md) has the rest.
 
 ## 2. Run the recipe once and read its last line
