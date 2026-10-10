@@ -120,14 +120,15 @@ perplexity.
 2, not at the square of it.
 
 The shipped 3.0 was measured on one pair of domains (the walkthrough's Darwin, then cookery; one
-seed, perplexity), where for both bundled models it was ahead of 1× on retention and on general
-text and at least level on the new domain ([recipes.md](recipes.md)).
+seed, perplexity): at the recipes' λ, 160,000, on Qwen3-0.6B it was ahead of 1× on retention, on
+general text and on the new domain at the recipe dose, and on Qwen3-1.7B it is unmeasured at that
+λ ([recipes.md](recipes.md)).
 
 λ is coupled to the corpus
 ([recipes.md](recipes.md)), so a chain over your own pair of domains re-tunes it — judged on the
 same two axes, on the domain the stage is learning and on what it is supposed to be keeping.
 `lfa train --lambda X` sets one stage's λ exactly, with no multiplier on top: at stage 2,
-`--lambda 3000000` is what the shipped recipe would have used, and the run's note names the
+`--lambda 480000` is what the shipped recipe would have used, and the run's note names the
 recipe's value beside the one given ([recipes.md](recipes.md#trying-another-λ)). A chain spec
 has no per-domain λ; a stage trained with `--lambda` is run with `lfa train` and `lfa extend` by
 hand.

@@ -21,7 +21,7 @@ rather than several GPU-hours into a run.
 
 ## The shipped point: `lfa/recipes/qwen3-0.6b.yaml`
 
-Rank-32 LoRA over the model's own self-generated artifact at `self_generated_frame`, λ = 1,000,000
+Rank-32 LoRA over the model's own self-generated artifact at `self_generated_frame`, λ = 160,000
 on both site families, μ = 0.05,
 16 anchor samples per step, fifteen epochs of cosine, with the model's own question-and-answer
 supplement mixed in at 0.13 of training tokens.
@@ -39,7 +39,7 @@ supplement mixed in at 0.13 of training tokens.
 
 | field | value | what it does |
 |---|---|---|
-| `lambda_qkv` / `lambda_mlp` | 1000000.0 | the function anchor's weight on the attention projections and on the MLPs. Coupled to rank, artifact and corpus — see below |
+| `lambda_qkv` / `lambda_mlp` | 160000.0 | the function anchor's weight on the attention projections and on the MLPs. Coupled to rank, artifact and corpus — see below |
 | `mu` | 0.05 | the uniform weight backstop, `μ‖W_s − W_t‖²_F`, for drift the function anchor does not price |
 | `anchor_end_ratio` | 0.1 | the last layer's anchor weight relative to layer 0 (`1.0` = uniform) |
 | `anchor_schedule` | `cosine` | how the per-layer weight interpolates (`cosine`, `linear`, `exponential`) |
@@ -64,19 +64,20 @@ gives the reasons (the schedule, the one axis, the held-out number) and the meas
 
 > ⚠ **`epochs: 15` is a dose, and the corpus and λ together set how much of it a run can
 > carry.** At the recipe's λ the walkthrough's Darwin text (~189 k training tokens an epoch)
-> turned late and shallowly: its held-out perplexity was lowest at epoch 10 (17.62) and ended at
-> 18.09, 2.6 % above that ([below](#how-λ-was-chosen)); on Qwen3-1.7B, at the same λ, lowest at
-> epoch 11 (12.69) and ended at 12.71, 0.2 % above. The trainer reads both curves as turned, and
-> by the rule below advises a re-run at epoch 10 for the first and calls one optional for the
-> second. No run at the turn's epoch count exists for Darwin, so whether 10 or 11 epochs would ship
-> a better model on this text is unmeasured. A weaker anchor, or a smaller corpus, reaches its
-> held-out minimum
-> much earlier: at λ = 100,000 the same Darwin text bottomed at epoch 4 and ended worse than the
-> base model on both axes, and on a measured 45-document, ~106 k-token corpus, also at
-> λ = 100,000, the held-out perplexity bottomed at **epoch 2** (6.67) and ended the fifteenth
-> epoch at **16.88** — and since `final_model` is the last epoch, that run shipped a model far
-> worse on its own domain than one it had passed through. The anchor was doing its job
-> throughout (the unanchored control was worse still on both axes); the *dose* was wrong.
+> turned early: its held-out perplexity was lowest at epoch 4 (16.97) and ended the fifteenth
+> epoch at 30.54, 80.0 % above that, worse than the base model on both axes
+> ([below](#how-λ-was-chosen)); on Qwen3-1.7B, at the same λ, lowest at epoch 5 (12.40) and
+> ended at 18.29, 47.4 % above. The trainer warns at the end of both runs and advises a re-run at
+> that epoch, and the re-runs at `--epochs 4` and `--epochs 5` scored below the base model on both
+> axes. That is the recipe's design: 15 epochs is the run that finds the dose, and the re-run at
+> its turn is the run to keep. A stronger anchor reaches its held-out minimum later (at λ =
+> 1,000,000 the same text turned at epoch 10 on Qwen3-0.6B and 13 on Qwen3-1.7B), and a smaller
+> corpus earlier: on a measured 45-document, ~106 k-token corpus at λ = 100,000 (measured under
+> 0.1.x, with no supplement and a schedule sized from the first epoch) the held-out
+> perplexity bottomed at **epoch 2** (6.67) and ended the fifteenth epoch at **16.88** — and
+> since `final_model` is the last epoch, that run shipped a model far worse on its own domain
+> than one it had passed through. The anchor was doing its job throughout (the unanchored
+> control was worse still on both axes); the *dose* was wrong.
 >
 > **The rule.** The trainer prints `Held-out: loss=… perplexity=…` after every epoch, and at the
 > end of every run one line that reads that column for you — `Held-out perplexity: lowest X at
@@ -89,13 +90,17 @@ gives the reasons (the schedule, the one axis, the held-out number) and the meas
 >   * **1 % to 10 %:** INFO, saying a re-run at that epoch is *likely* to ship a better model on
 >     this domain. Likely, not certain: there is one measured case. On a single 757 KB book
 >     (H. G. Wells, *A Short History of the World*, split into 67 chapters, 7 held out;
->     Qwen3-0.6B at this recipe; one seed) the held-out perplexity was lowest at epoch 8 (27.02)
+>     Qwen3-0.6B at λ = 1,000,000 on an earlier frame — the one-pass supplement, its pairs
+>     unshuffled, a schedule sized from the first epoch; one seed) the held-out perplexity was
+>     lowest at epoch 8 (27.02)
 >     and ended 6.1 % above it (28.67), and the re-run at `--epochs 8` was better on both axes:
 >     WikiText-2 15.94 against 16.59, held-out domain 26.91 against 28.66.
 >   * **Under 1 %:** INFO, saying the re-run is optional. The 1 % cut is a judgement, not a
 >     measurement. For scale, the run-to-run spread at a fixed recipe and seed (Qwen3-1.7B,
->     λ = 1,000,000, three runs; the Qwen3-1.7B section below) is about 0.15 % on
->     held-out domain perplexity and about 0.5 % on WikiText-2.
+>     λ = 1,000,000 on the earlier frame, three runs;
+>     [the cookbook's §9](model-integration-cookbook.md#9-worked-example-qwen3-17b)) is about
+>     0.15 % on held-out domain perplexity and about 0.5 % on WikiText-2; three Qwen3-0.6B runs at
+>     this recipe's λ, 4 epochs, were about 0.2 % apart on each axis ([below](#how-λ-was-chosen)).
 > * **It had not turned** (the lowest epoch is the last, which a one-epoch run always is): more
 >   epochs may lower it further, and the run says the dose can be raised with `--epochs`. The
 >   exception is a re-run at an earlier run's turn, which usually ends at its own lowest: when the
@@ -168,7 +173,7 @@ PyTorch's cosine climbs back up (a fifteen-epoch run ended at about 5 % of the p
 |---|---|---|
 | `keep_short_whole` | `true` | a document that fits in one chunk is trained **whole**, in every epoch, rather than being cut at the epoch's chunk offset into a chunk and a fragment that starts mid-sentence. It changes the training stream, so a run records which setting it used. Prefer `false` only when the documents are themselves arbitrary slices of something longer, so that keeping them whole preserves nothing and the extra positional variety is worth having |
 | `val_fraction` | 0.1 | share of *documents* (shuffled under `seed`) held out of training and scored after every epoch. Set it to `0.0` to train on everything — and then read the domain number as a fit |
-| `supplement_fraction` | 0.13 | share of training *tokens* made up of the question-and-answer pairs the stage's entry model writes from the training-side documents ([quickstart.md](quickstart.md)); `0.0` trains on the raw corpus alone. The shipped λ was tuned with a question-and-answer supplement at 0.13 of training tokens; every companion run before 0.2.0 trained at 0, off that frame. The held-out documents are split off before anything is mixed, so the domain number stays a raw-text measurement comparable across fractions. The pairs are shuffled under the run's seed and taken as a prefix of that order, the one whose achieved share is closest to the target (as the research mixer does; builds before this release took the file's own prefix, its first passages); a pool too small to reach it trains at what it has and warns with the achieved share |
+| `supplement_fraction` | 0.13 | share of training *tokens* made up of the question-and-answer pairs the stage's entry model writes from the training-side documents ([quickstart.md](quickstart.md)); `0.0` trains on the raw corpus alone. The shipped λ was tuned with this release's supplement at 0.13 of training tokens, its pairs shuffled; every companion run before 0.2.0 trained at 0, off that frame. The held-out documents are split off before anything is mixed, so the domain number stays a raw-text measurement comparable across fractions. The pairs are shuffled under the run's seed and taken as a prefix of that order, the one whose achieved share is closest to the target (as the research mixer does; builds before this release took the file's own prefix, its first passages); a pool too small to reach it trains at what it has and warns with the achieved share |
 
 ### Calibration record
 
@@ -194,61 +199,87 @@ artifact id or path, compared as a string with the one the workspace records.
 ### How λ was chosen
 
 Scope: Qwen3-0.6B; its self-generated artifact at the frame above; the Darwin text of [the
-two-domain walkthrough](../examples/two_domain_walkthrough.ipynb) (*On the Origin of Species*)
-with the model's own question-and-answer supplement (1,549 pairs) at 0.13 of training tokens,
-188,840 training tokens an epoch; rank 32; batch 6; one seed; perplexity; RTX 3090; 2026-10-05.
-Three parts of that frame differ from what this release trains with, by amounts not measured:
-the ladder's supplement was the one-pass writer's (short third-person answers), where this
-release writes chat-format answers, longer, so fewer pairs make the same 0.13 of tokens
-([preparing-your-data.md](preparing-your-data.md#the-supplement)); its pairs were the file's own
-prefix, the first passages', where this release shuffles them first; and its schedule was sized
-from the first epoch's chunk count, so its cosine ran out before the run did (above).
-Every rung trained the recipe's 15 epochs and was scored on WikiText-2 over 100 windows (51,200
-tokens) and on held-out Darwin. Base: WikiText-2 17.93, held-out Darwin 30.12. The last column is
-the per-epoch validation perplexity (the training split's own 10 %), its lowest and its last.
+two-domain walkthrough](../examples/two_domain_walkthrough.ipynb) (*On the Origin of Species*), 173
+training documents and about 189 k training tokens an epoch, with the model's own
+question-and-answer supplement (this release's two-pass writer) at 0.13 of training tokens, its
+pairs shuffled under seed 42; the cosine laid over the run's real optimizer-step count; rank 32;
+batch 6; one seed; perplexity; RTX 3090; 2026-10-08. That is the frame this release trains with.
 
-| λ (μ = 0.05 when λ > 0) | WikiText-2 (100 windows) | held-out Darwin | validation, lowest → last |
-|---|---|---|---|
-| 0 (μ = 0, unanchored) | 281.36 (+1469 %) | 182.89 (+507 %) | 15.27 at epoch 2 → 182.70 |
-| 50,000 | 22.62 (+26.1 %) | 40.49 (+34.4 %) | 16.25 at epoch 4 → 41.56 |
-| 100,000 | 19.58 (+9.2 %) | 32.28 (+7.2 %) | 16.63 at epoch 4 → 31.68 |
-| 200,000 | 17.86 (−0.4 %) | 24.72 (−17.9 %) | 17.02 at epoch 6 → 24.60 |
-| 500,000 | 17.00 (−5.2 %) | 19.75 (−34.4 %) | 17.42 at epoch 6 → 19.57 |
-| **1,000,000** | **16.60 (−7.5 %)** | **18.43 (−38.8 %)** | 17.62 at epoch 10 → 18.09 |
-| 2,500,000 | 16.53 (−7.8 %) | 18.68 (−38.0 %) | 18.29 at epoch 12 → 18.30 |
-| 5,000,000 | 16.66 (−7.1 %) | 19.57 (−35.0 %) | 19.02 at epoch 15 → 19.02 |
+Each λ was kept at its own dose, as [tuning.md §4](tuning.md#4-λ-when-to-try-another) reads a rung:
+a 15-epoch run, then, when its curve turned and ended 1 % or more above its lowest, a re-run at
+that epoch. Every run was scored by `lfa evaluate` at its defaults: WikiText-2 over 100 windows
+(51,200 tokens) and the 26,147 tokens of held-out Darwin. Base: WikiText-2 17.93, held-out Darwin
+30.12. The last column is the 15-epoch run's per-epoch validation perplexity (the training split's
+own 10 %): the epoch it was lowest at, and how far the fifteenth ended above it.
 
-Percentages are against the base model. The unanchored control over-trains at 15 epochs, so the
-selection is [the cookbook's §5](model-integration-cookbook.md#5-calibrate-λ) over-training
-branch, the rule the Qwen3-1.7B recipe was chosen by: the rung best on both axes, extending the
-ladder until it turns over. No rung is best on both — 2,500,000's WikiText-2 is 0.4 % below
-1,000,000's (16.53 against 16.60) while its held-out Darwin is higher — so the rule's fallback
-applies: the lowest held-out Darwin among the rungs within 1 % of the lowest WikiText-2
-(≤ 16.70: 1,000,000, 2,500,000 and 5,000,000). That is **1,000,000**, the ladder's turnover
-(held-out Darwin 18.43 < 18.68 < 19.57) and the value the same procedure gave Qwen3-1.7B on the
-same Darwin text. No repeat was run for this model; the 0.4 % WikiText-2 difference is within the
-run-to-run spread measured for Qwen3-1.7B at this λ (about 0.5 %, below).
+| λ (μ = 0.05 when λ > 0) | epochs kept | WikiText-2 (100 windows) | held-out Darwin | 15-epoch run's validation curve |
+|---|---|---|---|---|
+| 0 (μ = 0, unanchored) | 4 | 25.63 (+42.9 %) | 18.39 (−38.9 %) | — |
+| 0 (μ = 0, unanchored) | 15 | 302.49 (+1587 %) | 194.07 (+544 %) | lowest at epoch 2, ended +1175 % |
+| 64,000 | 4 | 16.40 (−8.6 %) | 16.81 (−44.2 %) | lowest at epoch 4, ended +184 % |
+| **160,000** | 4 | **16.15 (−9.9 %)** | **17.29 (−42.6 %)** | lowest at epoch 4, ended +80.0 % |
+| 400,000 | 7 | 16.28 (−9.2 %) | 17.94 (−40.5 %) | lowest at epoch 7, ended +25.6 % |
+| 1,000,000 | 10 | 16.40 (−8.5 %) | 18.39 (−39.0 %) | lowest at epoch 10, ended +2.8 % |
+| 2,500,000 | 15 | 16.49 (−8.0 %) | 18.87 (−37.3 %) | still falling at epoch 15 |
 
-**The dose at the chosen λ.** The validation perplexity fell from 20.45 after epoch 1 to its
-lowest, 17.62, at epoch 10, and ended at 18.09. At λ = 100,000 it bottomed at epoch 4 (16.63) and
-ended at 31.68, and that run ended worse than the base model on both axes. An earlier unanchored
-4-epoch run on the same corpus reached held-out Darwin 18.73 with WikiText-2 26.80 (+49.4 %); the
-1,000,000 rung ends below it on both. One seed, one corpus: on your own corpus, read the per-epoch
-column as the dose note above says.
+Percentages are against the base model. The unanchored control at the chosen rung's dose (4 epochs)
+improves the domain, so the selection is [the cookbook's
+§5](model-integration-cookbook.md#5-calibrate-λ) first rule: among the rungs whose held-out Darwin
+gain is at least 90 % of the control's (held-out Darwin at most 19.57: every rung), the lowest
+WikiText-2, ties within 1 % going to the smaller λ. That is **160,000** (16.15): 400,000's 16.28 is
+within 1 % of it and the larger λ, and 64,000's 16.40 is 1.5 % above. A rung lies on either side, so
+the pick is interior. A behaviour reading ties 160,000 with 400,000: the shift in the base model's
+own answers to 40 general prompts (teacher-forced NLL of its greedy answers, against the base
+model's, in nats; one greedy decode; [tuning.md §4](tuning.md#4-λ-when-to-try-another) describes it)
+was +0.121 at 160,000, +0.120 at 400,000, +0.154 at 64,000, +0.140 at 1,000,000 and +0.126 at
+2,500,000, against +0.565 for the 4-epoch control.
 
-**The stage-2 multiplier.** The same two-stage chain as the 1.7B's below — Darwin for 15 epochs,
-the artifact extended, then the walkthrough's cookery text for 15 epochs — at multipliers 1 and 3,
-read the same way. One seed, one pair of domains, perplexity, RTX 3090, 2026-10-05. The peak is
-nvidia-smi `memory.used` sampled every 10 s over the whole chain, an upper bound (see the memory
-note below).
+**The dose at the chosen λ.** The 15-epoch run's validation perplexity fell from 18.78 after epoch
+1 to its lowest, 16.97, at epoch 4, and ended at 30.54; that run scored WikiText-2 18.76 and
+held-out Darwin 30.93, worse than the base model on both axes, and its behaviour shift was +0.342.
+The re-run at `--epochs 4` ended at its own lowest (16.96) and is the row above. The recipe keeps
+`epochs: 15`: the run's last line names the turn, and the re-run there is the model to ship
+([tuning.md](tuning.md#2-run-the-recipe-once-and-read-its-last-line)). One seed, one corpus: on
+your own corpus, read the run's last line as the dose note above says.
+
+**The stage-2 multiplier.** A two-stage chain — Darwin at the chosen dose (4 epochs), the artifact
+extended, then the walkthrough's cookery text (*Domestic Cookery*) for the recipe's 15 epochs — at
+multipliers 1 and 3. Cookery is scored on its 15 held-out documents; in every column the first
+number is the fused stage-1 model and the second the model after stage 2. One seed, one pair of
+domains, perplexity, RTX 3090, 2026-10-08. The peak is nvidia-smi `memory.used` sampled every 10 s
+over the whole chain, an upper bound (see the memory note below).
 
 | stage-1 λ | multiplier (stage-2 λ) | cookery held-out | Darwin held-out over stage 2 | WikiText-2 over stage 2 (100 windows) | chain peak MiB |
 |---|---|---|---|---|---|
-| 1,000,000 | 1× (1,000,000) | 24.07 → 16.79 (−30.3 %) | 18.44 → 21.70 (+17.6 %) | 16.62 → 16.95 (+1.9 %) | 14,588 |
-| 1,000,000 | **3× (3,000,000)** | 24.30 → 16.04 (−34.0 %) | 18.49 → 19.83 (+7.2 %) | 16.63 → 16.55 (−0.5 %) | 14,565 |
+| 160,000 | 1× (160,000) | 23.16 → 30.16 (+30.2 %) | 17.30 → 33.70 (+94.8 %) | 16.13 → 18.94 (+17.5 %) | 12,796 |
+| 160,000 | **3× (480,000)** | 23.09 → **19.73 (−14.6 %)** | 17.33 → **23.54 (+35.8 %)** | 16.12 → **17.33 (+7.5 %)** | 12,773 |
 
-3× was ahead on all three. Stage 1 of the two chains replicates the ladder's 1,000,000 rung:
-held-out Darwin 18.41 and 18.46 against 18.43, WikiText-2 16.61 and 16.63 against 16.60.
+3× was ahead on all three, which is why the recipe keeps `stage2_lambda_multiplier: 3.0`. Both
+arms over-trained the ~104 k-token cookery text at 15 epochs (1× lowest at epoch 5 and ended
+102 % above it, 3× lowest at epoch 8 and ended 33 % above). Re-run at their own turns, the two came
+out close:
+
+| multiplier | stage-2 epochs | cookery held-out | Darwin held-out over stage 2 | WikiText-2 over stage 2 |
+|---|---|---|---|---|
+| 1× | 5 | 23.16 → 14.18 (−38.8 %) | 17.30 → 19.79 (+14.4 %) | 16.13 → 16.46 (+2.0 %) |
+| 3× | 8 | 23.09 → 15.11 (−34.6 %) | 17.33 → 19.70 (+13.7 %) | 16.12 → 16.44 (+2.0 %) |
+
+By the cookbook's multiplier rule (keep more Darwin while cookery's improvement stays within 90 % of
+the better arm's) 1× edges it there: 3×'s cookery gain is 88.9 % of 1×'s, and its Darwin advantage
+is 0.5 %. That reading is marginal, one seed, and 3×'s re-run itself turned at epoch 6. Stage 1 of
+the two chains replicates the ladder's 160,000 rung: WikiText-2 16.13 and 16.12 against 16.15,
+held-out Darwin 17.30 and 17.32 against 17.29, about 0.2 % apart on each axis.
+
+**An earlier calibration** (2026-10-05) read this model on an earlier frame — the one-pass
+supplement writer (short third-person answers), its pairs taken unshuffled, and a schedule sized
+from the first epoch's chunks — with every rung at a common 15 epochs, and by the cookbook's §5
+over-training branch picked λ = 1,000,000. Its numbers are not read against the ladder above. Read
+the same common-15-epoch way, this frame's own 15-epoch runs put no rung best on both axes:
+2,500,000 has the lowest WikiText-2 (16.49) and 1,000,000 the lowest held-out Darwin (18.81), 1.02 %
+higher on WikiText-2, just outside the 1 % band, so the fallback lands on 2,500,000, an end rung,
+and the ladder was not extended past it. [The cookbook's
+§9](model-integration-cookbook.md#9-worked-example-qwen3-17b) keeps the common-dose procedure on
+Qwen3-1.7B as its worked example.
 
 **The paper's operating point** is a different one: λ = 100,000 at rank 32, calibrated in the
 research code on a corpus about ten times larger (about 1,700 documents, ~1.8 M training
@@ -260,16 +291,16 @@ seed corpus, 1.54 M hidden vectors per site;
 ## Qwen3-1.7B: `lfa/recipes/qwen3-1.7b.yaml`
 
 The same operating point for `Qwen/Qwen3-1.7B`: every field above is the Qwen3-0.6B recipe's
-except `name` and `model_id`. Its λ was calibrated on this model by the same procedure and came
-out at the same `lambda_qkv` = `lambda_mlp` = **1,000,000**.
-`lfa init --model Qwen/Qwen3-1.7B` adopts it.
+except `name` and `model_id`. Its λ was read on this model and came out at the same
+`lambda_qkv` = `lambda_mlp` = **160,000**, by a different reading from the Qwen3-0.6B recipe's
+(below). `lfa init --model Qwen/Qwen3-1.7B` adopts it.
 
 ### Calibration record
 
 | field | value |
 |---|---|
 | `calibrated_rank` | 32 (`lora_rank` 32, `lora_alpha` 64) |
-| `lambda_qkv` / `lambda_mlp` | 1000000.0 |
+| `lambda_qkv` / `lambda_mlp` | 160000.0 |
 | `stage2_lambda_multiplier` | 3.0 |
 | `calibrated_artifact` | `self-generated` — Qwen3-1.7B's own artifact |
 | `self_generated_frame` | `{n_raw: 2500, n_chat: 0, max_new_tokens: 2048, max_samples: 600000, gmm_k: 32, pca_variance: 0.95}` |
@@ -277,83 +308,82 @@ out at the same `lambda_qkv` = `lambda_mlp` = **1,000,000**.
 | `batch_size` × `gradient_accumulation_steps` | 6 × 1, at `sequence_length` 512 |
 
 **How λ was chosen.** Scope: Qwen3-1.7B; its self-generated artifact at the frame above; the
-Darwin text of [the two-domain walkthrough](../examples/two_domain_walkthrough.ipynb) (*On the
-Origin of Species*) prepared with its question-and-answer supplement; rank 32; one seed;
-perplexity; RTX 3090; 2026-10-04/05. The same three frame differences as the Qwen3-0.6B
-ladder's apply: a one-pass supplement, its pairs taken unshuffled, and a schedule sized from the
-first epoch. Every rung trained the recipe's 15 epochs and was scored by
-`lfa evaluate` at its defaults: WikiText-2 over 100 windows (51,200 tokens) and 27 held-out Darwin
-documents (26,147 tokens). Base: WikiText-2 15.09, held-out Darwin 21.45.
-The selection rule set beforehand assumed that the unanchored control improves the domain; at 15
-epochs it does not — on this small corpus (about 189 k tokens an epoch) it over-trains, to
-held-out Darwin 162.7 and WikiText-2 +778 %. So λ was chosen on the 15-epoch frontier as the rung
-best on **both** axes, extending the ladder until it turned over. 1,000,000 is the interior
-optimum. Every WikiText-2 figure in this table and the next paragraph is the 100-window measure.
+Darwin text of [the two-domain walkthrough](../examples/two_domain_walkthrough.ipynb) with this
+model's own supplement, the same frame as the Qwen3-0.6B ladder's (the two-pass writer, pairs
+shuffled, the cosine over the real step count); rank 32; one seed; perplexity; RTX 3090;
+2026-10-08/09. Each λ was kept at its own dose, as for Qwen3-0.6B, and scored by `lfa evaluate` at
+its defaults: WikiText-2 over 100 windows (51,200 tokens) and 27 held-out Darwin documents (26,147
+tokens). Base: WikiText-2 15.09, held-out Darwin 21.45. The last column is the behaviour shift
+described for Qwen3-0.6B above (the base model's own greedy answers to 40 general prompts,
+teacher-forced; nats against the base model; one greedy decode).
 
-| λ (μ = 0.05 when λ > 0) | epochs | WikiText-2 (100 windows) | held-out Darwin |
-|---|---|---|---|
-| 0 (μ = 0, unanchored) | 4 | 15.01 (−0.5 %) | 14.34 (−33.2 %) |
-| 0 (μ = 0, unanchored) | 8 | 40.30 (+167 %) | 49.08 (+129 %) |
-| 0 (μ = 0, unanchored) | 15 | 132.47 (+778 %) | 162.70 (+658 %) |
-| 20,000 | 15 | 15.67 (+3.8 %) | 42.00 (+95.8 %) |
-| 50,000 | 15 | 15.03 (−0.4 %) | 27.04 (+26.1 %) |
-| 100,000 | 15 | 14.48 (−4.0 %) | 19.89 (−7.3 %) |
-| 200,000 | 15 | 14.10 (−6.6 %) | 16.47 (−23.2 %) |
-| 500,000 | 15 | 13.43 (−11.0 %) | 14.00 (−34.7 %) |
-| **1,000,000** | 15 | **13.15 (−12.8 %)** | **13.63 (−36.5 %)** |
-| 2,500,000 | 15 | 13.31 (−11.8 %) | 13.82 (−35.6 %) |
-| 5,000,000 | 15 | 13.91 (−7.8 %) | 14.24 (−33.6 %) |
-
-Percentages are against the base model. The stage-1 model was trained three times at each of λ =
-100,000 and 1,000,000 (the ladder's run and the first stage of each chain below), which gives the
-run-to-run spread on the same measures: at λ = 1,000,000 WikiText-2 13.15, 13.09 and 13.13 (100
-windows; about 0.5 %) and held-out Darwin 13.63, 13.64 and 13.65 (about 0.15 %); at λ = 100,000
-WikiText-2 14.48, 14.36 and 14.41 (100 windows) and held-out Darwin 19.89, 19.43 and 19.88. The
-1,000,000 rung's lead over 2,500,000 — 1.2 % on WikiText-2 (13.15 against 13.31) and 1.4 % on
-held-out Darwin (13.63 against 13.82) — is larger than that spread on both axes. WikiText-2 falls
-below base at strong λ; that is what was measured, and no mechanism is claimed for it. A general
-number below base is not evidence that anything was kept: [the
-FAQ](faq.md#wikitext-2-perplexity-came-out-below-the-base-models-is-that-a-win) says how to read it.
-
-**The dose at the chosen λ.** On this corpus (about 189 k training tokens an epoch), the per-epoch
-validation perplexity — the training split's own 10 % — fell at λ = 1,000,000 from 14.53 after
-epoch 1 to its lowest, 12.69, at epoch 11, and ended at 12.71, 0.2 % above it: a shallow turn,
-which the trainer reports with the re-run optional. At
-λ = 100,000 it bottomed at epoch 5 (12.25) and ended at 18.45, the turn the dose note above
-describes. The unanchored 4-epoch run reaches held-out Darwin 14.34 with WikiText-2 (100 windows)
-flat (15.09 → 15.01). One seed, one corpus: on your own corpus, read the per-epoch column as the
-dose note above says.
-
-**The stage-2 multiplier.** A two-stage chain — Darwin for 15 epochs, the artifact extended, then
-the walkthrough's cookery text (*Domestic Cookery*) for 15 epochs — at multipliers 1 and 3. Cookery
-is scored on 15 held-out documents. In every column the first number is the fused stage-1 model
-and the second the model after stage 2. WikiText-2 is the 100-window measure (51,200 tokens), as
-in the ladder. One seed, one pair of domains, perplexity, RTX 3090, 2026-10-04/05.
-
-| stage-1 λ | multiplier (stage-2 λ) | cookery held-out | Darwin held-out over stage 2 | WikiText-2 over stage 2 (100 windows) | stage-2 training peak MiB |
+| λ (μ = 0.05 when λ > 0) | epochs kept | WikiText-2 (100 windows) | held-out Darwin | 15-epoch run's validation curve | behaviour shift |
 |---|---|---|---|---|---|
-| 1,000,000 | 1× (1,000,000) | 16.16 → 11.90 (−26.4 %) | 13.64 → 16.24 (+19.0 %) | 13.09 → 13.16 (+0.5 %) | 16,206 |
-| 1,000,000 | **3× (3,000,000)** | 16.20 → 11.84 (−27.0 %) | 13.65 → 15.40 (+12.8 %) | 13.13 → 12.79 (−2.6 %) | 19,291 |
-| 100,000 | 1× (100,000) | 22.35 → 20.38 (−8.8 %) | 19.43 → 29.76 (+53.1 %) | 14.36 → 14.53 (+1.2 %) | 17,511 |
-| 100,000 | 3× (300,000) | 22.75 → 13.92 (−38.8 %) | 19.88 → 19.90 (+0.1 %) | 14.41 → 13.87 (−3.8 %) | 16,842 |
+| 0 (μ = 0, unanchored) | 3 | 12.62 (−16.4 %) | 12.21 (−43.1 %) | — | not probed |
+| 0 (μ = 0, unanchored) | 4 | 14.68 (−2.7 %) | 14.33 (−33.2 %) | — | +0.346 |
+| 0 (μ = 0, unanchored) | 5 | 18.41 (+22.0 %) | 19.02 (−11.3 %) | — | not probed |
+| 0 (μ = 0, unanchored) | 15 | 142.30 (+843 %) | 163.16 (+661 %) | lowest at epoch 2 | not probed |
+| 10,240 | 3 | 11.60 (−23.1 %) | 12.25 (−42.9 %) | lowest at epoch 3 | not probed |
+| 25,600 | 4 | 11.81 (−21.7 %) | 12.65 (−41.0 %) | lowest at epoch 4 | +0.117 |
+| 64,000 | 5 | 12.10 (−19.8 %) | 12.98 (−39.5 %) | lowest at epoch 5 | +0.118 |
+| **160,000** | 5 | **12.19 (−19.2 %)** | **13.15 (−38.7 %)** | lowest at epoch 5, ended +47.4 % | **+0.089** |
+| 400,000 | 9 | 13.09 (−13.3 %) | 13.51 (−37.0 %) | lowest at epoch 9 | +0.108 |
+| 1,000,000 | 15 | 13.43 (−11.0 %) | 13.76 (−35.9 %) | lowest at epoch 13, ended +0.7 % | +0.134 |
+| 2,500,000 | 15 | 13.52 (−10.4 %) | 13.87 (−35.3 %) | still falling at epoch 15 | +0.131 |
 
-At λ = 1,000,000, 3× matched 1× on cookery (−27.0 % against −26.4 %, one seed) and beat it on
-Darwin retention and on WikiText-2. At λ = 100,000, 3× was ahead on all three.
+**This λ departs from the selection rule, and says so.** Each control (3, 4 and 5 epochs) improves
+the domain, so the rule is the cookbook's §5 first rule: the lowest WikiText-2 among the rungs whose
+held-out Darwin gain is at least 90 % of the control's. It picked the lowest rung at every extension
+of the ladder — 64,000, then 25,600, then 10,240 — because WikiText-2 kept falling as the anchor
+weakened. Where it would stop is unmeasured: at 3 epochs the unanchored control is behind 10,240 on
+WikiText-2 (12.62 against 11.60), yet itself 16 % below base on it and lower than every rung on
+held-out Darwin. On a chat-tuned model a WikiText-2 number below base is not a sign that nothing was
+forgotten ([tuning.md §4](tuning.md#4-λ-when-to-try-another)), so on this model it cannot choose λ.
+The behaviour shift does separate anchor from no anchor: +0.346 for the 4-epoch control against
++0.089 to +0.134 for every rung probed (10,240 was not), lowest at **160,000**. That is the pick.
+Against 64,000 the comparison is dose-matched (both 5 epochs); the kept doses rise with λ above it
+(9 and 15 epochs), so against 400,000, 1,000,000 and 2,500,000 the shift is not separated from dose.
+Against the rule's domain bar 160,000 passes at the 4- and 5-epoch controls and misses the 3-epoch
+control's by 0.02 (13.155 against at most 13.132), and its WikiText-2 is within 1 % of 64,000's. The
+shift is not monotone in λ, and the minimum at 160,000 is one probe set, one greedy decode and one
+seed; on the Qwen3-0.6B ladder 160,000 and 400,000 tie (+0.121 and +0.120). The frame alone does not
+explain the move from the earlier calibration's 1,000,000: at a common 15 epochs this frame's rungs
+also put 1,000,000 best on both axes (WikiText-2 13.43, held-out Darwin 13.76, against 13.52 and
+13.87 at 2,500,000), so the move is the own-dose reading and this departure.
+
+**The dose at the chosen λ.** The 15-epoch run's validation perplexity — the training split's own
+10 % — fell from 13.31 after epoch 1 to its lowest, 12.40, at epoch 5, and ended at 18.29, 47.4 %
+above it; that run scored WikiText-2 14.54 and held-out Darwin 19.51. The re-run at `--epochs 5`
+is the row above (its own curve lowest at epoch 4, 0.2 % below its end: a re-run the trainer calls
+optional). One seed, one corpus: on your own corpus, read the run's last line as the dose note
+above says.
+
+**The stage-2 multiplier** is unmeasured on Qwen3-1.7B at this λ; the recipe's 3.0 is the Qwen3-0.6B
+chain's result at 160,000 (above). On the earlier frame (the one-pass supplement, its pairs
+unshuffled, a schedule sized from the first epoch; 2026-10-04/05), at λ = 1,000,000 with 15 epochs
+in each stage, this model's 3× matched 1× on cookery (−27.0 % against −26.4 %) and beat it on
+Darwin retention and on WikiText-2; the table is in [the cookbook's
+§9](model-integration-cookbook.md#9-worked-example-qwen3-17b), with the run-to-run spread measured
+on that frame (three stage-1 runs at λ = 1,000,000: about 0.5 % on WikiText-2 and 0.15 % on
+held-out Darwin).
 
 **Training memory**, one RTX 3090, batch 6 × 512: an anchored 15-epoch run trained at about
-12.7 GiB (maximum 13,033–13,056 MiB across every rung, 20,000 to 5,000,000); the unanchored control
-at a maximum of 11,236 MiB; the second stage of a chain, training on the fused stage-1 model,
-16,206–19,291 MiB (per arm in the table above; 19,291 MiB is about 18.8 GiB, more than a 16 GB
-card holds). The measure is nvidia-smi `memory.used` sampled
-every 10 s, which includes PyTorch's caching allocator, so it is an upper bound on what a run
-needs. It is not comparable with Qwen3-0.6B's "8.63 GiB allocated" in [faq.md](faq.md), which
-is the allocator's own peak, a different measure.
+12.7 GiB (13,033 MiB at λ = 160,000; maximum 13,033–13,056 MiB across every rung of the earlier
+frame's ladder, 20,000 to 5,000,000); the unanchored control at a maximum of 11,236 MiB (earlier
+frame); the second stage of a chain, training on the fused stage-1 model, 16,206–19,291 MiB (the
+earlier frame's chains at λ = 1,000,000 and 100,000; 19,291 MiB, at 1,000,000 × 3, is about
+18.8 GiB, more than a 16 GB card holds). A chain at this recipe's λ is unmeasured on this model.
+The measure is nvidia-smi `memory.used` sampled every 10 s, which includes PyTorch's caching
+allocator, so it is an upper bound on what a run needs. It is not comparable with Qwen3-0.6B's
+"8.63 GiB allocated" in [faq.md](faq.md), which is the allocator's own peak, a different measure.
 
 **λ does not port** across artifacts, domains or protocols. A separate research run on another
 domain chose 50,000 for this model, against an artifact fitted on real text and at a different
-protocol; that is a different point, not a check on this one. The two bundled recipes were
-calibrated the same way on the same Darwin text and landed on the same λ: two models, one corpus, one
-seed, which is not evidence that λ is independent of model size.
+protocol; that is a different point, not a check on this one. The two bundled recipes were read on
+the same Darwin text and landed on the same λ by different readings (Qwen3-0.6B by the rule, this
+model by behaviour drift): two models, one corpus, one seed, which is not evidence that λ is
+independent of model size. On the earlier frame, at a common 15 epochs, the cookbook's §5 picked
+1,000,000 for this model ([§9](model-integration-cookbook.md#9-worked-example-qwen3-17b)).
 
 ## The couplings, and what the warnings mean
 
@@ -416,25 +446,26 @@ lfa train --workspace runs/world_history --corpus data/world_history --lambda 25
 ```
 
 `--lambda X` is the stage's λ **exactly**: both `lambda_qkv` and `lambda_mlp`, with no stage
-multiplier on top (at stage 2, `--lambda 3000000` is what the shipped recipes would have used).
+multiplier on top (at stage 2, `--lambda 480000` is what the shipped recipes would have used).
 `--mu Y` does the same for μ. From Python: `ws.train(corpus, lambda_=2.5e6, mu=0.05)`. Every
 other field is the recipe's.
 
 The run starts with a note naming both values — *"lambda 2.5e+06 set by --lambda; the recipe
-calibrated 1e+06. It applies as given, with no stage multiplier on top. …"* (from Python, *"set by
-lambda_="*; at stage 2, *"… the recipe calibrated 3e+06 for stage 2 (1e+06 x its stage-2 multiplier
-3)"*) — and ends with its held-out verdict, as every run does. What ran is recorded: the stage's
-`history.json` entry carries `lambda_applied`, `lambda_mlp_applied` and `mu_applied` (the values the
-trainer used, which the run's `config.json` also holds as `lambda_qkv`, `lambda_mlp` and `mu`),
-`lambda_override` and `mu_override` (the values given, `null` where the recipe's were used), and
-`recipe`, the recipe as written. `lfa evaluate` logs the λ and μ of the run it reads and where each
-came from.
+calibrated 160000. It applies as given, with no stage multiplier on top. …"* (from Python, *"set by
+lambda_="*; at stage 2, *"… the recipe calibrated 480000 for stage 2 (160000 x its stage-2
+multiplier 3)"*) — and ends with its held-out verdict, as every run does. What ran is recorded: the
+stage's `history.json` entry carries `lambda_applied`, `lambda_mlp_applied` and `mu_applied` (the
+values the trainer used, which the run's `config.json` also holds as `lambda_qkv`, `lambda_mlp` and
+`mu`), `lambda_override` and `mu_override` (the values given, `null` where the recipe's were used),
+and `recipe`, the recipe as written. `lfa evaluate` logs the λ and μ of the run it reads and where
+each came from.
 
 Read the result by its held-out curve and on both axes (`lfa evaluate`), as for the recipe's own
-λ. One measured case (H. G. Wells, *A Short History of the World*, Qwen3-0.6B at this recipe, one
-seed): λ 2,500,000 at 15 epochs scored WikiText-2 15.91 and held-out 27.12, the recipe's
-1,000,000 re-run at its best epoch, 8, scored 15.94 and 26.91, and the recipe's own 15 epochs
-16.59 and 28.66. There, a stronger anchor and a shorter run reached about the same point.
+λ. One measured case (H. G. Wells, *A Short History of the World*, Qwen3-0.6B, one seed, on the
+earlier frame of [the dose note](#run-length-and-checkpointing), where the recipe's λ was
+1,000,000): λ 2,500,000 at 15 epochs scored WikiText-2 15.91 and held-out 27.12, λ 1,000,000
+re-run at its best epoch, 8, scored 15.94 and 26.91, and λ 1,000,000 at 15 epochs 16.59 and
+28.66. There, a stronger anchor and a shorter run reached about the same point.
 
 In one workspace, each value is a run of the same stage (`runs/stage1_run2`, …;
 [above](#run-length-and-checkpointing)). Run `lfa evaluate` after each: the numbers land in that

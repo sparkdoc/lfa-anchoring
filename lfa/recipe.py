@@ -122,9 +122,9 @@ class Recipe:
         stage2_lambda_multiplier: What :meth:`to_train_config` multiplies lambda by from stage 2
             on. A later stage anchors a model that already carries a domain, and what that wants
             is a *harder* anchor; it is a level, not a per-stage compounding factor. The shipped
-            3.0 was measured on one pair of domains (ahead of 1.0 on retention for both bundled
-            models) -- lambda is coupled to the corpus, so a chain over a new pair of domains
-            re-tunes it.
+            3.0 was measured on one pair of domains (ahead of 1.0 on all three axes for
+            Qwen3-0.6B at lambda 160,000; unmeasured on Qwen3-1.7B at this lambda) -- lambda is
+            coupled to the corpus, so a chain over a new pair of domains re-tunes it.
         calibrated_rank: The LoRA rank the lambdas were tuned at.
         calibrated_artifact: What the lambdas were calibrated against: ``self-generated`` (an
             artifact fitted on this model's own text at :attr:`self_generated_frame`), or an id
@@ -137,9 +137,8 @@ class Recipe:
             ``self-generated``.
         supplement_fraction: The share of training *tokens* made up of the question-and-answer
             pairs the entry model writes from the domain, in ``[0, 1)``. 0.13 is the fraction the
-            shipped lambda was tuned at, with the one-pass supplement of earlier versions (not
-            the two-pass writer's); 0.0 trains on the raw corpus alone (off that frame). It is
-            read by the workspace, not by :meth:`to_train_config`.
+            shipped lambda was tuned at, with the two-pass writer; 0.0 trains on the raw corpus
+            alone (off that frame). It is read by the workspace, not by :meth:`to_train_config`.
 
     Every other field is the corresponding :class:`lfa.train.TrainConfig` knob; see that class for
     what each does. Values are validated on construction, so a hand-edited YAML fails at load
@@ -157,8 +156,8 @@ class Recipe:
     full_weight: bool = False
 
     # -- anchoring
-    lambda_qkv: float = 1_000_000.0
-    lambda_mlp: float = 1_000_000.0
+    lambda_qkv: float = 160_000.0
+    lambda_mlp: float = 160_000.0
     mu: float = 0.05
     anchor_end_ratio: float = 0.1
     anchor_schedule: str = "cosine"
@@ -182,8 +181,8 @@ class Recipe:
     val_fraction: float = 0.1
     # -- the supplement: the question-and-answer pairs the entry model writes from the domain,
     #    mixed in at this share of training TOKENS. 0.13 is the fraction the shipped lambda was
-    #    tuned at, with the one-pass supplement; 0.0 trains on the raw corpus alone (and is off
-    #    that frame).
+    #    tuned at, with the two-pass writer; 0.0 trains on the raw corpus alone (and is off that
+    #    frame).
     supplement_fraction: float = 0.13
 
     # -- what the point was calibrated at

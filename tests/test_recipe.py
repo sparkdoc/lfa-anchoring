@@ -20,7 +20,7 @@ from lfa.recipe import BUNDLED_DIR, RECORDED_SELF_GENERATED_FRAME, SELF_GENERATE
 SHIPPED = dict(
     name="qwen3-0.6b", model_id="Qwen/Qwen3-0.6B", artifact="self-generated",
     lora_rank=32, lora_alpha=64, freeze_embed=True, full_weight=False,
-    lambda_qkv=1000000.0, lambda_mlp=1000000.0, mu=0.05,
+    lambda_qkv=160000.0, lambda_mlp=160000.0, mu=0.05,
     anchor_end_ratio=0.1, anchor_schedule="cosine", n_anchor_samples=16,
     epochs=15, checkpoint_mode="rolling", checkpoint_every=5,
     learning_rate=3e-4, lr_schedule="cosine", batch_size=6, gradient_accumulation_steps=1,
@@ -39,15 +39,15 @@ def test_bundled_recipe_is_the_published_operating_point():
     assert dataclasses.asdict(recipe) == SHIPPED
 
 
-#: The Qwen3-1.7B point: the 0.6B recipe's frame, and a lambda measured on this model that came out
+#: The Qwen3-1.7B point: the 0.6B recipe's frame, and a lambda read on this model that came out
 #: at the 0.6B recipe's value.
 SHIPPED_1_7B = dict(SHIPPED, name="qwen3-1.7b", model_id="Qwen/Qwen3-1.7B",
-                    lambda_qkv=1000000.0, lambda_mlp=1000000.0)
+                    lambda_qkv=160000.0, lambda_mlp=160000.0)
 
 
 def test_the_qwen3_1_7b_recipe_is_its_calibrated_operating_point():
-    """lambda 1e6 and the 3x stage-2 multiplier were measured on this model; every other value
-    is the 0.6B recipe's frame."""
+    """lambda 160,000 was read on this model; every other value, the 3x stage-2 multiplier
+    included, is the 0.6B recipe's frame."""
     assert dataclasses.asdict(Recipe.load("qwen3-1.7b")) == SHIPPED_1_7B
 
 
@@ -65,7 +65,7 @@ def test_each_bundled_model_has_its_recipe(model_id, name):
 def test_the_qwen3_1_7b_header_says_how_its_lambda_was_chosen_and_that_it_does_not_port():
     comments = "\n".join(line for line in (BUNDLED_DIR / "qwen3-1.7b.yaml").read_text().splitlines()
                          if line.lstrip().startswith("#"))
-    for phrase in ("Qwen3-1.7B", "Apache-2.0", "1,000,000", "held-out Darwin", "WikiText-2",
+    for phrase in ("Qwen3-1.7B", "Apache-2.0", "160,000", "held-out Darwin", "WikiText-2",
                    "one seed", "RTX 3090", "50,000", "does not port"):
         assert phrase in comments, f"the 1.7B recipe's comment block never mentions {phrase!r}"
 
@@ -73,7 +73,7 @@ def test_the_qwen3_1_7b_header_says_how_its_lambda_was_chosen_and_that_it_does_n
 def test_bundled_recipe_is_found_from_the_package_not_the_working_directory(tmp_path, monkeypatch):
     """`load` resolves against the installed package, so a wheel and a `cd` both work."""
     monkeypatch.chdir(tmp_path)
-    assert Recipe.load("qwen3-0.6b").lambda_qkv == 1000000
+    assert Recipe.load("qwen3-0.6b").lambda_qkv == 160000
     assert BUNDLED_DIR.is_dir() and (BUNDLED_DIR / "qwen3-0.6b.yaml").is_file()
 
 
@@ -115,7 +115,7 @@ def test_yaml_says_what_keep_short_whole_chooses_between():
 def test_stage_one_config_carries_the_recipe_verbatim(tmp_path):
     config = Recipe.load("qwen3-0.6b").to_train_config(1, tmp_path / "stats.pt")
 
-    assert config.lambda_qkv == 1000000 and config.lambda_mlp == 1000000
+    assert config.lambda_qkv == 160000 and config.lambda_mlp == 160000
     assert config.model_id == "Qwen/Qwen3-0.6B"
     assert config.artifact_path == str(tmp_path / "stats.pt")
     assert (config.mu, config.n_anchor_samples) == (0.05, 16)
@@ -142,14 +142,14 @@ def test_checkpointing_leaves_a_run_resumable(tmp_path):
 
 def test_stage_two_multiplies_lambda(tmp_path):
     config = Recipe.load("qwen3-0.6b").to_train_config(2, tmp_path / "stats.pt")
-    assert config.lambda_qkv == 3000000
-    assert config.lambda_mlp == 3000000
+    assert config.lambda_qkv == 480000
+    assert config.lambda_mlp == 480000
 
 
 def test_the_stage_two_lift_is_a_level_not_a_compounding_factor(tmp_path):
     """Stage 3 anchors like stage 2: the multiplier says "a later stage", not "per stage"."""
     recipe = Recipe.load("qwen3-0.6b")
-    assert recipe.to_train_config(3, tmp_path / "s.pt").lambda_qkv == 3000000
+    assert recipe.to_train_config(3, tmp_path / "s.pt").lambda_qkv == 480000
 
 
 def test_stage_below_one_is_rejected(tmp_path):
@@ -204,20 +204,20 @@ def test_a_lambda_or_mu_that_cannot_weight_a_loss_is_refused(tmp_path, knob, bad
 def test_no_override_note_when_nothing_moved():
     recipe = Recipe.load("qwen3-0.6b")
     assert recipe.override_notes(1) == []
-    assert recipe.override_notes(1, lambda_=1e6, mu=0.05) == []          # the recipe's own
-    assert recipe.override_notes(2, lambda_=3e6) == []                   # stage 2's own
+    assert recipe.override_notes(1, lambda_=1.6e5, mu=0.05) == []        # the recipe's own
+    assert recipe.override_notes(2, lambda_=4.8e5) == []                 # stage 2's own
 
 
 def test_an_off_recipe_lambda_names_the_value_set_and_the_one_calibrated():
     [note] = Recipe.load("qwen3-0.6b").override_notes(1, lambda_=2.5e6)
     assert note.startswith("lambda 2.5e+06 set by lambda_=;")       # from Python: the argument
-    assert "the recipe calibrated 1e+06." in note
+    assert "the recipe calibrated 160000." in note
     assert "no stage multiplier on top" in note
 
 
 def test_at_stage_two_the_note_quotes_the_multiplied_value_and_says_where_it_came_from():
     [note] = Recipe.load("qwen3-0.6b").override_notes(2, lambda_=1e6)
-    assert "the recipe calibrated 3e+06 for stage 2 (1e+06 x its stage-2 multiplier 3)" in note
+    assert "the recipe calibrated 480000 for stage 2 (160000 x its stage-2 multiplier 3)" in note
 
 
 def test_mu_and_the_unanchored_control_are_named():
@@ -287,7 +287,7 @@ def test_the_rank_warning_quotes_qwen3_0_6b_s_measured_range_only_for_qwen3_0_6b
 def test_the_rank_warning_quotes_both_lambdas_when_they_differ():
     recipe = dataclasses.replace(Recipe.load("qwen3-0.6b"), lambda_mlp=50000.0)
     [warning] = recipe.warnings(16, "self-generated:abc", _selfgen_meta("Qwen/Qwen3-0.6B"))
-    assert "qkv 1e+06" in warning and "mlp 50000" in warning
+    assert "qkv 160000" in warning and "mlp 50000" in warning
 
 
 def test_a_different_artifact_warns_on_its_own():
@@ -334,7 +334,7 @@ def test_a_saved_recipe_is_plain_readable_yaml(tmp_path):
     path = tmp_path / "probe.yaml"
     Recipe.load("qwen3-0.6b").save(path)
     loaded = yaml.safe_load(path.read_text())
-    assert loaded["lambda_qkv"] == 1000000 and loaded["lr_schedule"] == "cosine"
+    assert loaded["lambda_qkv"] == 160000 and loaded["lr_schedule"] == "cosine"
 
 
 def test_an_unknown_field_is_refused_rather_than_ignored(tmp_path):

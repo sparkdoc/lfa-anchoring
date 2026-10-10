@@ -48,10 +48,12 @@ cookery for a chain's second stage). Maxima while training:
 | Qwen3-1.7B | unanchored, 8 and 15 epochs | 11,236 MiB (about 11.0 GiB) |
 | Qwen3-1.7B | a two-stage chain's second stage, training on the fused model | 16,206–19,291 MiB (up to about 18.8 GiB) |
 
-The 19,291 MiB arm is the bundled `qwen3-1.7b` recipe's own chain point (λ 1,000,000, stage-2
-multiplier 3), and it held that for about the last 5 minutes of the stage. Being an upper bound,
-it does not prove a 16 GB card too small, but a Qwen3-1.7B chain has only been measured on 24 GB
-cards. The Qwen3-0.6B run reading above both Qwen3-1.7B single-stage runs is a caching
+The 19,291 MiB arm is a chain at λ 1,000,000 with stage-2 multiplier 3 (the cookbook's worked
+example, on an earlier frame than this release's), and it held that for about the last 5 minutes
+of the stage. Being an upper bound, it does not prove a 16 GB card too small, but a Qwen3-1.7B
+chain has only been measured on 24 GB cards. A chain at the bundled `qwen3-1.7b` recipe's λ,
+160,000, is unmeasured on that model; on Qwen3-0.6B a chain at 160,000 peaked at 12,796 MiB (1×)
+and 12,773 MiB (3×). The Qwen3-0.6B run reading above both Qwen3-1.7B single-stage runs is a caching
 effect of this measure, not a statement about model size. PyTorch's own allocated peak — the other
 measure — was taken for Qwen3-0.6B only (8.63 GiB, above). Per arm, with the λ ladder: [the
 cookbook's worked example](model-integration-cookbook.md#9-worked-example-qwen3-17b).
@@ -246,7 +248,10 @@ Read the two axes together and always in that order:
    commands that train the control there.
 
 A general number below base is at best incidental and at worst a symptom. It is not evidence that
-anything was preserved.
+anything was preserved. On Qwen3-1.7B, a chat-tuned model, an unanchored 3-epoch run on the
+walkthrough's Darwin text scored WikiText-2 16 % below the base model's: with no anchor at all.
+So do not lower λ because WikiText-2 keeps falling
+([tuning.md §4](tuning.md#4-λ-when-to-try-another)).
 
 ## How do I use a model that is not Qwen3-0.6B or Qwen3-1.7B?
 

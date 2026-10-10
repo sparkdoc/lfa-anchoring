@@ -3,48 +3,71 @@
 # The model: Qwen3-1.7B (Qwen/Qwen3-1.7B, Apache-2.0), 28 layers, hidden width 2048, tied
 # embedding and LM head. What this is: rank-32 LoRA (alpha 64, embedding and LM head frozen) over
 # a p(h) artifact fitted on the model's own text (see `self_generated_frame` below), anchored at
-# lambda = 1,000,000 on both site families with mu = 0.05 as the uniform weight backstop, n = 16
+# lambda = 160,000 on both site families with mu = 0.05 as the uniform weight backstop, n = 16
 # anchor samples per step, the anchor's layer schedule decaying to 0.1 of layer 0 on a cosine.
-# Adam at 3e-4, batch 6 x 512 tokens, 50 warmup steps then cosine decay to zero over the fifteen
-# epochs trained. Every field but `name` and `model_id` is the Qwen3-0.6B recipe's; the two
-# lambdas were calibrated on this model and came out at the same value.
+# Adam at 3e-4, batch 6 x 512 tokens, 50 warmup steps then cosine decay to zero over the epochs
+# trained. Every field but `name` and `model_id` is the Qwen3-0.6B recipe's. The two lambdas were
+# read on each model separately and came out at the same value by different readings: the
+# qwen3-0.6b recipe's by the selection rule, this one's by behaviour drift (below).
 #
 # How lambda was chosen (Qwen3-1.7B; its self-generated artifact at the recorded frame; the
-# Darwin text of the two-domain walkthrough with its question-and-answer supplement; one seed;
-# perplexity; RTX 3090; 2026-10-04/05). Each rung trained the recipe's 15 epochs and was scored
-# on WikiText-2 (100 windows, 51,200 tokens) and on held-out Darwin. The selection rule set
-# beforehand assumed that the unanchored control improves the domain; at 15 epochs it does not --
-# on this small corpus it over-trains (held-out Darwin 21.45 -> 162.7, WikiText-2 +778 %). So
-# lambda was chosen on the 15-epoch frontier as the rung best on BOTH axes, extending the ladder
-# until it turned over:
+# Darwin text of the two-domain walkthrough, about 189 k training tokens an epoch, with the
+# model's own two-pass question-and-answer supplement at 0.13, its pairs shuffled under seed 42;
+# the cosine laid over the run's real step count; one seed; perplexity; RTX 3090; 2026-10-08/09).
+# Each rung was kept at its own dose (docs/tuning.md §4): a 15-epoch run, then a re-run at the
+# epoch its validation curve turned at (1M and 2.5M kept their 15). Scored on WikiText-2 (100
+# windows, 51,200 tokens) and on held-out Darwin (26,147 tokens); base 15.09 and 21.45:
 #
-#   lambda 20k / 50k / 100k / 200k / 500k / 1M / 2.5M / 5M; held-out Darwin against base:
-#   +95.8 / +26.1 / -7.3 / -23.2 / -34.7 / -36.5 / -35.6 / -33.6 %; WikiText-2 against base:
-#   +3.8 / -0.4 / -4.0 / -6.6 / -11.0 / -12.8 / -11.8 / -7.8 %.
+#   lambda (epochs kept)  10.24k (3) / 25.6k (4) / 64k (5) / 160k (5)
+#   WikiText-2            11.60      / 11.81     / 12.10   / 12.19
+#   held-out Darwin       12.25      / 12.65     / 12.98   / 13.15
 #
-# 1,000,000 is the interior optimum: WikiText-2 13.15 (-12.8 %), held-out Darwin 13.63 (-36.5 %).
-# WikiText-2 falls below base at strong lambda, as measured; no mechanism is claimed for it.
-# The full table is in docs/recipes.md.
+#   lambda (epochs kept)  400k (9) / 1M (15) / 2.5M (15)
+#   WikiText-2            13.09    / 13.43   / 13.52
+#   held-out Darwin       13.51    / 13.76   / 13.87
 #
-# The dose at this lambda. On this corpus (about 189 k training tokens an epoch) the per-epoch
-# validation perplexity (the training split's own 10 %) fell from 14.53 after epoch 1 to its
-# lowest, 12.69, at epoch 11 and ended at 12.71, 0.2 % above it: a shallow turn, which the trainer
-# reports with a re-run at epoch 11 called optional (no 11-epoch run was measured). At lambda =
-# 100,000 it bottomed at epoch 5 (12.25) and ended at 18.45. An unanchored 4-epoch run reaches
-# held-out Darwin 14.34 with WikiText-2 flat (15.09 -> 15.01). One seed, one corpus: on your own
-# corpus, read the per-epoch held-out column and set the dose from it (docs/recipes.md).
+#   unanchored control (lambda = mu = 0): 3 epochs 12.62 / 12.21, 4 epochs 14.68 / 14.33,
+#   5 epochs 18.41 / 19.02, 15 epochs 142.30 / 163.16.
 #
-# The stage-2 multiplier. A two-stage chain (Darwin, then the walkthrough's cookery text, 15
-# epochs each) at lambda = 1,000,000: 3x matched 1x on cookery (-27.0 % against -26.4 %) and
-# beat it on Darwin retention (held-out Darwin +12.8 % against +19.0 % over stage 2) and on
-# WikiText-2 (100 windows, -2.6 % against +0.5 %); at lambda = 100,000, 3x was ahead on all
-# three. One seed, one pair of domains, perplexity.
+# This lambda departs from the selection rule, and says so. Each control (3, 4 and 5 epochs)
+# improves the domain, so the rule is the first one of docs/model-integration-cookbook.md §5 (the
+# lowest WikiText-2 among the rungs with at least 90 % of the control's domain gain), and it picked
+# the lowest rung at every extension: 64k, then 25.6k, then 10.24k. Where it would stop is
+# unmeasured; at 3 epochs the unanchored control is behind 10.24k on WikiText-2 (12.62 against
+# 11.60), yet itself 16 % below base, and lower than every rung on held-out Darwin. On a chat-tuned
+# model WikiText-2 below base is not a sign that nothing was forgotten (docs/tuning.md §4), so here
+# it cannot choose lambda. What does separate anchor from no anchor is the shift in the base model's
+# own answers to 40 general prompts (teacher-forced NLL of its greedy answers against the base
+# model's, nats; one greedy decode): +0.346 for the 4-epoch control, and for the rungs 25.6k +0.117,
+# 64k +0.118, 160k +0.089, 400k +0.108, 1M +0.134, 2.5M +0.131 (10.24k and the 3-epoch control not
+# probed). 160,000 is the lowest. Against 64k the comparison is dose-matched (both 5 epochs); the
+# kept doses rise with lambda above it (9 and 15 epochs), so against 400k, 1M and 2.5M the shift is
+# not separated from dose. Against the rule's domain bar 160,000 passes at the 4- and 5-epoch
+# controls and misses the 3-epoch control's by 0.02 (13.155 against at most 13.132); its WikiText-2
+# is within 1 % of 64k's. One seed, one corpus, one set of probe prompts. The full table is in
+# docs/recipes.md. At a common 15 epochs this frame's rungs would still give 1,000,000 (best on both
+# axes), so the move to 160,000 is the own-dose reading and this departure, not the frame.
+#
+# The dose at this lambda. The 15-epoch run's per-epoch validation perplexity (the training
+# split's own 10 %) was lowest at epoch 5 (12.40) and ended at 18.29, 47.4 % above it; that run
+# scored WikiText-2 14.54 and held-out Darwin 19.51, against 12.19 and 13.15 for the re-run at
+# --epochs 5. `epochs` stays 15 for the qwen3-0.6b recipe's reason: the run names the epoch its
+# curve turned at, and the re-run there is the run to ship (docs/tuning.md §2). At lambda =
+# 1,000,000 the same text turned at epoch 13. One seed, one corpus: on your own corpus, read the
+# run's last line.
+#
+# The stage-2 multiplier is unmeasured on Qwen3-1.7B at this lambda. 3.0 is the qwen3-0.6b
+# recipe's, from its two-stage chain at 160,000 (Darwin, then the walkthrough's cookery text),
+# where 3x was ahead of 1x on all three axes at the recipe dose. On an earlier frame (the one-pass
+# supplement, its pairs unshuffled, a schedule sized from the first epoch; 2026-10-04/05), at
+# lambda = 1,000,000, this model's 3x matched 1x on cookery and beat it on Darwin retention and on
+# WikiText-2. One seed, one pair of domains, perplexity.
 #
 # Lambda does not port across artifacts, domains or protocols. A separate research run on another
 # domain chose 50,000 for this model, against an artifact fitted on real text and at a different
 # protocol; it is not this recipe's point, and this recipe's point is not its. The qwen3-0.6b
-# recipe was calibrated the same way on the same Darwin text and landed on the same lambda: two
-# models, one corpus, one seed, which is not evidence that lambda is independent of model size.
+# recipe landed on the same lambda on the same Darwin text, by a different reading: two models,
+# one corpus, one seed, which is not evidence that lambda is independent of model size.
 #
 # This is a JOINT point: the values were tuned together, and lambda in particular does not travel
 # on its own. It is coupled to three things:
@@ -73,14 +96,17 @@ freeze_embed: true
 full_weight: false
 
 # -- anchoring: lambda (function anchor) and mu (the uniform weight backstop)
-lambda_qkv: 1000000.0
-lambda_mlp: 1000000.0
+lambda_qkv: 160000.0
+lambda_mlp: 160000.0
 mu: 0.05
 anchor_end_ratio: 0.1
 anchor_schedule: cosine
 n_anchor_samples: 16
 
 # -- run length and checkpointing
+# 15 epochs is the run that finds the dose: it ends with the held-out curve's verdict, and when the
+# curve turned earlier (epoch 5 on the walkthrough's Darwin text at this lambda) a re-run with
+# `--epochs <that epoch>` is the one to keep
 epochs: 15
 # rolling: `latest_model` plus `training_state.pt` every 5 epochs, so an interrupted run can be
 # resumed rather than restarted. `final_model` is what ships either way.
@@ -91,9 +117,10 @@ checkpoint_every: 5
 learning_rate: 3.0e-4
 # warmup then cosine decay to zero over the epochs actually trained (`constant` holds the peak)
 lr_schedule: cosine
-# 6 x 512 fits one 24 GB card (RTX 3090): anchored 15-epoch training peaked at about 12.7 GiB,
-# and stage 2 of a chain at up to 19,291 MiB (nvidia-smi memory.used, every 10 s; it includes
-# PyTorch's caching allocator, so an upper bound on what a run needs)
+# 6 x 512 fits one 24 GB card (RTX 3090): anchored 15-epoch training peaked at about 12.7 GiB
+# (13,033 MiB at this lambda), and stage 2 of a chain at up to 19,291 MiB (a chain at lambda
+# 1,000,000 x 3, on the earlier frame); nvidia-smi memory.used, every 10 s, which includes
+# PyTorch's caching allocator, so an upper bound on what a run needs
 batch_size: 6
 gradient_accumulation_steps: 1
 warmup_steps: 50
@@ -110,8 +137,9 @@ keep_short_whole: true
 # measurement rather than a fit
 val_fraction: 0.1
 
-# -- later stages of a chain: lambda x 3 from stage 2 on, measured on one pair of domains (above);
-# for YOUR pair of domains it is where to begin re-tuning, judged on the same two axes.
+# -- later stages of a chain: lambda x 3 from stage 2 on, the qwen3-0.6b recipe's value (unmeasured
+# on this model at this lambda, above); for YOUR pair of domains it is where to begin re-tuning,
+# judged on the same two axes.
 stage2_lambda_multiplier: 3.0
 
 # -- what this point was calibrated at (the couplings above are checked against these)

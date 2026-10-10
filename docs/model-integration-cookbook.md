@@ -483,9 +483,9 @@ self-generated artifact at the recorded frame, and means nothing elsewhere
 The protocol below picks λ by a stated rule, so the pick is not a guess. It uses perplexity only —
 held-out domain perplexity and WikiText-2 — and the public text of the walkthrough notebook. It is
 for a **new model**. A bundled model on your own corpus needs less: [tuning.md](tuning.md) sets the
-epochs from the held-out curve and tries λ either side of the recipe's on your text, picking by step
-5's rule for a control that over-trains (its second paragraph), which is the usual case there
-because the unanchored curve turns much sooner than the anchored one.
+epochs from the held-out curve and tries λ either side of the recipe's on your text, each at its own
+dose, picking by step 5's rules (which one applies depends on the unanchored control at the recipe
+λ's dose).
 
 1. **Make the uncalibrated recipe.** Start from a copy of the bundled recipe with `model_id` and
    `calibrated_rank` set to your point ([recipes.md](recipes.md#writing-your-own)). Set
@@ -514,14 +514,14 @@ because the unanchored curve turns much sooner than the anchored one.
    in `data/darwin/` and `data/cookery/`, and the base model's supplement beside
    `data/darwin/train`. Every run below reuses them.
 
-3. **The unanchored controls** (λ = μ = 0), at two doses: the recipe's own epoch count — the dose
-   you will train at, `epochs` in the recipe (15 in the bundled one) — and a short dose of 4 epochs.
-   Together they are the unanchored model's dose curve: how far the domain can move, how soon,
-   and what training on at the recipe dose costs on both axes when nothing is preserved. The
-   4-epoch control is §4's probe witness (the same recipe copy, text and epochs), so evaluate
-   `runs/witness` rather than training it again. Each dose is its own run, because the
-   learning-rate schedule is laid over the run's epochs: a 15-epoch run passes through no 4-epoch
-   state. An 8-epoch control is an optional third point on the curve.
+3. **The unanchored controls** (λ = μ = 0), at two doses: the recipe's own epoch count — `epochs`
+   in the recipe (15 in the bundled one) — and a short dose of 4 epochs. Together they are the
+   unanchored model's dose curve: how far the domain can move, how soon, and what training on at
+   the recipe dose costs on both axes when nothing is preserved. The 4-epoch control is §4's probe
+   witness (the same recipe copy, text and epochs), so evaluate `runs/witness` rather than
+   training it again. Each dose is its own run, because the learning-rate schedule is laid over
+   the run's epochs: a 15-epoch run passes through no 4-epoch state. Step 5 adds one more control,
+   at the dose of the rung it picks, when neither of these is at that dose.
 
    ```bash
    lfa init     runs/lam0-e15 --model your/model --artifact runs/your-model/artifacts/v1.pt --recipe recipes/your-model-lam0.yaml
@@ -544,14 +544,19 @@ because the unanchored curve turns much sooner than the anchored one.
    windows of 512 tokens (51,200 tokens) by default, and the whole test split with
    `--n-windows 0`. A figure at one count is not read against a figure at the other.
 
-4. **The λ ladder**, at a fixed rank (32) and at the recipe dose (15 epochs, as the long control):
-   three rungs a factor of 2–2.5 apart around a starting guess, each from its own recipe copy and
-   run as the control above. With no starting guess, cover roughly a decade with rungs a factor of
-   2–3 apart. Arms can run in parallel, one per card.
+4. **The λ ladder, each rung at its own dose**, at a fixed rank (32): three rungs a factor of
+   2–2.5 apart around a starting guess, each from its own recipe copy. With no starting guess,
+   cover roughly a decade with rungs a factor of 2–3 apart. Each rung trains the recipe's 15
+   epochs and ends with its held-out verdict. When that line advises a re-run (the curve turned
+   and ended 1 % or more above its lowest), re-run the rung once at that epoch, in the same
+   workspace; a rung whose re-run is "optional", or whose curve had not turned, is kept as run.
+   The kept run is the rung's reading ([tuning.md §4](tuning.md#4-λ-when-to-try-another) is the
+   same procedure on a bundled model). Arms can run in parallel, one per card.
 
    ```bash
    lfa init     runs/lam1e6 --model your/model --artifact runs/your-model/artifacts/v1.pt --recipe recipes/your-model-lam1e6.yaml
    lfa train    --workspace runs/lam1e6 --corpus data/darwin/train --epochs 15
+   lfa train    --workspace runs/lam1e6 --corpus data/darwin/train --epochs <its lowest epoch>   # when advised
    lfa evaluate --workspace runs/lam1e6 --corpus data/darwin/heldout
    ```
 
@@ -559,42 +564,67 @@ because the unanchored curve turns much sooner than the anchored one.
    1000000`, and a control with `--lambda 0 --mu 0` ([recipes.md](recipes.md#trying-another-λ));
    the run records the λ it used, and its recipe file stays the uncalibrated copy.
 
-5. **The selection rule.** First read the long control. If it improves the held-out domain over
-   the base model: among the ladder runs whose held-out domain improvement over the base model (the
-   drop in held-out perplexity) is at least 90 % of the control's improvement, choose the one with
-   the lowest WikiText-2 perplexity; ties within 1 % go to the smaller λ.
+5. **The selection rule.** First read the unanchored control at the kept dose of the rung the rule
+   would pick (train it with `--lambda 0 --mu 0 --epochs <that dose>` if step 3 has none at that
+   dose). If it improves the held-out domain over the base model: among the ladder rungs whose
+   held-out domain improvement over the base model (the drop in held-out perplexity) is at least
+   90 % of the control's improvement, choose the one with the lowest WikiText-2 perplexity; ties
+   within 1 % go to the smaller λ.
 
-   **If the control over-trains at the recipe dose** — its held-out domain perplexity ends above the
+   **If the control over-trains at that dose** — its held-out domain perplexity ends above the
    base model's — every rung that does not over-train worse than the control clears that 90 % bar,
-   and the rule above reduces to the general axis alone. Then pick, on the recipe-dose frontier, the
-   rung that is best on both axes (lowest held-out domain perplexity and lowest WikiText-2). If no
-   rung is best on both, take the rung with the lowest held-out domain perplexity among the rungs
-   within 1 % of the lowest WikiText-2 perplexity.
+   and the rule above reduces to the general axis alone. Then pick the rung that is best on both
+   axes (lowest held-out domain perplexity and lowest WikiText-2). If no rung is best on both, take
+   the rung with the lowest held-out domain perplexity among the rungs within 1 % of the lowest
+   WikiText-2 perplexity.
 
    Either way, if the choice lands at an end of the ladder, add a rung one step further out (a
-   factor 2–2.5) and read again, until the ladder turns over and the choice is interior. Record the
-   whole frontier — held-out domain perplexity against general perplexity, the controls included —
-   not only the pick. Pick from the frontier, never from the general axis alone: over-anchoring
-   makes general perplexity look its best while domain quality collapses, and that failure is
-   invisible unless you are watching the domain number. For Qwen3-1.7B the control over-trained at
-   15 epochs, and the rung best on both axes was λ = 1,000,000 (§9). For Qwen3-0.6B, on the same
-   Darwin text, no rung was best on both and the fallback picked the same 1,000,000
-   ([recipes.md](recipes.md#how-λ-was-chosen)). Two models, one corpus, one seed: that is not
-   evidence that λ is independent of model size, and λ does not port, even within a family.
+   factor 2–2.5), kept at its own dose, and read again against the control at the new pick's dose,
+   until the ladder turns over and the choice is interior. Record the whole frontier — held-out
+   domain perplexity against general perplexity, the controls included — not only the pick. Pick
+   from the frontier, never from the general axis alone: over-anchoring makes general perplexity
+   look its best while domain quality collapses, and that failure is invisible unless you are
+   watching the domain number.
+
+   **If the ladder keeps winning at its bottom rung, WikiText-2 may not be registering forgetting.** On
+   a chat-tuned model WikiText-2 can fall below the base model's with no anchor at all
+   ([tuning.md §4](tuning.md#4-λ-when-to-try-another)), and then each extension picks the new
+   bottom rung and the rule cannot choose λ. The bundled Qwen3-1.7B recipe departed from the rule
+   there, on a behaviour probe measured outside this package (one seed, 40 general prompts: the
+   shift in the base model's own greedy answers, scored teacher-forced under the trained model);
+   it took the rung whose shift was lowest. A departure like that is recorded in the recipe's
+   header with its reason.
+
+   The bundled recipes were read this way, on the Darwin text: Qwen3-0.6B by the first rule (at the
+   kept dose the control improved the domain), an interior pick, 160,000; Qwen3-1.7B by the
+   departure above, also 160,000, after the rule had picked the bottom rung at each extension
+   (64,000, then 25,600, then 10,240; where it would stop is unmeasured)
+   ([recipes.md](recipes.md#how-λ-was-chosen)). Read at a common 15 epochs instead, the same frame's
+   15-epoch runs still pick 1,000,000 for Qwen3-1.7B (best on both axes) and land on the 2,500,000
+   end rung for Qwen3-0.6B, so what moved the picks down to 160,000 is the own-dose reading (and,
+   on Qwen3-1.7B, the behaviour departure), not the frame. An
+   earlier calibration at a common 15 epochs, on the frame of its time, picked 1,000,000 for both;
+   §9 walks it. Two models, one corpus, one seed: that the two picks agree is not evidence that λ
+   is independent of model size, and λ does not port, even within a family.
 6. **The dose curve**: no new run. From the chosen rung's validation curve, record the epoch with
    the lowest validation perplexity and the value at the last epoch, beside the controls' curves.
    Every run reports both at its end (`Held-out perplexity: lowest … at epoch …; final …`), and
    each stage's entry in the workspace's `history.json` keeps them under `held_out`.
-   At the recipe dose the chosen rung's curve should not climb in the late epochs the way the
-   control's does. If it does, the recipe's epoch count is too long for that λ: shorten `epochs` in
-   the recipe copies, re-run the long control and the ladder at the new dose, and read them again
-   (steps 3–5).
+   If the chosen rung's curve climbs before the recipe dose, record the epoch it turned at. The
+   turn depends on the corpus, on λ and on the model: on the same Darwin text at the same λ,
+   Qwen3-0.6B and Qwen3-1.7B turned at epochs 4 and 5 (64,000), 4 and 5 (160,000), 7 and 9
+   (400,000), and 10 and 13 (1,000,000). The bundled recipes keep `epochs: 15` and rely on the
+   end-of-run verdict ([tuning.md §2](tuning.md#2-run-the-recipe-once-and-read-its-last-line)): a
+   run whose curve turned within the 15 epochs is told to re-run at its turn, and one still falling
+   at the last epoch is told to raise `--epochs`. Shorten `epochs` in your recipe only if every
+   corpus it is meant for is about the size of this one.
 7. **The stage-2 multiplier.** A two-stage chain, Darwin then cookery, at the chosen λ with
-   `stage2_lambda_multiplier` 1 and 3, the recipe dose (15 epochs) in each stage:
+   `stage2_lambda_multiplier` 1 and 3: stage 1 at the chosen rung's kept dose, stage 2 at the
+   recipe dose (15 epochs):
 
    ```bash
    lfa init     runs/chain-m3 --model your/model --artifact runs/your-model/artifacts/v1.pt --recipe recipes/your-model-m3.yaml
-   lfa train    --workspace runs/chain-m3 --corpus data/darwin/train --epochs 15
+   lfa train    --workspace runs/chain-m3 --corpus data/darwin/train --epochs <the kept dose>
    lfa extend   --workspace runs/chain-m3
    lfa train    --workspace runs/chain-m3 --corpus data/cookery/train --epochs 15
    lfa evaluate --workspace runs/chain-m3 --corpus data/darwin/heldout
@@ -606,7 +636,10 @@ because the unanchored curve turns much sooner than the anchored one.
    fused stage-1 model. Both evaluations score WikiText-2 at the default 51,200 tokens, the ladder's
    count, so the arms read against each other and against the ladder on one measure. Choose the
    multiplier that keeps more of Darwin (held-out Darwin after stage 2, lower is better) while
-   cookery's improvement stays within 90 % of the better arm's. Record both arms.
+   cookery's improvement stays within 90 % of the better arm's, read at the recipe dose (15
+   epochs), as the bundled multiplier was. Record both arms, and each arm's stage 2 re-run at its
+   own turn beside them: on Qwen3-0.6B at 160,000 that reading tips marginally to 1×
+   ([recipes.md](recipes.md#how-λ-was-chosen)).
 8. **Then, and only then, change rank.** Lower rank ⇒ lower λ, and the frontier has to be re-read.
 
 μ = 0.05 is a reasonable starting backstop on a new model; it is a global shrinkage term rather
@@ -697,9 +730,9 @@ scope; it does not mean passed against a threshold.
 - [ ] The unprompted corpus has been read: its language share and empty count recorded.
 - [ ] The probe has run with a witness from an unanchored run, and its numbers are recorded beside
       the reference model's, with the witness recipe.
-- [ ] The controls (recipe dose and 4 epochs), the λ ladder at the recipe dose, the selection, the
-      dose curve and the stage-2 multiplier are recorded, with their scope and WikiText-2 window
-      count.
+- [ ] The controls (recipe dose, 4 epochs, and the pick's dose), the λ ladder with each rung at its
+      own dose, the selection (and any departure from it, with its reason), the dose curve and the
+      stage-2 multiplier are recorded, with their scope and WikiText-2 window count.
 - [ ] The recipe is bundled with true `calibrated_*` fields and a scoped header; `lfa init` on the
       model adopts it, and `lfa train` logs no calibration note.
 - [ ] The tests of §7 are in, and the fast tier passes.
@@ -709,6 +742,16 @@ scope; it does not mean passed against a threshold.
 What integrating Qwen3-1.7B (`Qwen/Qwen3-1.7B`) took, step by step. Everything measured here is on
 Qwen3-1.7B except the Qwen3-0.6B figures each bullet names for comparison; one training seed;
 RTX 3090 cards (24 GB, one run per card) in a host with 125 GiB of RAM; 2026-10-03 to 2026-10-05.
+
+**The frame of this example.** Its calibration (§5 below) walks the common-15-epoch protocol the
+earlier calibration used — every rung at a common 15 epochs — not the own-dose procedure §5
+prescribes, and it ran on the frame of its date: the one-pass supplement writer (short third-person
+answers), its pairs taken unshuffled, and a learning-rate schedule sized from the first epoch's
+chunks. It picked λ = 1,000,000, and it is kept here, numbers and all, as a complete worked example
+of that protocol. The bundled `qwen3-1.7b` recipe ships λ = 160,000 instead, read again on this
+release's frame with each rung at its own dose and chosen by behaviour drift where the rule's
+general axis stopped discriminating ([recipes.md](recipes.md#qwen3-17b-lfarecipesqwen3-17byaml));
+none of the calibration numbers below is read against that ladder's.
 
 **The model.** Family Qwen3, `model_type` `qwen3` (`Qwen3ForCausalLM`) — the same family as the
 bundled Qwen3-0.6B. Hidden size 2,048; 28 layers; 16 query and 8 key-value heads of width 128, so
@@ -808,7 +851,7 @@ perplexity on the 10 % that `train` holds out of the training text.
   | λ = 2,500,000 | 15 | 13.31 (−11.8 %) | 13.82 (−35.6 %) |
   | λ = 5,000,000 | 15 | 13.91 (−7.8 %) | 14.24 (−33.6 %) |
 
-* **The control over-trains; at λ = 1,000,000, 15 epochs are safe on this corpus.** Darwin's
+* **The control over-trains; at λ = 1,000,000, 15 epochs were safe on this corpus.** Darwin's
   training text, about 189,000 tokens an epoch, is learned in two to four epochs: every unanchored
   run's validation curve is lowest at epoch 2 (10.83 to 11.01) and climbs after it, to 144.81 at
   epoch 15. At 4 epochs the unanchored run is a good result on its own (held-out Darwin −33.2 %,
@@ -822,14 +865,16 @@ perplexity on the 10 % that `train` holds out of the training text.
 * **How λ was chosen.** §5's first rule takes the unanchored control's domain improvement as its
   reference. At 15 epochs the control makes held-out Darwin worse, not better, so every rung
   qualifies and that rule would pick on WikiText-2 alone. §5's over-training branch applies
-  instead (step 5, "If the control over-trains at the recipe dose"): the rung best on both axes,
-  with the ladder extended outward while its top rung was best — 200,000 beat 100,000 on both
+  instead (step 5, "If the control over-trains at that dose", here the common 15 epochs): the rung
+  best on both axes, with the ladder extended outward while its top rung was best — 200,000 beat 100,000 on both
   axes, 500,000 and 1,000,000 beat 200,000, and 2,500,000 and 5,000,000 were worse than 1,000,000
   on both. **λ = 1,000,000 is the interior
-  optimum**, ahead of 2,500,000 by 1.2 % on WikiText-2 and 1.4 % on held-out Darwin.
+  optimum** on this frame, ahead of 2,500,000 by 1.2 % on WikiText-2 and 1.4 % on held-out Darwin.
 * **WikiText-2 below the base model.** Every rung from λ = 50,000 up ends with WikiText-2 below
   the base model's 15.09: by 0.4 % at 50,000, and by up to 12.8 % (13.15) at 1,000,000. That is
-  what was measured; why has not been established.
+  what was measured; why has not been established. On this release's frame, at shorter doses, the
+  unanchored control itself fell 16 % below base, which is why WikiText-2 below base is not read as
+  a sign that anything was kept ([tuning.md §4](tuning.md#4-λ-when-to-try-another)).
 * **The stage-2 multiplier.** A two-stage chain at the chosen λ — Darwin 15 epochs, `extend`,
   cookery 15 epochs — with `stage2_lambda_multiplier` 1 and 3, and the same pair at λ = 100,000.
   Each stage's change is against that stage's start (for stage 2, the fused stage-1 model);
@@ -863,17 +908,18 @@ perplexity on the 10 % that `train` holds out of the training text.
   fused model: maxima 16,206–19,291 MiB (λ = 1,000,000: 16,206 at 1× and 19,291 at 3×, which it
   held for the last 5 minutes or so of stage 2; λ = 100,000: 17,511 at 1× and 16,842 at 3×).
   19,291 MiB is about 18.8 GiB (20.2 GB): more than a 16 GB card holds.
-* **The recipe.** The bundled `qwen3-1.7b` recipe (`lfa/recipes/qwen3-1.7b.yaml`): `lambda_qkv` =
-  `lambda_mlp` = 1,000,000; every other field as `qwen3-0.6b`, including `stage2_lambda_multiplier`
-  3.0 and 15 epochs, which the runs above support on this model. The Qwen3-0.6B recipe was
-  calibrated the same way on the same Darwin text and landed on the same λ; two models, one corpus, one
-  seed, so that is not evidence that λ is independent of model size.
+* **The recipe this calibration wrote**: `lambda_qkv` = `lambda_mlp` = 1,000,000; every other field
+  as `qwen3-0.6b`, including `stage2_lambda_multiplier` 3.0 and 15 epochs, which the runs above
+  support on this model at that λ. The bundled `qwen3-1.7b` recipe (`lfa/recipes/qwen3-1.7b.yaml`)
+  carries the re-read λ, 160,000, with the same other fields (its header and
+  [recipes.md](recipes.md#qwen3-17b-lfarecipesqwen3-17byaml) say how it was chosen); its stage-2
+  multiplier is unmeasured on this model at 160,000.
 
 **What differed from Qwen3-0.6B**, in short: nothing in the layout or the tokenizer; twice the
 `Σ d²`, and a GPU smoke whose `nvidia-smi` memory.used sat mostly at 8.5–9 GiB (maximum 14,781 MiB,
 against Qwen3-0.6B's 10,235 MiB); a model that writes two-fifths of its unprompted text in Chinese,
-which a word-counting filter could not read. The calibrated λ, 1,000,000, is the one the same
-procedure gave Qwen3-0.6B on the same Darwin text.
+which a word-counting filter could not read. On this example's frame §5 gave 1,000,000 on both
+models; re-read on this release's frame, both bundled recipes ship 160,000.
 
 ## 10. Extending to multimodal models (image and audio) — general advice, untested
 

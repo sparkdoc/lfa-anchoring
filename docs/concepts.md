@@ -83,7 +83,7 @@ Anything the artifact has no statistics for is left **unanchored** rather than a
 `λ` constrains motion inside the update subspace, so the same number binds far harder in a smaller
 one. Three couplings, all enforced as warnings by `Recipe.warnings`:
 
-* **LoRA rank.** Lower rank ⇒ lower λ. Both bundled recipes are rank 32 at λ = 1,000,000 and were
+* **LoRA rank.** Lower rank ⇒ lower λ. Both bundled recipes are rank 32 at λ = 160,000 and were
   measured at no other rank; on the research corpus, at the paper's point, rank 16's frontier sat
   at roughly a fifth to a half of rank 32's λ.
 * **The artifact.** A sharper or flatter p(h) changes the anchor's scale, so an artifact swap is a
@@ -180,6 +180,16 @@ correctness alone p = 0.007), which is why this turn ships. The
 measured runs mixed each supplement's unshuffled prefix, under the filter of the time. The
 recipe's λ was tuned with a supplement at 0.13 in the mix, which is why `train` writes one by
 default.
+
+**Against no supplement**, at the recipe's λ (Qwen3-0.6B, 160,000, 4 epochs, two seeds, the same
+judge and 80 Darwin questions, answers up to 1,024 tokens), the supplement was ahead on the judged
+score by +0.350 (paired p = 0.0013; 1.350 and 1.375 against 0.938 and 1.087, zero-rates 0.36–0.38
+against 0.48–0.53). Most of that is the model ending its answers: without the supplement 6 and 11
+of the 80 answers ran on to the cap, looping, and on the 66 questions where none did the gap was
++0.106 (p = 0.27), not separable. It is not shown to add correct content. The cost is the model's
+format: headings in 0.00–0.03 of general answers against the base model's 0.45, shorter answers,
+and 7–8 of 10 format instructions followed against 10 of 10
+([preparing-your-data.md](preparing-your-data.md#the-supplement) has the numbers).
 
 **What it does not do: protect skills.** A supplement written in a skill's mode left that skill no
 better, measured on instruction following (IFEval) and reasoning (GSM8K), under any method.

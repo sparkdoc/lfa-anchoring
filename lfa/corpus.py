@@ -103,19 +103,18 @@ ASSUMED_BATCH_SIZE = 6
 DOMINANT_DOCUMENT_SHARE = 0.5
 
 #: Training tokens below which a run of more than :data:`SMALL_CORPUS_EPOCHS` epochs is told to let
-#: the held-out curve choose its dose. At the bundled recipes' lambda (1,000,000, both models) this
-#: package's own two-domain walkthrough's Darwin text (~189 k training tokens an epoch) turned late
-#: and shallowly over the recipe's 15 epochs: its held-out perplexity was lowest at epoch 10
-#: (Qwen3-0.6B) or 11 (Qwen3-1.7B) and ended 2.6 % or 0.2 % above it (0.6B: 17.62 at epoch 10 ->
-#: 18.09; 1.7B: 12.69 at epoch 11 -> 12.71); no run at 10 or 11 epochs was measured. At
-#: lambda = 100,000 the same text turned by epoch 4 (0.6B) or 5 (1.7B), and the 0.6B ended worse
-#: than the base model on both axes. So a corpus this small carries the dose only
-#: at a strong enough anchor; below half a million tokens (~2 MB of English) the curve is the
-#: thing to read.
+#: the held-out curve choose its dose. At the bundled recipes' lambda (160,000, both models) this
+#: package's own two-domain walkthrough's Darwin text (~189 k training tokens an epoch) turned early
+#: in the recipe's 15 epochs: its held-out perplexity was lowest at epoch 4 (Qwen3-0.6B) or 5
+#: (Qwen3-1.7B), and the 15-epoch runs ended 80.0 % or 47.4 % above it (0.6B: 16.97 at epoch 4 ->
+#: 30.54; 1.7B: 12.40 at epoch 5 -> 18.29), the 0.6B worse than the base model on both axes. The
+#: re-runs at 4 and 5 epochs ended below the base model on both. So on a corpus this small the
+#: recipe's 15 epochs find the turn and the re-run at it is the run to keep; below half a million
+#: tokens (~2 MB of English) the curve is the thing to read.
 SMALL_CORPUS_TOKENS = 500_000
 
-#: Epochs up to which a small corpus is not remarked on: where the walkthrough's text turned at
-#: lambda = 100,000.
+#: Epochs up to which a small corpus is not remarked on: where the walkthrough's text turned at the
+#: bundled lambda (epoch 4 or 5).
 SMALL_CORPUS_EPOCHS = 5
 
 
@@ -423,10 +422,9 @@ class ChunkedCorpus(Dataset):
            (a lone document with nothing beside it is left to the held-out split's own warning,
            :func:`split_documents`).
         3. **More epochs than the text can carry.** Under :data:`SMALL_CORPUS_TOKENS` tokens more
-           than :data:`SMALL_CORPUS_EPOCHS` epochs over-train unless lambda holds them (at the
-           bundled lambda the walkthrough's 15 ended within 3 % of their minimum; at a tenth of
-           it, far above); the trainer's
-           held-out curve says so afterwards
+           than :data:`SMALL_CORPUS_EPOCHS` epochs can over-train (at the bundled lambda the
+           walkthrough's 15 ended 80.0 % and 47.4 % above their minimum, on Qwen3-0.6B and
+           Qwen3-1.7B); the trainer's held-out curve says so afterwards
            (:func:`lfa.train.held_out_summary`), and this says it before the run.
 
         Args:
@@ -502,9 +500,9 @@ class ChunkedCorpus(Dataset):
                 f"when the run ends: it names the epoch the curve bottomed at and the gap to the "
                 f"final epoch, and says whether a re-run at that epoch is advised (keep "
                 f"val_fraction above 0, so there is a curve). For scale, at the bundled lambda "
-                f"(1,000,000) the walkthrough's Darwin text (~189 k tokens an epoch) bottomed at "
-                f"epoch 10-11 of 15 and ended 0.2-2.6 % above it; at lambda 100,000 it turned by "
-                f"epoch 4-5."
+                f"(160,000) the walkthrough's Darwin text (~189 k tokens an epoch) turned at epoch "
+                f"4 (Qwen3-0.6B) or 5 (Qwen3-1.7B) of 15 and ended 80.0 % or 47.4 % above its "
+                f"lowest."
             )
 
         return notes

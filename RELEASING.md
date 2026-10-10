@@ -161,12 +161,31 @@ supplement); rank 4, one seed (the regenerate route).
 * **Qwen3-1.7B** is a bundled model: recipe `qwen3-1.7b`, for `Qwen/Qwen3-1.7B`, calibrated against
   its own self-generated artifact at the recorded frame ([docs/recipes.md](docs/recipes.md)). The
   `--model` value picks the bundled recipe whose `model_id` it is.
-* **The `qwen3-0.6b` recipe's λ is 1,000,000** (`lambda_qkv` = `lambda_mlp`; 100,000 in 0.1.x),
-  calibrated like the Qwen3-1.7B recipe's on the walkthrough's Darwin text (one seed, perplexity;
-  [docs/recipes.md](docs/recipes.md#how-λ-was-chosen)). At 100,000 that corpus over-trained at the
-  recipe's 15 epochs and ended worse than the base model on both axes. The paper's operating point
-  (λ = 100,000, calibrated on the research corpus) is unchanged, as the paper's. `TrainConfig` and
-  `Recipe` default to the new value, and the small-corpus warning cites the new measurements.
+* **Both recipes' λ is 160,000** (`lambda_qkv` = `lambda_mlp`; the `qwen3-0.6b` recipe's was
+  100,000 in 0.1.x). Read on the walkthrough's Darwin text on this release's frame — the two-pass
+  supplement, its pairs shuffled, the schedule over the real step count — with each λ kept at its
+  own dose (a 15-epoch run, then a re-run at its turn; one seed, perplexity;
+  [docs/recipes.md](docs/recipes.md#how-λ-was-chosen)). Qwen3-0.6B: by the cookbook's §5 first
+  rule, an interior pick (WikiText-2 16.15, held-out Darwin 17.29 at 4 epochs; base 17.93 and
+  30.12). Qwen3-1.7B: by the least behaviour drift, a stated departure from the rule. There the
+  rule picked the weakest rung at every extension (64,000, 25,600, 10,240), because WikiText-2
+  kept falling as λ fell and a 3-epoch run with no anchor was itself 16 % below base on it; the
+  shift in the base model's own answers to 40 general prompts was +0.346 nats for the unanchored
+  control and +0.089 to +0.134 for every rung probed (10,240 was not), lowest at 160,000
+  (WikiText-2 12.19, held-out Darwin 13.15 at 5 epochs; base 15.09 and 21.45). An earlier
+  calibration in this release cycle, on the one-pass frame with every rung at a common 15 epochs,
+  picked 1,000,000 on both models; the cookbook's §9 keeps it as its worked example. The frame
+  alone does not explain the move: read at a common 15 epochs, this frame's own runs still pick
+  1,000,000 for Qwen3-1.7B and land on the 2,500,000 end rung for Qwen3-0.6B. `epochs` stays 15:
+  at 160,000 the Darwin text turns at epoch 4 (Qwen3-0.6B) or 5 (Qwen3-1.7B), the run warns, and
+  the re-run at the turn is the model to keep. `stage2_lambda_multiplier` stays 3: on Qwen3-0.6B
+  at 160,000, 3× beat 1× on all three axes at the recipe dose; with each stage 2 re-run at its own
+  turn, 1× edges 3× by the cookbook's rule (3×'s cookery gain is 88.9 % of 1×'s, against a 90 %
+  bar; one seed, 3× not at its own lowest epoch). Unmeasured on Qwen3-1.7B at this λ.
+  `docs/tuning.md` §4 says why WikiText-2 below base is not read as retention on a chat-tuned
+  model. The paper's operating point (λ = 100,000, calibrated on the research corpus) is
+  unchanged, as the paper's. `TrainConfig` and `Recipe` default to the new value, and the
+  small-corpus warning cites the new measurements.
 * **`init` warns when the recipe names another model** than the workspace's: λ does not port
   between models. A warning, never a refusal — a local path to the same weights is another id.
 * **`lfa probe-artifact`** (`lfa.probe.probe_artifact`) prices a trained adapter's update
@@ -224,8 +243,14 @@ supplement); rank 4, one seed (the regenerate route).
   (the passage within it). Longer answers mean fewer pairs at the same token share (162 of 840
   written, against 384, on the Darwin text, unshuffled). Writing it took 13 min 47 s on one RTX
   3090 with Qwen3-0.6B for the Darwin text's 265 passages, timed from the first logged batch of
-  questions to the closing `supplement:` line. The bundled recipes' λ was calibrated with the
-  one-pass supplement, its pairs taken unshuffled.
+  questions to the closing `supplement:` line. The bundled recipes' λ was calibrated with this
+  writer's supplement, its pairs shuffled (next bullet). Against no supplement (Qwen3-0.6B at
+  λ 160,000, 4 epochs, two seeds, the same judge and 80 questions, answers up to 1,024 tokens) it
+  scored +0.350 on correctness and completeness (paired p = 0.0013; 1.350 and 1.375 against 0.938
+  and 1.087, zero-rates 0.36–0.38 against 0.48–0.53): mostly the model ending its answers, since
+  without it 6 and 11 of 80 answers looped on to the cap, and on the 66 questions where none did
+  the gap was +0.106 (p = 0.27). Its cost is the format: headings in 0.00–0.03 of general answers
+  (base 0.45), shorter answers, and 7–8 of 10 format instructions followed (base 10 of 10).
 * **What a run mixes in changes: the supplement's pairs are shuffled before the prefix is
   taken.** The research mixer shuffles its pool under its seed and then takes the prefix that
   reaches the token fraction; earlier builds of this package took the prefix of the file as
@@ -277,7 +302,7 @@ supplement); rank 4, one seed (the regenerate route).
   summed epoch by epoch (`ChunkedCorpus.chunk_count`, `lfa.train.run_optimizer_steps`), so the
   cosine ends at its floor on the last step; the `LR schedule:` log line states it, and a resume
   no longer depends on how the corpus it is handed happens to be chunked. The bundled recipes' λ
-  was calibrated under the old sizing.
+  was calibrated under the new sizing.
 * **`evaluate --corpus` says what it scored.** A named corpus was logged as "trained on -- a fit,
   not a held-out measurement" whatever it was; it is now "scored whole as named -- held out only if
   this text was kept out of training", or a fit when it is the stage's own training corpus.

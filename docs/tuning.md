@@ -1,12 +1,14 @@
 # Tuning on your own corpus
 
-For a bundled model (`Qwen/Qwen3-0.6B` or `Qwen/Qwen3-1.7B`) and documents of your own. The recipe
-— λ = 1,000,000, 15 epochs — was calibrated on one text, the walkthrough's Darwin text (~189 k
-training tokens an epoch), with one seed ([recipes.md](recipes.md#how-λ-was-chosen)). On your
-text, set the number of epochs first, which is cheap, and touch λ second, only when the runs say
-so. A model with no bundled recipe needs its λ calibrated from scratch:
-[model-integration-cookbook.md §5](model-integration-cookbook.md#5-calibrate-λ) is that procedure.
-This page is for your corpus, not a new model.
+For a bundled model (`Qwen/Qwen3-0.6B` or `Qwen/Qwen3-1.7B`) and documents of your own. The recipe —
+λ = 160,000, calibrated, and 15 epochs, kept by design — comes from one text, the walkthrough's
+Darwin text (~189 k training tokens an epoch), with one seed
+([recipes.md](recipes.md#how-λ-was-chosen)). On that text the held-out curve turned at epoch 4
+(Qwen3-0.6B) or 5 (Qwen3-1.7B), so the recipe's 15 epochs end with a warning and the re-run at the
+turn is the model to keep: on your text, set the number of epochs first, which is cheap, and touch λ
+second, only when the runs say so. A model with no bundled recipe needs its λ calibrated from
+scratch: [model-integration-cookbook.md §5](model-integration-cookbook.md#5-calibrate-λ) is that
+procedure. This page is for your corpus, not a new model.
 
 **What it costs.** Measured for Qwen3-0.6B on one RTX 3090: a 15-epoch run takes about 18 minutes
 on a 757 KB book (H. G. Wells, *A Short History of the World*, below) and about 25 minutes on the
@@ -15,8 +17,11 @@ evaluate` takes about 30 seconds once WikiText-2 is cached, and `--compare-unanc
 second training run. A Qwen3-1.7B run takes longer.
 
 The worked numbers below come from that Wells book: one file, its boilerplate stripped, split by
-hand into its 67 chapters, 7 of them held out; Qwen3-0.6B at the bundled recipe; one seed;
-perplexity.
+hand into its 67 chapters, 7 of them held out; Qwen3-0.6B; one seed; perplexity. They, and the
+astronomy book's below, were measured on an **earlier frame**: λ = 1,000,000 (the recipe's value
+on that frame), the one-pass supplement writer with its pairs unshuffled, and a learning-rate
+schedule sized from the first epoch. They show the procedure, not this release's numbers; the
+Darwin ladders of §4 are on this release's frame.
 
 ## 1. Get a held-out curve
 
@@ -83,11 +88,11 @@ picked off the curve, for three reasons. The learning-rate schedule anneals over
 epoch 8 of a 15-epoch run is a model in mid-schedule, and a re-run at `--epochs 8` is a different
 model: a complete run whose schedule ends at epoch 8. A checkpoint picked on held-out perplexity is
 picked on one axis, the domain, of a method whose point is the trade between two. And the held-out
-split is the domain number `evaluate` reports, so a model picked on it would bias that number
-down. A re-run costs that many epochs again. Measured, one seed each: on the Wells book the re-run
-at `--epochs 8` was better on both axes than the 15-epoch run (WikiText-2 15.94 against 16.59,
-held-out domain 26.91 against 28.66) and ended below that run's own epoch-8 value (26.91 against
-27.02). On *A Short History of Astronomy* (Arthur Berry, 1898; Qwen3-0.6B at the recipe, 210
+split is the domain number `evaluate` reports, so a model picked on it would bias that number down.
+A re-run costs that many epochs again. Measured, one seed each: on the Wells book the re-run at
+`--epochs 8` was better on both axes than the 15-epoch run (WikiText-2 15.94 against 16.59, held-out
+domain 26.91 against 28.66) and ended below that run's own epoch-8 value (26.91 against 27.02). On
+*A Short History of Astronomy* (Arthur Berry, 1898; Qwen3-0.6B at λ = 1,000,000, earlier frame, 210
 documents, ~198 k training tokens an epoch) the 15-epoch run was lowest at epoch 10 (13.773) and
 ended at 14.021; the re-run at `--epochs 10` ended at 13.839, 0.5 % above that epoch-10 value, and
 still beat the 15-epoch run on both axes (held-out 13.839 against 14.021, WikiText-2 15.97 against
@@ -191,12 +196,12 @@ the general axis; what the anchor buys is the general axis. In all three measure
 each, it was lower on the held-out domain than every anchored run set beside it. On *A Short
 History of Astronomy* the control at its own 2 epochs scored held-out 12.37, below every anchored
 run (the lowest, 13.53, was λ = 400,000 at 6 epochs), and WikiText-2 19.68, 9.8 % above the base
-model's 17.93, where the recipe's λ re-run at 10 epochs scored 13.85 and 15.97. In the
-walkthrough's companion notebook (Darwin, a 4-epoch demo) the control at its own dose fit the
-domain more closely (15.55 against 19.30) and kept less of the general axis (WikiText-2 18.95
-against 16.08, base 17.80). On the Wells book the lowest of its 15-epoch curve, at epoch 1 (above),
-was below every anchored run's lowest (26.88, the 8-epoch re-run at epoch 7); its WikiText-2 near
-that epoch was not measured.
+model's 17.93, where λ = 1,000,000 re-run at 10 epochs scored 13.85 and 15.97. In the
+walkthrough's companion notebook (Darwin, a 4-epoch demo at λ = 1,000,000, recorded on the earlier
+frame) the control at its own dose fit the domain more closely (15.55 against 19.30) and kept less
+of the general axis (WikiText-2 18.95 against 16.08, base 17.80). On the Wells book the lowest of
+its 15-epoch curve, at epoch 1 (above), was below every anchored run's lowest (26.88, the 8-epoch
+re-run at epoch 7); its WikiText-2 near that epoch was not measured.
 
 ## 4. λ: when to try another
 
@@ -204,26 +209,32 @@ that epoch was not measured.
 ([concepts.md](concepts.md#λ-is-coupled-port-it-and-it-is-a-different-regularizer)), so the
 recipe's value is a starting point on your text. One run cannot say λ is wrong; a short ladder can.
 Two signs make one worth running. They come from the two Darwin ladders in
-[recipes.md](recipes.md#how-λ-was-chosen) (15 epochs, one seed), where the held-out curve turned
-earlier the weaker the anchor: on Qwen3-0.6B at epoch 4 for λ = 50,000 and 100,000, 6 for 200,000
-and 500,000, 10 for 1,000,000, 12 for 2,500,000, and not at all for 5,000,000.
+[recipes.md](recipes.md#how-λ-was-chosen) (this release's frame, one seed), where the 15-epoch
+run's held-out curve turned earlier the weaker the anchor: on Qwen3-0.6B at epoch 4 for λ = 64,000
+and 160,000, 7 for 400,000, 10 for 1,000,000, and not at all for 2,500,000; on Qwen3-1.7B at epoch
+3 for 10,240, 4 for 25,600, 5 for 64,000 and 160,000, 9 for 400,000, 13 for 1,000,000, and not at
+all for 2,500,000.
 
-* **The curve turns within a few epochs and WikiText-2 ends above the base model's.** The anchor
-  may be too weak for this corpus. On the ladders the weakest rungs did this (Qwen3-0.6B at
-  λ = 50,000 and 100,000), and ended worse than the base model on the domain as well. Try a larger
-  λ, or fewer epochs. An early turn alone can also be a small corpus (recipes.md's 45-document
-  case turned at epoch 2); WikiText-2 above base is what points at λ.
+* **WikiText-2 ends above the base model's, after the re-run at the turn.** The anchor may be too
+  weak for this corpus. An early turn on its own is a dose question first: at the recipe's λ the
+  15-epoch Qwen3-0.6B run on Darwin turned at epoch 4 and ended above the base model on both axes
+  (WikiText-2 18.76, held-out 30.93, base 17.93 and 30.12), and its re-run at `--epochs 4` was
+  below base on both (16.15 and 17.29). What the re-run cannot fix points at λ: there the 4-epoch
+  unanchored control stayed above base on WikiText-2 (25.63) and no anchored rung did. Try a
+  larger λ. An early turn can also be a small corpus (recipes.md's 45-document case turned at
+  epoch 2).
 * **The curve is still falling at the last epoch and the domain moved less than you expected.**
-  The anchor may be too strong. On the Qwen3-0.6B ladder λ = 5,000,000 was still falling at epoch
-  15 and ended with less of a domain gain than 1,000,000 (held-out 19.57 against 18.43); on
-  Qwen3-1.7B, 5,000,000 was worse than 1,000,000 on both axes. Try a smaller λ, or more epochs.
+  The anchor may be too strong. On both Darwin ladders λ = 2,500,000 was still falling at epoch 15
+  and ended with less of a domain gain than 1,000,000 at its own dose (held-out 18.87 against
+  18.39 on Qwen3-0.6B, 13.87 against 13.76 on Qwen3-1.7B, where it was also higher on WikiText-2).
+  Try a smaller λ, or more epochs.
 
-**How.** At the dose step 2 chose (8 epochs on the Wells book), run a rung either side of the
-recipe's value, a factor of 2.5 apart, each in a workspace of its own on the first workspace's
-artifact file (the supplement prepared beside the corpus is reused):
+**How.** At the dose step 2 chose (on the Wells book's earlier frame, 8 epochs), run a rung either
+side of the recipe's value, a factor of 2.5 apart, each in a workspace of its own on the first
+workspace's artifact file (the supplement prepared beside the corpus is reused):
 
 ```bash
-for lam in 400000 2500000; do
+for lam in 64000 400000; do
   lfa init     runs/world_history_lam$lam --model Qwen/Qwen3-0.6B --artifact runs/world_history/artifacts/v1.pt
   lfa train    --workspace runs/world_history_lam$lam --corpus data/world_history --epochs 8 --lambda $lam
   lfa evaluate --workspace runs/world_history_lam$lam
@@ -246,39 +257,70 @@ Each rung costs one run at that dose plus its evaluation, and one more of each w
 advises a re-run.
 
 **How to pick.** Compare each λ at its own dose: the recipe's λ at the dose step 2 chose, and each
-rung as it was kept (its re-run, when its line advised one). This is not how the shipped recipes
-were calibrated: there every rung ran at a common 15 epochs
-([recipes.md](recipes.md#how-λ-was-chosen)). Read the unanchored control at the recipe λ's dose
-(`--compare-unanchored` on that run). If its held-out domain perplexity ends above the base model's,
-use the cookbook's rule for a control that over-trains ([§5, step
-5](model-integration-cookbook.md#5-calibrate-λ), second paragraph): take the rung best on both axes
+rung as it was kept (its re-run, when its line advised one). This is how the shipped recipes were
+read ([recipes.md](recipes.md#how-λ-was-chosen)). Read the unanchored control at the recipe λ's dose
+(`--compare-unanchored` on that run, or `--lambda 0 --mu 0` at that `--epochs`). If it improved on
+the base model's held-out domain, use [the cookbook's step
+5](model-integration-cookbook.md#5-calibrate-λ) first rule: among the rungs whose held-out domain
+gain is at least 90 % of the control's, take the lowest WikiText-2, ties within 1 % going to the
+smaller λ. On Darwin at the 4–5 epochs the recipe's λ was kept at, the control improved the domain
+on both models, so this is the rule both ladders were read by (Qwen3-1.7B then departed from it,
+below). If the control's held-out domain perplexity instead ends above the base model's — every
+recorded control at the recipe's 15 epochs did (Darwin on both models, the Wells book) — use step
+5's rule for a control that over-trains (its second paragraph): take the rung best on both axes
 (lowest held-out domain and lowest WikiText-2); if no rung is, take the lowest held-out domain among
-the rungs within 1 % of the lowest WikiText-2. That is the usual case, because the unanchored curve
-turns much sooner than the anchored one: every recorded control at the recipe's 15 epochs ended
-above base (Darwin on both models, the Wells book). If the control instead improved on the base
-model, use step 5's first rule. Either way, if the pick is an end rung, add one a further factor of
-2.5 out and read again, until the pick is in the middle. Compare WikiText-2 at one window count
-(`evaluate`'s default, 100, throughout).
+the rungs within 1 % of the lowest WikiText-2. Either way, if the pick is an end rung, add one a
+further factor of 2.5 out and read again, until the pick is in the middle. Compare WikiText-2 at one
+window count (`evaluate`'s default, 100, throughout).
 
-**What this evidence is.** One seed, perplexity, and two measured cases of the trade between dose
-and λ. On the Wells book a stronger anchor at the full dose came close to the recipe's anchor at its
-best dose, but not to within noise: λ = 2,500,000 at 15 epochs scored WikiText-2 15.91 and held-out
-27.12, λ = 1,000,000 at 8 epochs 15.94 and 26.91. The held-out gap, 0.8 % in the 8-epoch run's
-favour, is above the 0.15 % spread of [§5](#5-when-to-stop); the WikiText-2 gap, 0.2 %, is below its
-0.5 %. On *A Short History of Astronomy* (step 2) the dose changed the pick. At a common 10 epochs λ
-= 400,000 scored WikiText-2 16.57 and held-out 13.91 (it turned at epoch 6 and ended 3.5 % above its
-lowest), λ = 1,000,000 15.97 and 13.85, λ = 2,500,000 15.92 and 14.44, and the rule picks 1,000,000.
-λ = 400,000 re-run at its own 6 epochs scored 16.06 and 13.53: its WikiText-2 is within 1 % of the
-lowest (16.06 against 15.92), and among the rungs that close it has the lowest held-out domain, so
-by the rule it is the pick, and as an end rung it calls for a rung at 160,000, which was not run.
-To keep a λ, pass `--lambda` on every `train`, or write it into a recipe of your own
-([recipes.md](recipes.md#writing-your-own)) so that it is the default.
+**On a chat-tuned model, WikiText-2 below base is not a forgetting signal.** Both rules read
+WikiText-2 as the general axis, and on Qwen3-1.7B that axis stopped measuring what it is for. At
+their kept doses every rung on the Darwin ladder scored WikiText-2 below the base model's 15.09, and
+so did the 3-epoch unanchored control, with no anchor at all: 12.62, 16 % below base, and lower than
+every rung on held-out Darwin (the 4-epoch control was 2.7 % below base, the 5-epoch one 22 %
+above). The rule picked the lowest rung at every extension (64,000, then 25,600, then 10,240); where
+it would stop is unmeasured, since at 3 epochs the control is behind 10,240 on WikiText-2 (12.62
+against 11.60). Why WikiText-2 falls below base was not established; what was measured is that it
+fell with no anchor at all, so there it cannot say whether anything was kept. What separated anchor
+from no anchor on that ladder was a behaviour reading: the shift in the base model's own answers to
+40 general prompts, as the teacher-forced NLL of the base model's greedy answers under the trained
+model against under the base model, in nats (one greedy decode, one seed). The 4-epoch control moved
++0.346 on Qwen3-1.7B and +0.565 on Qwen3-0.6B; every anchored rung probed at its kept dose moved
++0.089 to +0.134 on Qwen3-1.7B (10,240 was not probed) and +0.120 to +0.154 on Qwen3-0.6B. The shift
+is not monotone in λ; it was lowest at 160,000 on Qwen3-1.7B, which is the pick there (dose-matched
+against 64,000, both 5 epochs; against the stronger rungs, kept at 9 and 15 epochs, not separated
+from dose), and over-training raised it (Qwen3-0.6B at 160,000: +0.121 at its 4 epochs, +0.342 over
+the full 15). This package ships no behaviour probe. On your corpus, do not lower λ on WikiText-2
+alone: a WikiText-2 number that keeps falling as λ falls, below base, is the pattern above, and the
+general axis then cannot pick λ. Stop at the recipe's λ, or read the trained model's answers to
+general prompts against the base model's.
+
+**What this evidence is.** One seed, perplexity, one behaviour probe set, and the two Darwin ladders
+on this release's frame, together with two measured cases of the trade between dose and λ on the
+earlier frame (§1). On the Wells book a stronger anchor at the full dose came close to a weaker
+anchor at its best dose, but not to within noise: λ = 2,500,000 at 15 epochs scored WikiText-2 15.91
+and held-out 27.12, λ = 1,000,000 at 8 epochs 15.94 and 26.91. The held-out gap, 0.8 % in the
+8-epoch run's favour, is above the 0.15 % spread of [§5](#5-when-to-stop); the WikiText-2 gap,
+0.2 %, is below its 0.5 %. On *A Short History of Astronomy* (step 2) the dose changed the pick. At a
+common 10 epochs λ = 400,000 scored WikiText-2 16.57 and held-out 13.91 (it turned at epoch 6 and
+ended 3.5 % above its lowest), λ = 1,000,000 15.97 and 13.85, λ = 2,500,000 15.92 and 14.44, and the
+over-training rule picks 1,000,000. λ = 400,000 re-run at its own 6 epochs scored 16.06 and 13.53:
+its WikiText-2 is within 1 % of the lowest (16.06 against 15.92), and among the rungs that close it
+has the lowest held-out domain, so by that rule it is the pick, and as an end rung it calls for a
+rung at 160,000, which was not run on that book. On Darwin the same own-dose reading moved
+Qwen3-0.6B from 1,000,000 (the earlier frame's common-dose pick) to 160,000; this frame's own
+15-epoch runs, read at that common dose, land on the 2,500,000 end rung for Qwen3-0.6B and still
+pick 1,000,000 for Qwen3-1.7B, so what moved the picks down to 160,000 is the own-dose reading
+(and, on Qwen3-1.7B, the behaviour departure), not the frame. To keep a λ, pass `--lambda` on every `train`, or write it into
+a recipe of your own ([recipes.md](recipes.md#writing-your-own)) so that it is the default.
 
 ## 5. When to stop
 
 At a fixed recipe and seed, a repeat of the same run moves held-out domain perplexity by about
-0.15 % and WikiText-2 by about 0.5 % (Qwen3-1.7B, λ = 1,000,000, three runs;
-[recipes.md](recipes.md#qwen3-17b-lfarecipesqwen3-17byaml)). A difference smaller than that between
+0.15 % and WikiText-2 by about 0.5 % (Qwen3-1.7B, λ = 1,000,000 on the earlier frame, three runs;
+[the cookbook's §9](model-integration-cookbook.md#9-worked-example-qwen3-17b)). On this release's
+frame, three Qwen3-0.6B runs at λ = 160,000 and 4 epochs were about 0.2 % apart on each axis
+([recipes.md](recipes.md#how-λ-was-chosen)). A difference smaller than that between
 two runs is noise: when a re-run or a new rung moves both numbers by less than that, stop. With one
 seed, a larger difference is still one reading, not a result.
 

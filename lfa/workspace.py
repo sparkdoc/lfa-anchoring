@@ -291,7 +291,7 @@ def _table(before: dict, after: dict, unanchored: dict | None) -> str:
 
 
 def _anchor_in_words(entry: dict) -> str:
-    """A stage's anchor as it ran, e.g. ``λ 1e+06 (the recipe's), μ 0.05 (the recipe's), 15
+    """A stage's anchor as it ran, e.g. ``λ 160000 (the recipe's), μ 0.05 (the recipe's), 15
     epochs``."""
     # Read with .get: a workspace trained before these fields existed recorded no override (a
     # missing one means the recipe's value) and no mu_applied (the recipe's mu, then).

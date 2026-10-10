@@ -212,13 +212,13 @@ lfa train --workspace runs/world_history --corpus data/world_history
 `train` adapts the workspace's current model to the corpus with the anchor on. A tenth of the
 documents are held out and scored after every epoch, so the domain number is a measurement rather
 than a fit. **Watch that number.** At the recipe's λ the walkthrough's Darwin text (~189 k
-training tokens an epoch) turned late and shallowly: lowest at epoch 10 (17.62), ending 2.6 %
-above it at epoch 15; no 10-epoch run was measured
-([recipes.md](recipes.md#run-length-and-checkpointing)). On a smaller
-corpus, or at a lower λ, the held-out perplexity can bottom out early and then climb, and
-`final_model` is the last epoch by design (no best checkpoint is kept — tuning.md says why).
-Every run ends with one line that reads the curve and one that says what it means; for a 757 KB
-book (H. G. Wells, *A Short History of the World*) at the recipe:
+training tokens an epoch) turned early: lowest at epoch 4 (16.97), ending 80.0 % above it at
+epoch 15, and the re-run at `--epochs 4` was the model to keep
+([recipes.md](recipes.md#run-length-and-checkpointing)). The held-out perplexity can bottom out
+early and then climb, and `final_model` is the last epoch by design (no best checkpoint is kept —
+tuning.md says why). Every run ends with one line that reads the curve and one that says what it
+means; for a 757 KB book (H. G. Wells, *A Short History of the World*) at λ = 1,000,000, on an
+earlier frame:
 
 ```
 Held-out perplexity: lowest 27.021 at epoch 8 of 15; final 28.668 (+6.1 % over the lowest).

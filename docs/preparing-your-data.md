@@ -189,12 +189,12 @@ refusal.
 * **More epochs than the text can carry.** Under 500,000 training tokens (~2 MB of English) at more
   than five epochs. The warning opens with your run's own numbers — its epochs and its training
   tokens an epoch — and says to read the held-out line at the end of the run. At the bundled
-  recipes' λ (1,000,000, both models) the two-domain walkthrough's Darwin text (~189 k training
-  tokens an epoch) turned late and shallowly over 15 epochs — its held-out perplexity lowest at
-  epoch 10 and ending 2.6 % above it (Qwen3-0.6B), lowest at epoch 11 and ending 0.2 % above it
-  (Qwen3-1.7B); no run at 10 or 11 epochs was measured — while at λ = 100,000 the same text turned
-  by epoch 4–5. If λ is lowered or the corpus is smaller still, keep `val_fraction` above 0 and let
-  the held-out curve pick the dose — at the end of every run the trainer reports the epoch it
+  recipes' λ (160,000, both models) the two-domain walkthrough's Darwin text (~189 k training
+  tokens an epoch) turned early in the recipe's 15 epochs — its held-out perplexity lowest at
+  epoch 4 and ending 80.0 % above it (Qwen3-0.6B), lowest at epoch 5 and ending 47.4 % above it
+  (Qwen3-1.7B) — and the re-runs at those epochs were below the base model on both axes. On a
+  corpus this size, or smaller, keep `val_fraction` above 0 and let the held-out curve pick the
+  dose — at the end of every run the trainer reports the epoch it
   bottomed at, the final value and the gap between them, and, when the run did not end at its best,
   advises a re-run at that epoch (1 % or more above the lowest) or calls one optional (under 1 %)
   ([recipes.md](recipes.md#run-length-and-checkpointing) has the rule).
@@ -244,6 +244,29 @@ one.
 **What it is for.** Reaching the domain's knowledge when the model is asked about it: the pairs
 make what the corpus says answerable in question-and-answer form. The recipe mixes them in at its
 `supplement_fraction`, 0.13 of training tokens, which is the frame the recipe's λ was tuned at.
+
+**What it buys, against no supplement.** Qwen3-0.6B at the recipe's λ (160,000), 4 epochs on the
+walkthrough's Darwin data, this writer's pairs shuffled, two training seeds; the same 80 Darwin
+questions, answers decoded greedily up to 1,024 tokens and judged blinded by `gpt-5.6-luna` at
+medium effort on a rubric frozen before judging (correctness plus completeness, 0–4). With the
+supplement the model scored 1.350 and 1.375 (the two seeds; zero-rates 0.36 and 0.38), without it
+0.938 and 1.087 (zero-rates 0.53 and 0.48), and the base model 1.100 (zero-rate 0.48). Paired over
+the 80 questions and both seeds, the supplement is ahead by +0.350 (95 % CI +0.142 to +0.558,
+paired t p = 0.0013), and ahead in each seed (+0.412, p = 0.0014; +0.287, p = 0.052). What that
+gain is made of matters. Without the supplement answers ran long and some looped: 6 and 11 of the
+80 still hit the 1,024-token cap, about 5,300 characters each, with 44–73 % of the words in their
+last 200 repeats. On the 66 questions where no arm's answer was cut off, the gap is +0.106 (p =
+0.27), not separable. So the supplement's measured value is that the model ends its answers; it
+is not shown to add correct content.
+
+**What it costs: the model's format.** On 40 general prompts (one greedy decode each, the same two
+seeds), the model trained with the supplement used headings in 0.00–0.03 of its answers, against
+0.45 for the base model and 0.55–0.57 trained without it; its answers averaged 667–720 characters
+against the base model's 1,095; it followed 7 and 8 of 10 explicit format instructions, against
+10 of 10 for the base model and for the runs without it; and its base-answer NLL shift (the
+behaviour reading of [tuning.md §4](tuning.md#4-λ-when-to-try-another)) was +0.13, against
++0.075–0.077 without it. Markdown of some kind stayed (0.90–0.95 of answers, base 0.97). Measured
+2026-10-09, on this release's code.
 
 **How many pairs a run uses.** The writer writes every pair it can, and `train` mixes in only as
 many as the fraction asks for. It shuffles the file's pairs under the run's `seed` (the recipe's,
@@ -385,7 +408,9 @@ The run trains on the raw corpus alone and warns that it is off the frame λ was
 also how a corpus with nothing to hold out trains at all):
 *"Training on the raw corpus alone: this recipe's lambda was calibrated at supplement_fraction
 0.13 and this run mixes none."* A recipe that sets `supplement_fraction: 0.0` has opted out at the
-recipe level and is not warned.
+recipe level and is not warned. On the Darwin data, the runs without one kept the base model's format
+and its compliance with format instructions, and wrote longer answers, some of which ran on to the
+token cap ([above](#the-supplement)).
 
 ### What it costs
 

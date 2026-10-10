@@ -500,8 +500,8 @@ def test_too_many_epochs_for_the_amount_of_text_is_warned_before_the_run():
     assert "under 500,000 tokens at more than 5 epochs" in note      # the range it is in
     assert "Read the held-out line" in note and "val_fraction" in note
     assert note.index("Read the held-out line") < note.index("Darwin")
-    assert "bottomed at epoch 10-11 of 15" in note          # the measurements it rests on
-    assert "turned by epoch 4-5" in note
+    assert "turned at epoch 4 (Qwen3-0.6B) or 5 (Qwen3-1.7B) of 15" in note  # what it rests on
+    assert "80.0 % or 47.4 % above its lowest" in note
 
     assert ds.shape_warnings(batch_size=6, epochs=4) == []  # the same corpus at a sane dose
     assert ds.shape_warnings(batch_size=6) == []            # and no epochs, no epoch claim

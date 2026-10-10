@@ -139,8 +139,8 @@ class TrainConfig:
     model_id: str
 
     # -- anchoring (lambda) and the weight backstop (mu)
-    lambda_qkv: float = 1000000.0
-    lambda_mlp: float = 1000000.0
+    lambda_qkv: float = 160000.0
+    lambda_mlp: float = 160000.0
     mu: float = 0.05
     n_anchor_samples: int = 16
     anchor_end_ratio: float = 0.1
@@ -516,12 +516,15 @@ OVERTRAINING_RATIO = 1.10
 
 #: Below this rise over its own minimum a turned curve's re-run is called optional. A judgement,
 #: not a measurement: nothing measured says a re-run under 1 % gains or loses. For scale, the
-#: run-to-run spread at a fixed recipe and seed (Qwen3-1.7B, lambda 1,000,000, three runs,
-#: docs/recipes.md) is about 0.15 % on held-out domain perplexity and about 0.5 % on WikiText-2.
+#: run-to-run spread at a fixed recipe and seed (Qwen3-1.7B, lambda 1,000,000 on an earlier frame
+#: than the shipped recipes' 160,000, three runs; docs/model-integration-cookbook.md §9) is about
+#: 0.15 % on held-out domain perplexity and about 0.5 % on WikiText-2.
 OPTIONAL_RERUN_GAP = 0.01
 
 #: The run-to-run spread of held-out domain perplexity at a fixed recipe and seed: about 0.15 %
-#: (Qwen3-1.7B, lambda 1,000,000, three runs; docs/recipes.md, docs/tuning.md 'When to stop').
+#: (Qwen3-1.7B, lambda 1,000,000 on an earlier frame, three runs; docs/model-integration-cookbook.md
+#: §9, docs/tuning.md 'When to stop'). Three Qwen3-0.6B runs at the shipped 160,000, 4 epochs, were
+#: about 0.2 % apart on each axis (docs/recipes.md); the constant was not re-derived from them.
 #: Two finals closer than this are called the same on that axis.
 HELD_OUT_SPREAD = 0.0015
 
