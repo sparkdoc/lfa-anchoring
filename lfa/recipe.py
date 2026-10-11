@@ -122,9 +122,10 @@ class Recipe:
         stage2_lambda_multiplier: What :meth:`to_train_config` multiplies lambda by from stage 2
             on. A later stage anchors a model that already carries a domain, and what that wants
             is a *harder* anchor; it is a level, not a per-stage compounding factor. The shipped
-            3.0 was measured on one pair of domains (ahead of 1.0 on all three axes for
-            Qwen3-0.6B at lambda 160,000; unmeasured on Qwen3-1.7B at this lambda) -- lambda is
-            coupled to the corpus, so a chain over a new pair of domains re-tunes it.
+            3.0 was measured on one pair of domains (ahead of 1.0 on all three axes at the recipe
+            dose for both bundled models at lambda 160,000; with stage 2 re-run at its own turn,
+            1.0 edges it) -- lambda is coupled to the corpus, so a chain over a new pair of domains
+            re-tunes it.
         calibrated_rank: The LoRA rank the lambdas were tuned at.
         calibrated_artifact: What the lambdas were calibrated against: ``self-generated`` (an
             artifact fitted on this model's own text at :attr:`self_generated_frame`), or an id

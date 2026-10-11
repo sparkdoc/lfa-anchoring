@@ -120,9 +120,10 @@ perplexity.
 2, not at the square of it.
 
 The shipped 3.0 was measured on one pair of domains (the walkthrough's Darwin, then cookery; one
-seed, perplexity): at the recipes' λ, 160,000, on Qwen3-0.6B it was ahead of 1× on retention, on
-general text and on the new domain at the recipe dose, and on Qwen3-1.7B it is unmeasured at that
-λ ([recipes.md](recipes.md)).
+seed, perplexity): at the recipes' λ, 160,000, on both bundled models it was ahead of 1× on
+retention, on general text and on the new domain at the recipe dose. With each second stage re-run
+at its own turn, 1× edges it on both ([recipes.md](recipes.md)): a harder second-stage anchor
+matters most when that stage runs long.
 
 λ is coupled to the corpus
 ([recipes.md](recipes.md)), so a chain over your own pair of domains re-tunes it — judged on the

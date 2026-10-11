@@ -143,7 +143,8 @@ its cost on one card.
 `--model` picks the recipe: `init` uses the bundled recipe whose own model id is the one you pass.
 Both are λ = 160,000, 15 epochs, rank 32. The download is the artifact with the corpus it was
 fitted on. GPU memory is the highest `nvidia-smi` reading over a two-stage chain on an RTX 3090
-(chains at λ = 1,000,000, on an earlier frame; a Qwen3-0.6B chain at 160,000 read 12.5 GiB), an
+(chains at λ = 1,000,000, on an earlier frame; chains at 160,000 read 12.5 GiB on Qwen3-0.6B and
+15.1 GiB on Qwen3-1.7B), an
 upper bound on what a run needs; a single stage read 13.6 GiB (Qwen3-0.6B, an unanchored 4-epoch
 run) and 12.7 GiB (Qwen3-1.7B, anchored), a caching effect of the measure that does not order the
 two models by size, and a Qwen3-1.7B chain has only been run on 24 GB cards. Per run, and the

@@ -181,7 +181,10 @@ supplement); rank 4, one seed (the regenerate route).
   the re-run at the turn is the model to keep. `stage2_lambda_multiplier` stays 3: on Qwen3-0.6B
   at 160,000, 3× beat 1× on all three axes at the recipe dose; with each stage 2 re-run at its own
   turn, 1× edges 3× by the cookbook's rule (3×'s cookery gain is 88.9 % of 1×'s, against a 90 %
-  bar; one seed, 3× not at its own lowest epoch). Unmeasured on Qwen3-1.7B at this λ.
+  bar; one seed, 3× not at its own lowest epoch). Qwen3-1.7B at 160,000 gives the same verdicts by
+  a different margin: 3× ahead on all three axes at the recipe dose (1× ended cookery above its
+  start); with each stage 2 re-run at its own turn both qualify (3×'s cookery gain 96.9 % of 1×'s)
+  and 1× edges it on Darwin (14.22 against 14.57; one seed, 3× again not at its own lowest epoch).
   `docs/tuning.md` §4 says why WikiText-2 below base is not read as retention on a chat-tuned
   model. The paper's operating point (λ = 100,000, calibrated on the research corpus) is
   unchanged, as the paper's. `TrainConfig` and `Recipe` default to the new value, and the

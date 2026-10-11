@@ -358,8 +358,24 @@ is the row above (its own curve lowest at epoch 4, 0.2 % below its end: a re-run
 optional). One seed, one corpus: on your own corpus, read the run's last line as the dose note
 above says.
 
-**The stage-2 multiplier** is unmeasured on Qwen3-1.7B at this λ; the recipe's 3.0 is the Qwen3-0.6B
-chain's result at 160,000 (above). On the earlier frame (the one-pass supplement, its pairs
+**The stage-2 multiplier**, from a two-stage chain at 160,000 (Darwin at the kept 5 epochs, then the
+walkthrough's cookery text), one seed, perplexity:
+
+| reading | multiplier | cookery (before → after) | held-out Darwin after stage 2 | WikiText-2 after stage 2 |
+|---|---|---|---|---|
+| recipe dose, 15 epochs | 1× | 15.88 → 18.47 (+16.3 %) | 20.81 | 13.20 |
+| recipe dose, 15 epochs | **3×** | 15.96 → 13.48 (−15.6 %) | **16.42** | **12.75** |
+| own turn (1× at 4, 3× at 8 epochs) | **1×** | 15.88 → 11.31 (−28.8 %) | **14.22** | **11.80** |
+| own turn (1× at 4, 3× at 8 epochs) | 3× | 15.96 → 11.53 (−27.7 %) | 14.57 | 12.10 |
+
+At the recipe dose 3× wins on all three axes (1× over-trains the small text and ends cookery above
+its start). Re-run at their own turns, 1× edges it by the cookbook's rule: 3×'s cookery gain is
+96.9 % of 1×'s, so both qualify, and 1× keeps more Darwin and is ahead on all three axes (one seed;
+3×'s 8-epoch re-run turned at epoch 6 and ended 1.3 % above its lowest, so 3× is not at its own
+lowest epoch). Qwen3-0.6B gives the same verdict by a different margin: there 3× kept marginally more
+Darwin but its cookery gain missed the 90 % bar (88.9 %). The recipe keeps 3.0: it is the reading
+at the recipe dose, and it protects a chain whose second stage runs long. "Before" is each chain's
+own fused stage-1 model. On the earlier frame (the one-pass supplement, its pairs
 unshuffled, a schedule sized from the first epoch; 2026-10-04/05), at λ = 1,000,000 with 15 epochs
 in each stage, this model's 3× matched 1× on cookery (−27.0 % against −26.4 %) and beat it on
 Darwin retention and on WikiText-2; the table is in [the cookbook's
@@ -372,7 +388,8 @@ held-out Darwin).
 frame's ladder, 20,000 to 5,000,000); the unanchored control at a maximum of 11,236 MiB (earlier
 frame); the second stage of a chain, training on the fused stage-1 model, 16,206–19,291 MiB (the
 earlier frame's chains at λ = 1,000,000 and 100,000; 19,291 MiB, at 1,000,000 × 3, is about
-18.8 GiB, more than a 16 GB card holds). A chain at this recipe's λ is unmeasured on this model.
+18.8 GiB, more than a 16 GB card holds). A chain at this recipe's λ peaked at 15,478 MiB (1×) and
+15,455 MiB (3×), sampled over the whole chain (the peak fell in stage 2's training).
 The measure is nvidia-smi `memory.used` sampled every 10 s, which includes PyTorch's caching
 allocator, so it is an upper bound on what a run needs. It is not comparable with Qwen3-0.6B's
 "8.63 GiB allocated" in [faq.md](faq.md), which is the allocator's own peak, a different measure.

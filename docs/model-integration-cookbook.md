@@ -638,7 +638,7 @@ dose, picking by step 5's rules (which one applies depends on the unanchored con
    multiplier that keeps more of Darwin (held-out Darwin after stage 2, lower is better) while
    cookery's improvement stays within 90 % of the better arm's, read at the recipe dose (15
    epochs), as the bundled multiplier was. Record both arms, and each arm's stage 2 re-run at its
-   own turn beside them: on Qwen3-0.6B at 160,000 that reading tips marginally to 1×
+   own turn beside them: on both bundled models at 160,000 that reading tips to 1×
    ([recipes.md](recipes.md#how-λ-was-chosen)).
 8. **Then, and only then, change rank.** Lower rank ⇒ lower λ, and the frontier has to be re-read.
 
@@ -913,7 +913,8 @@ perplexity on the 10 % that `train` holds out of the training text.
   support on this model at that λ. The bundled `qwen3-1.7b` recipe (`lfa/recipes/qwen3-1.7b.yaml`)
   carries the re-read λ, 160,000, with the same other fields (its header and
   [recipes.md](recipes.md#qwen3-17b-lfarecipesqwen3-17byaml) say how it was chosen); its stage-2
-  multiplier is unmeasured on this model at 160,000.
+  multiplier, 3.0, was re-read on this model at 160,000 (ahead at the recipe dose; 1× edges it at
+  each stage 2's own turn).
 
 **What differed from Qwen3-0.6B**, in short: nothing in the layout or the tokenizer; twice the
 `Σ d²`, and a GPU smoke whose `nvidia-smi` memory.used sat mostly at 8.5–9 GiB (maximum 14,781 MiB,

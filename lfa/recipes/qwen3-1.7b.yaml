@@ -56,9 +56,16 @@
 # 1,000,000 the same text turned at epoch 13. One seed, one corpus: on your own corpus, read the
 # run's last line.
 #
-# The stage-2 multiplier is unmeasured on Qwen3-1.7B at this lambda. 3.0 is the qwen3-0.6b
-# recipe's, from its two-stage chain at 160,000 (Darwin, then the walkthrough's cookery text),
-# where 3x was ahead of 1x on all three axes at the recipe dose. On an earlier frame (the one-pass
+# The stage-2 multiplier: a two-stage chain at 160,000 (Darwin at 5 epochs, then the
+# walkthrough's cookery text at 15), one seed. At the recipe dose 3x was ahead of 1x on all three
+# axes: cookery 15.96 -> 13.48 against 15.88 -> 18.47 (1x over-trained the small text and ended
+# above its start), held-out Darwin after stage 2 16.42 against 20.81, WikiText-2 12.75 against
+# 13.20. With each stage 2 re-run at its own turn (1x at 4 epochs, 3x at 8), 1x edges it by the
+# cookbook's rule: cookery 11.31 against 11.53 (3x's gain is 96.9 % of 1x's), Darwin 14.22 against
+# 14.57, WikiText-2 11.80 against 12.10 (3x's 8-epoch re-run turned at epoch 6, so it is not at its
+# own lowest). 3.0 stays: it is the reading at the recipe dose, and it protects a chain whose second
+# stage runs long. The qwen3-0.6b chain at 160,000 gives the same two verdicts (there 3x missed the
+# 90 % cookery bar at the own turn). On an earlier frame (the one-pass
 # supplement, its pairs unshuffled, a schedule sized from the first epoch; 2026-10-04/05), at
 # lambda = 1,000,000, this model's 3x matched 1x on cookery and beat it on Darwin retention and on
 # WikiText-2. One seed, one pair of domains, perplexity.
@@ -118,8 +125,9 @@ learning_rate: 3.0e-4
 # warmup then cosine decay to zero over the epochs actually trained (`constant` holds the peak)
 lr_schedule: cosine
 # 6 x 512 fits one 24 GB card (RTX 3090): anchored 15-epoch training peaked at about 12.7 GiB
-# (13,033 MiB at this lambda), and stage 2 of a chain at up to 19,291 MiB (a chain at lambda
-# 1,000,000 x 3, on the earlier frame); nvidia-smi memory.used, every 10 s, which includes
+# (13,033 MiB at this lambda), a chain at this lambda at 15,478 MiB, and stage 2 of a chain at up
+# to 19,291 MiB (a chain at lambda 1,000,000 x 3, on the earlier frame); nvidia-smi memory.used,
+# every 10 s, which includes
 # PyTorch's caching allocator, so an upper bound on what a run needs
 batch_size: 6
 gradient_accumulation_steps: 1
@@ -137,8 +145,8 @@ keep_short_whole: true
 # measurement rather than a fit
 val_fraction: 0.1
 
-# -- later stages of a chain: lambda x 3 from stage 2 on, the qwen3-0.6b recipe's value (unmeasured
-# on this model at this lambda, above); for YOUR pair of domains it is where to begin re-tuning,
+# -- later stages of a chain: lambda x 3 from stage 2 on (measured on this model at this lambda,
+# above); for YOUR pair of domains it is where to begin re-tuning,
 # judged on the same two axes.
 stage2_lambda_multiplier: 3.0
 

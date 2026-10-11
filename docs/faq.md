@@ -52,8 +52,9 @@ The 19,291 MiB arm is a chain at λ 1,000,000 with stage-2 multiplier 3 (the coo
 example, on an earlier frame than this release's), and it held that for about the last 5 minutes
 of the stage. Being an upper bound, it does not prove a 16 GB card too small, but a Qwen3-1.7B
 chain has only been measured on 24 GB cards. A chain at the bundled `qwen3-1.7b` recipe's λ,
-160,000, is unmeasured on that model; on Qwen3-0.6B a chain at 160,000 peaked at 12,796 MiB (1×)
-and 12,773 MiB (3×). The Qwen3-0.6B run reading above both Qwen3-1.7B single-stage runs is a caching
+160,000, peaked at 15,478 MiB (1×) and 15,455 MiB (3×) over the whole chain (the peak fell in
+stage 2's training); on Qwen3-0.6B a chain at 160,000 peaked at 12,796 MiB (1×) and 12,773 MiB
+(3×). The Qwen3-0.6B run reading above both Qwen3-1.7B single-stage runs is a caching
 effect of this measure, not a statement about model size. PyTorch's own allocated peak — the other
 measure — was taken for Qwen3-0.6B only (8.63 GiB, above). Per arm, with the λ ladder: [the
 cookbook's worked example](model-integration-cookbook.md#9-worked-example-qwen3-17b).
