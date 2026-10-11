@@ -167,7 +167,7 @@ On the card each row names:
 | Qwen3-0.6B | an artifact corpus | 16 raw + 4 chat-format documents | RTX 2070 (8 GB), 2026-09-26 | 77 s |
 | Qwen3-0.6B | a small artifact build | 20k samples per site, K = 4, model loads included | RTX 2070 (8 GB), 2026-09-26 | about 3 min |
 | Qwen3-0.6B | a supplement, the earlier one-pass writer | about six passages at 6 pairs each, batch 4 | RTX 2070 (8 GB), 2026-09-26 | 47 s |
-| Qwen3-0.6B | a supplement, this writer | the Darwin text: 265 passages, 1,235 questions, 840 pairs, batch 16 | RTX 3090 (24 GB), 2026-10-07 | 13 min 47 s: about 1.5 min of questions, 12 min of answers |
+| Qwen3-0.6B | a supplement, this writer | the Darwin text's training side under seed 43: 263 passages, 1,228 questions, 862 pairs, batch 16 | RTX 3090 (24 GB), 2026-10-09 | 13 min 48 s: about 1.5 min of questions, 12.3 min of answers |
 | Qwen3-0.6B | the full frame: generation | 2,500 documents of up to 2,048 tokens | RTX 3090 (24 GB), 2026-10-04 | 83 min |
 | Qwen3-0.6B | the full frame: fit | 600k samples per site, K = 32 | RTX 3090 (24 GB), 2026-10-04 | 2 h 28 min: 27 min collecting hidden states, about 2 h fitting the mixtures |
 | Qwen3-0.6B | the full frame, cold | both of the above | RTX 3090 (24 GB), 2026-10-04 | 3 h 51 min |
@@ -177,8 +177,8 @@ On the card each row names:
 
 The RTX 2070 rows are not the recorded frame; the RTX 3090 rows are, one build per model, on a host
 with 125 GiB of RAM. The supplement row is timed from the writer's first logged batch of questions
-to its closing `supplement:` line (the model load and that first batch are outside it), with a
-second such run on the host's other card. The Qwen3-0.6B build ran alone on the host; the Qwen3-1.7B build shared it for
+to its closing `supplement:` line (the model load and that first batch are outside it; from the
+line announcing the write, 13 min 56 s), with a training run on the host's other card. The Qwen3-0.6B build ran alone on the host; the Qwen3-1.7B build shared it for
 most of its run with a second Qwen3-1.7B build (at 1.5 M samples per site). Qwen3-0.6B's build put
 all 28 layers in one layer group and Qwen3-1.7B's 25 of 28
 ([the-artifact.md](the-artifact.md#host-ram-the-layer-group)); the artifacts are 110.0 MB and 243.7

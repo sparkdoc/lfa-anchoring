@@ -244,9 +244,9 @@ supplement); rank 4, one seed (the regenerate route).
   prefers an array whose items all ask, takes a single-quoted array, and salvages only literals
   ending in `?` from a broken one. Rows record `source_index` (the document) and `passage_index`
   (the passage within it). Longer answers mean fewer pairs at the same token share (162 of 840
-  written, against 384, on the Darwin text, unshuffled). Writing it took 13 min 47 s on one RTX
-  3090 with Qwen3-0.6B for the Darwin text's 265 passages, timed from the first logged batch of
-  questions to the closing `supplement:` line. The bundled recipes' λ was calibrated with this
+  written, against 384, on the Darwin text, unshuffled). Writing it took 13 min 48 s on one RTX
+  3090 with Qwen3-0.6B for 263 passages of the Darwin text (the seed-43 timing run, 2026-10-09: 862 pairs), timed from the first
+  logged batch of questions to the closing `supplement:` line. The bundled recipes' λ was calibrated with this
   writer's supplement, its pairs shuffled (next bullet). Against no supplement (Qwen3-0.6B at
   λ 160,000, 4 epochs, two seeds, the same judge and 80 questions, answers up to 1,024 tokens) it
   scored +0.350 on correctness and completeness (paired p = 0.0013; 1.350 and 1.375 against 0.938
@@ -262,8 +262,8 @@ supplement); rank 4, one seed (the regenerate route).
   `supplement` entry records `shuffle_seed`. On the Darwin text this writer's pairs mixed in went
   from 162 pairs drawn from 51 of the 265 passages (32 of 173 documents) to 158 pairs drawn
   from 125 passages (98 documents).
-  The walkthrough's recorded runs and the format-drift diagnostic's arms used the unshuffled
-  prefix.
+  The format-drift diagnostic's arms used the unshuffled prefix; the walkthrough notebooks'
+  recordings (2026-10-11, at 208e25e) used the shuffle.
 * **The supplement** lives under `<workspace>/supplements/<corpus sha256[:12]>/`, or beside the
   corpus in `<corpus>.supplement/` when it was prepared with the data, and is reused while the
   training side's hash, the writer checkpoint's hash, the question and answer templates' hashes,

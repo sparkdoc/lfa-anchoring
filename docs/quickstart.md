@@ -264,13 +264,13 @@ general axis reads WikiText-2 from the Hub).
 ### What it prints
 
 The walkthrough's stage 1 (Qwen3-0.6B on Darwin; a 4-epoch demo where the recipe trains 15;
-200 WikiText-2 windows; recorded 2026-10-06), with `--compare-unanchored`:
+200 WikiText-2 windows; recorded 2026-10-11), with `--compare-unanchored`:
 
 ```
 | metric               | before | after |     Δ% | unanchored |     Δ% |
 | -------------------- | -----: | ----: | -----: | ---------: | -----: |
-| general (WikiText-2) |  17.80 | 16.08 |  -9.7% |      26.68 | +49.9% |
-| domain               |  30.12 | 19.30 | -35.9% |      18.82 | -37.5% |
+| general (WikiText-2) |  17.80 | 16.03 |  -9.9% |      26.27 | +47.6% |
+| domain               |  30.12 | 17.32 | -42.5% |      18.18 | -39.6% |
 ```
 
 Lower is better. **The domain number should fall and WikiText-2 should hold.** A general number
@@ -280,8 +280,8 @@ Beneath the table, `evaluate` repeats the run's own held-out verdict — the lin
 with, as one paragraph opening `This run's held-out curve:` — so the dose advice is on the screen
 you read the numbers from. The control trains at the anchored run's epochs, which is not its own
 dose. When its curve turned (1 % or more above its lowest), `evaluate` says so after that — here,
-"The unanchored control's held-out perplexity was lowest at epoch 2 (14.85) and ended at 18.23
-(epoch 4, +22.8 %): it trained at this run's dose, past its own best, so part of the unanchored
+"The unanchored control's held-out perplexity was lowest at epoch 2 (14.77) and ended at 17.86
+(epoch 4, +20.9 %): it trained at this run's dose, past its own best, so part of the unanchored
 column's gap is dose, not the anchor." — and prints three commands that train it at its own best
 epoch in a fresh workspace (`lfa train … --lambda 0 --mu 0 --epochs <its best>`); read it there
 too.
@@ -353,13 +353,13 @@ For the whole thing worked through on real text — two domains one after the ot
 public-domain books the notebook downloads itself, with **each stage run a second time with the
 anchor off** so the control sits beside every number — open
 [`examples/two_domain_walkthrough.ipynb`](../examples/two_domain_walkthrough.ipynb). It ran end to
-end in 35.5 minutes on one RTX 3090 (four training runs, two of them controls, and a supplement
+end in 40.4 minutes on one RTX 3090 (four training runs, two of them controls, and a supplement
 written for each stage), plus whatever the
 model and WikiText-2 cost you on a cold cache and, when the store has none for the model yet, the
 artifact's download (or its build, for a model with none published). Its epoch count is demo scale — a quarter of the
-recipe's fifteen — and the notebook says so
+recipe's fifteen, though at this λ about where the Darwin text turns — and the notebook says so
 beside every table, so do not read its settings as the recommended ones. Its recorded outputs were
-made on 2026-10-06 on that card, with the self-generated artifact at the recorded frame (2,500
+made on 2026-10-11 on that card, with the self-generated artifact at the recorded frame (2,500
 documents × 2,048 tokens, K = 32) and the supplement on.
 [`examples/what_the_anchor_does.ipynb`](../examples/what_the_anchor_does.ipynb) is optional and
 picks up the workspace it leaves behind: each control re-run at its own best number of epochs,
@@ -368,9 +368,11 @@ and what the three models say when asked.
 ## What it costs
 
 The recipe's fifteen epochs over the walkthrough's Darwin text (about 189 k tokens an epoch)
-took about 25 minutes on one RTX 3090. A first run on a bundled model, measured on a 757 KB book
+took about 19.5 minutes of training on one RTX 3090, and the re-run at its turn (4 epochs) about 5
+more (this release's frame, 2026-10-08, with the supplement already written). A first run on a bundled model, measured on a 757 KB book
 with Qwen3-0.6B on that card: `init` 12 s (the download), `prepare-domain --supplement` under 4
-minutes, `train` 18 minutes, `evaluate` 30 seconds, `fuse` 5 seconds — plus the install and the
+minutes with the earlier one-pass writer (this release's writer took 13 min 48 s on the Darwin
+text, [faq.md](faq.md#how-long-does-self-generation-take)), `train` 18 minutes, `evaluate` 30 seconds, `fuse` 5 seconds — plus the install and the
 model's download on a cold cache. The verification run — the paper's Qwen3-0.6B point,
 1,673 documents at 512 tokens, 15 epochs, rank 32 —
 took **about 1 h 48 m on one RTX 3090** (432 s per epoch) and about 9 GB of GPU memory — that run

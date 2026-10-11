@@ -11,8 +11,9 @@ scratch: [model-integration-cookbook.md §5](model-integration-cookbook.md#5-cal
 procedure. This page is for your corpus, not a new model.
 
 **What it costs.** Measured for Qwen3-0.6B on one RTX 3090: a 15-epoch run takes about 18 minutes
-on a 757 KB book (H. G. Wells, *A Short History of the World*, below) and about 25 minutes on the
-Darwin text, and time scales with the epochs (the same book at 8 epochs took 10 minutes). `lfa
+on a 757 KB book (H. G. Wells, *A Short History of the World*, below) and about 19.5 minutes of
+training on the Darwin text (this release's frame, 2026-10-08, its supplement already written; the
+re-run at its turn, 4 epochs, took about 5 more), and time scales with the epochs (the same book at 8 epochs took 10 minutes). `lfa
 evaluate` takes about 30 seconds once WikiText-2 is cached, and `--compare-unanchored` adds a
 second training run. A Qwen3-1.7B run takes longer.
 
@@ -40,8 +41,8 @@ removes markup, not content, and the supplement writes questions about whatever 
 ([preparing-your-data.md](preparing-your-data.md#a-project-gutenberg-book) lists what a Gutenberg
 book carries and how to cut it). A corpus with nothing to hold out is refused before the supplement
 is written, and the message names the fix. Cost: minutes (under 4 for the Wells book's supplement
-under the earlier one-pass writer; this writer's longer answers took 13 min 47 s for the Darwin
-text's 265 passages on one RTX 3090 with Qwen3-0.6B, [faq.md](faq.md#how-long-does-self-generation-take)).
+under the earlier one-pass writer; this writer's longer answers took 13 min 48 s for 263 passages
+of the Darwin text on one RTX 3090 with Qwen3-0.6B, [faq.md](faq.md#how-long-does-self-generation-take)).
 [preparing-your-data.md](preparing-your-data.md) has the rest.
 
 ## 2. Run the recipe once and read its last line
@@ -197,9 +198,9 @@ each, it was lower on the held-out domain than every anchored run set beside it.
 History of Astronomy* the control at its own 2 epochs scored held-out 12.37, below every anchored
 run (the lowest, 13.53, was λ = 400,000 at 6 epochs), and WikiText-2 19.68, 9.8 % above the base
 model's 17.93, where λ = 1,000,000 re-run at 10 epochs scored 13.85 and 15.97. In the
-walkthrough's companion notebook (Darwin, a 4-epoch demo at λ = 1,000,000, recorded on the earlier
-frame) the control at its own dose fit the domain more closely (15.55 against 19.30) and kept less
-of the general axis (WikiText-2 18.95 against 16.08, base 17.80). On the Wells book the lowest of
+walkthrough's companion notebook (Darwin, a 4-epoch demo at the recipe's λ, 160,000, recorded
+2026-10-11) the control at its own dose fit the domain more closely (15.38 against 17.32) and kept
+less of the general axis (WikiText-2 18.04 against 16.03, base 17.80). On the Wells book the lowest of
 its 15-epoch curve, at epoch 1 (above), was below every anchored run's lowest (26.88, the 8-epoch
 re-run at epoch 7); its WikiText-2 near that epoch was not measured.
 

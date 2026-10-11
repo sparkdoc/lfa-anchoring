@@ -79,13 +79,13 @@ one with `--run stage1`.
 
 **`evaluate`** reads the stage on both axes against the model it started from. The before and
 after columns of the walkthrough's stage 1 (Qwen3-0.6B on Darwin, a 4-epoch demo where the recipe
-trains 15; 200 WikiText-2 windows; recorded 2026-10-06):
+trains 15; 200 WikiText-2 windows; recorded 2026-10-11):
 
 ```
 | metric               | before | after |     Δ% |
 | -------------------- | -----: | ----: | -----: |
-| general (WikiText-2) |  17.80 | 16.08 |  -9.7% |
-| domain               |  30.12 | 19.30 | -35.9% |
+| general (WikiText-2) |  17.80 | 16.03 |  -9.9% |
+| domain               |  30.12 | 17.32 | -42.5% |
 ```
 
 Lower is better. **The domain number should fall and WikiText-2 should hold.** A WikiText-2
@@ -199,22 +199,24 @@ Details:
 [`examples/two_domain_walkthrough.ipynb`](https://github.com/sparkdoc/lfa-anchoring/blob/main/examples/two_domain_walkthrough.ipynb):
 Qwen3-0.6B adapted to Darwin, then to an 1853 American cookbook, with every stage repeated with the
 anchor off so the control sits beside each number. Across stage 2 the anchored model's Darwin
-perplexity moves 19.30 → 19.97 while the unanchored one's goes to 37.67, having read no Darwin
-either way. Recorded 2026-10-06 at λ = 1,000,000, on an earlier frame than this release's (the
-one-pass supplement), on one RTX 3090 with the self-generated artifact at the recorded frame (2,500
-documents × 2,048 tokens, K = 32) and the supplement on; one seed, one run per cell.
-35.5 minutes of training and tables on that card once the artifact is in the store, and it
-downloads what it needs and needs no API key.
+perplexity moves 17.32 → 18.55 while the unanchored one's goes to 38.33, having read no Darwin
+either way. Recorded 2026-10-11 on this release's frame (λ = 160,000, and 480,000 at stage 2), on
+one RTX 3090 with the self-generated artifact at the recorded frame (2,500 documents × 2,048
+tokens, K = 32) and the supplement on; one seed, one run per cell. 40.4 minutes of training and
+tables on that card once the artifact is in the store, and it downloads what it needs and needs no
+API key.
 
 A second notebook is optional and continues from the workspace the first leaves behind:
 [`examples/what_the_anchor_does.ipynb`](https://github.com/sparkdoc/lfa-anchoring/blob/main/examples/what_the_anchor_does.ipynb)
 re-runs each control at its own best epoch count, so the gaps above can be split into what is
 dose and what is anchor — at its own dose each control fits its new domain more closely than the
 anchored run and keeps less of the rest — and then puts the three models to fixed probes, whose
-answers, at this scale, split: on the first ten the control's answer is the better one five times
-(twice on a general question) and the anchored model's once, and on the eight transfer probes the
-anchored model's is the nearer to the question on all three adjacent ones and the nearer to the base
-model's on two of the three inward ones; the other three do not separate the arms.
+answers, at this scale, split: on the first ten the anchored model's answer is the better one twice
+(once on a general question) and the control's never, though the control's cookery answers carry
+more of the book's voice; on the eight transfer probes the control's is the better on three (two
+adjacent questions and one inward) and the anchored model's on two (one adjacent question, and
+`N2`, where the stage-2 control puts Tokyo's 10 million in Japan); the other three do not separate
+the arms.
 
 ## Documentation
 

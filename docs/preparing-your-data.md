@@ -273,8 +273,7 @@ many as the fraction asks for. It shuffles the file's pairs under the run's `see
 42), as the research mixer does, then takes pairs from the start of that order until they are 0.13
 of the training tokens; the rest are not used by that run. The file is written passage by
 passage, so without the shuffle a run would mix only the first passages' pairs — which is what
-earlier builds did, the walkthrough's recorded runs and the format-drift diagnostic's arms
-included. The fraction is of tokens, so longer answers mean fewer pairs: on the Darwin text the
+earlier builds did, the format-drift diagnostic's arms included. The fraction is of tokens, so longer answers mean fewer pairs: on the Darwin text the
 one-pass writer's answers (191 characters on average) put 384 pairs in the mix, and this writer's
 (657 characters on average, 67 % with markdown) 162 of the 840 it wrote, all from the file's
 first 51 passages in 32 documents (the diagnostic above, unshuffled). Shuffled under seed 42, the
@@ -417,8 +416,9 @@ token cap ([above](#the-supplement)).
 Two passes of generation, once per corpus and writer: one for each 4,000-character passage of the
 training side (its questions), then one for each question kept (its answer), in batches of 16
 prompts. The answers are the larger part: about six per passage, each up to 1,024 tokens. On the
-walkthrough's Darwin text (265 passages, 1,235 questions, 840 pairs) it took 13 min 47 s on one
-RTX 3090 with Qwen3-0.6B (2026-10-07; timed from the first logged batch of questions to the
-closing `supplement:` line, so the model load and that first batch are outside it, with a second
-such run on the host's other card): about 1.5 min of questions and 12 min of answers. [faq.md](faq.md#how-long-does-self-generation-take) has
+walkthrough's Darwin text (its training side under seed 43: 263 passages, 1,228 questions, 862
+pairs) it took 13 min 48 s on one RTX 3090 with Qwen3-0.6B (2026-10-09; timed from the first
+logged batch of questions to the closing `supplement:` line, so the model load and that first
+batch are outside it, with a training run on the host's other card): about 1.5 min of questions
+and 12.3 min of answers. [faq.md](faq.md#how-long-does-self-generation-take) has
 the other timed pieces.
