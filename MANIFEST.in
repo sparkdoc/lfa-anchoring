@@ -3,7 +3,7 @@
 include LICENSE
 include README.md
 include RELEASING.md
-include constraints-tested.txt
+include constraints.txt
 recursive-include lfa/recipes *.yaml
 include lfa/artifact/published.json
 recursive-include docs *.md

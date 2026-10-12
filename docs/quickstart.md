@@ -19,7 +19,7 @@ lfa fuse     --workspace runs/world_history
 ```bash
 git clone https://github.com/sparkdoc/lfa-anchoring
 cd lfa-anchoring
-pip install -c constraints-tested.txt -e .     # '.[html]' / '.[pdf]' for those formats, '.[dev]' for the tests
+pip install -c constraints.txt -e .     # '.[html]' / '.[pdf]' for those formats, '.[dev]' for the tests
 ```
 
 Install `'.[html]'` or `'.[pdf]'` instead of `.` if your documents are HTML or PDF (both:
@@ -35,10 +35,10 @@ Python 3.X on Debian and Ubuntu, and `build-essential`) has no `Python.h`, while
 conda-managed interpreter ships its own headers; the warning names the package for the Python it
 runs under. `LFA_SKIP_TOOLCHAIN_CHECK=1` silences the warning.
 
-The versions this was built and tested against are pinned in
-[`constraints-tested.txt`](../constraints-tested.txt) (torch 2.10.0+cu128, transformers 4.57.6,
-accelerate 1.14.0, peft 0.18.1) — nothing here has been run below them, and nothing above them
-either, so the install line's `-c constraints-tested.txt` holds to exactly the tested stack. The
+The versions this was built and tested against are pinned in [`constraints.txt`](../constraints.txt)
+(torch 2.10.0+cu128, transformers 4.57.6, accelerate 1.14.0, peft 0.18.1) — nothing here has been
+run below them, and nothing above them
+either, so the install line's `-c constraints.txt` holds to exactly the tested stack. The
 package itself accepts `transformers>=4.56,<5` and `peft>=0.18,<1`; the transformers floor is
 where `from_pretrained` learned the `dtype=` spelling this package loads with, and below it a
 model would load in the checkpoint's own dtype without saying so. On Python, CI runs the default test

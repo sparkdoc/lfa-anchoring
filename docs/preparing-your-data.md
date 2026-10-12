@@ -16,8 +16,8 @@ document into `--out`:
 
 * `.txt` and `.md` pass straight through;
 * `.html` / `.htm` need the `[html]` extra (from the checkout, `pip install -c
-  constraints-tested.txt -e '.[html]'`);
-* `.pdf` needs the `[pdf]` extra (`pip install -c constraints-tested.txt -e '.[pdf]'`).
+  constraints.txt -e '.[html]'`);
+* `.pdf` needs the `[pdf]` extra (`pip install -c constraints.txt -e '.[pdf]'`).
 
 A missing extra is refused, naming the file and the extra, rather than skipped: a corpus is never
 quietly half-prepared.

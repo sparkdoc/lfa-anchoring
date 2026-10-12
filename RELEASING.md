@@ -50,7 +50,7 @@ python -m build            # sdist + wheel
 ```
 
 Check what the sdist carries (`MANIFEST.in` governs it): `lfa/`, `docs/`, `examples/`, `tests/`,
-`LICENSE`, `README.md`, `RELEASING.md`, `constraints-tested.txt`, counted with
+`LICENSE`, `README.md`, `RELEASING.md`, `constraints.txt`, counted with
 `tar -tzf dist/*.tar.gz | grep -v '/$' | wc -l`. ✅ 2026-09-08 at 0.1.0: 73 files, 240 KiB; files
 have been added and removed since, so re-measure rather than trusting the figure.
 
@@ -67,7 +67,7 @@ absolute links. The metadata should read `License-Expression: Apache-2.0` with
 
 ```bash
 python -m venv /tmp/lfa-release
-/tmp/lfa-release/bin/pip install -c constraints-tested.txt dist/lfa_anchoring-0.2.0-*.whl
+/tmp/lfa-release/bin/pip install -c constraints.txt dist/lfa_anchoring-0.2.0-*.whl
 /tmp/lfa-release/bin/lfa --help
 (cd /tmp && /tmp/lfa-release/bin/python -m lfa.examples.quickstart --help)   # the wheel ships these
 ```
@@ -75,7 +75,7 @@ python -m venv /tmp/lfa-release
 Run the last line outside the checkout: `-m` puts the working directory first on `sys.path`, so
 from the checkout the source tree's `lfa/` (which has no `examples` package) shadows the wheel's.
 
-**Install with `-c constraints-tested.txt`**, which is what the README and the quickstart tell a
+**Install with `-c constraints.txt`**, which is what the README and the quickstart tell a
 user to do. Without it pip resolves the newest torch and peft it can, and the numbers in
 `docs/verification.md` stop holding: that harness is exact by design, so a minor version change
 moves it. ✅ 2026-09-08: an unconstrained venv (torch 2.14.0, peft 0.20.0) failed the extension's
@@ -119,6 +119,14 @@ Push the tag, and publish the package release with the sdist and the wheel.
 Newest first. A release that changes what a run computes says so in its first sentence; one that
 does not says that too, because "nothing moved" is the claim a reader most needs to be able to
 trust.
+
+### Unreleased
+
+**No number moves.**
+
+* **`constraints-tested.txt` is renamed `constraints.txt`**, the conventional name for a pip
+  constraints file; the install lines read `pip install -c constraints.txt -e .`. Its pins are
+  unchanged; a comment header now says what they are.
 
 ### 0.2.0
 
@@ -385,6 +393,6 @@ Qwen3-0.6B recipe, and the two example notebooks. Rehearsed against `docs/verifi
 | | how to verify |
 |---|---|
 | `license = "Apache-2.0"` + `license-files` (PEP 639), `setuptools>=77` | the wheel's `METADATA` says `License-Expression: Apache-2.0` |
-| `MANIFEST.in`, including `constraints-tested.txt` | `tar tzf dist/*.tar.gz` |
+| `MANIFEST.in`, including `constraints.txt` | `tar tzf dist/*.tar.gz` |
 | `LICENSE` is the canonical Apache 2.0 text | the `diff` in step 0 |
 | the `[html]` extra installed in the dev venv | `pytest -q -rs` shows no `needs the [html] extra` skip |

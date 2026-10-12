@@ -9,7 +9,7 @@ these).
 ```bash
 git clone https://github.com/sparkdoc/lfa-anchoring
 cd lfa-anchoring
-pip install -c constraints-tested.txt -e '.[dev,html]'
+pip install -c constraints.txt -e '.[dev,html]'
 ```
 
 `[html]` belongs in a development install: without it one prepare-domain test skips instead of

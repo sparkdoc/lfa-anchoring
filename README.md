@@ -25,7 +25,7 @@ documents. Everything runs locally on one CUDA card: no judge, no API key.
 ```bash
 git clone https://github.com/sparkdoc/lfa-anchoring
 cd lfa-anchoring
-pip install -c constraints-tested.txt -e .     # '.[html]' / '.[pdf]' for those formats, '.[dev]' for the tests
+pip install -c constraints.txt -e .     # '.[html]' / '.[pdf]' for those formats, '.[dev]' for the tests
 ```
 
 Needs Python ≥ 3.11 and a CUDA card; the install takes a few minutes and a few GB. The constraints
@@ -236,8 +236,7 @@ the arms.
 
 ## Tests
 
-From the checkout, with the test tools installed (`pip install -c constraints-tested.txt -e
-'.[dev,html]'`):
+From the checkout, with the test tools installed (`pip install -c constraints.txt -e '.[dev,html]'`):
 
 ```bash
 pytest -q                                    # no GPU, no corpus, no network

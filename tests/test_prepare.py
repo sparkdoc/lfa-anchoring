@@ -169,7 +169,7 @@ def test_a_missing_extra_is_a_refusal_rather_than_a_traceback(tmp_path, monkeypa
     page = tmp_path / "page.html"
     page.write_text("<html><body><p>anchoring</p></body></html>", encoding="utf-8")
 
-    hint = r"pip install -c constraints-tested\.txt -e '\.\[html\]'"
+    hint = r"pip install -c constraints\.txt -e '\.\[html\]'"
     with pytest.raises(MissingExtra, match=hint) as refusal:
         extract_html(page)
     assert isinstance(refusal.value, ImportError)             # a caller's `except ImportError`

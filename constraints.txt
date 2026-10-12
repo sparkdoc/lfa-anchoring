@@ -1,0 +1,7 @@
+# The exact versions this release was tested with (the CPU fast tier, the GPU tier and the
+# notebooks). Use it as a pip constraints file, as the README's install line does:
+#   pip install -c constraints.txt -e .
+torch==2.10.0
+transformers==4.57.6
+accelerate==1.14.0
+peft==0.18.1

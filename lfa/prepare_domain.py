@@ -21,7 +21,7 @@ paragraph boundaries (:func:`split_into_documents`). A corpus that would still h
 documents for a held-out split is warned about -- or, under ``require_held_out``, refused before
 anything is written -- with that fix named.
 
-HTML and PDF support are optional extras (``pip install -c constraints-tested.txt -e '.[html]'``
+HTML and PDF support are optional extras (``pip install -c constraints.txt -e '.[html]'``
 / ``'.[pdf]'`` in the lfa-anchoring checkout); a missing one raises :class:`MissingExtra` naming
 the extra rather than silently skipping the files, so a corpus is never quietly half-prepared.
 """
@@ -95,7 +95,7 @@ def extract_html(path: Path) -> str:
     except ImportError as exc:
         raise MissingExtra(
             f"Reading {path.name} needs BeautifulSoup and markdownify: "
-            "pip install -c constraints-tested.txt -e '.[html]' in your lfa-anchoring checkout"
+            "pip install -c constraints.txt -e '.[html]' in your lfa-anchoring checkout"
         ) from exc
 
     soup = BeautifulSoup(path.read_text(encoding="utf-8", errors="replace"), "html.parser")
@@ -119,7 +119,7 @@ def make_pdf_converter():
         from marker.models import create_model_dict
     except ImportError as exc:
         raise MissingExtra(
-            "Reading PDFs needs marker: pip install -c constraints-tested.txt -e '.[pdf]' in your "
+            "Reading PDFs needs marker: pip install -c constraints.txt -e '.[pdf]' in your "
             "lfa-anchoring checkout"
         ) from exc
 

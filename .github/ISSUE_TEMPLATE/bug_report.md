@@ -21,7 +21,7 @@ labels: bug
 **Environment**
 
 - lfa-anchoring version or commit (`lfa --version`, or `git log --oneline -1` in the checkout):
-- installed with `-c constraints-tested.txt`? (yes / no):
+- installed with `-c constraints.txt`? (yes / no):
 - Python (`python --version`):
 - torch and CUDA (`python -c "import torch; print(torch.__version__, torch.version.cuda)"`):
 - GPU(s) and memory (`nvidia-smi --query-gpu=name,memory.total --format=csv`):
