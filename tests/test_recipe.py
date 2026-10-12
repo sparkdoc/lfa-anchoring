@@ -46,8 +46,8 @@ SHIPPED_1_7B = dict(SHIPPED, name="qwen3-1.7b", model_id="Qwen/Qwen3-1.7B",
 
 
 def test_the_qwen3_1_7b_recipe_is_its_calibrated_operating_point():
-    """lambda 160,000 was read on this model; every other value, the 3x stage-2 multiplier
-    included, is the 0.6B recipe's frame."""
+    """lambda 160,000 was read on this model, and the 3x stage-2 multiplier re-read on it; every
+    other value is the 0.6B recipe's frame."""
     assert dataclasses.asdict(Recipe.load("qwen3-1.7b")) == SHIPPED_1_7B
 
 

@@ -5,7 +5,8 @@
 # both site families with mu = 0.05 as the uniform weight backstop, n = 16 anchor samples per step,
 # the anchor's layer schedule decaying to 0.1 of layer 0 on a cosine. Adam at 3e-4, batch 6 x 512
 # tokens, 50 warmup steps then cosine decay to zero over the epochs trained. Fifteen epochs
-# over the walkthrough's Darwin text (about 189 k tokens) took about 25 minutes on one 24 GB card.
+# over the walkthrough's Darwin text (about 189 k tokens) took about 19.5 minutes of training on one
+# 24 GB card (this release's frame, the supplement already written).
 #
 # How lambda was chosen (Qwen3-0.6B; its self-generated artifact at the recorded frame; the
 # Darwin text of the two-domain walkthrough, about 189 k training tokens an epoch, with the

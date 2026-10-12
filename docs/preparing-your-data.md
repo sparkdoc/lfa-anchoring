@@ -351,9 +351,9 @@ and how many passages, questions and pairs there were, with what it rejected cou
 
 The same counts end the log of a write; no pair is printed. How many are dropped depends on the
 text. On the walkthrough's Darwin text (Qwen3-0.6B, the format-drift diagnostic's run of this
-writer) `refers_to_source` dropped 750: 355 of the 1,591 questions parsed (22.3 %), then 395 of
-the 1,235 answers (32.0 %) — answers to this prompt often cite the passage; one duplicate
-went, nothing else, and 840 pairs were written. That run used the filter before its "of"/"from"
+writer) `refers_to_source` dropped 750, counting questions and answers together, with 1,235
+questions answered (answers to this prompt often cite the passage); one duplicate went, nothing
+else, and 840 pairs were written. That run used the filter before its "of"/"from"
 guards and its extended "the text" patterns; the guards change no verdict on the diagnostic's
 recorded answers, and the extended patterns would drop 2 more of those 840 pairs (two questions
 ending "in the context of the text?").

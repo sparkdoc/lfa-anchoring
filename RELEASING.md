@@ -237,7 +237,7 @@ supplement); rank 4, one seed (the regenerate route).
   question-and-answer template. A question or answer that cites its source ("according to the
   passage", "the text states", "the text also notes", "in the context of the text"; not "in the
   text of the treaty" or "in the passage from Genesis 1") is dropped (`refers_to_source`; on the
-  Darwin text 750, 355 of the 1,591 questions and 395 of the 1,235 answers), as is an answer that
+  Darwin text 750 over questions and answers together), as is an answer that
   had not ended its turn at the 1,024-token cap (`truncated_answer`), and `leaked_json` now checks
   an answer only for the writer's whole JSON shape; `long_answer` (a 100,000-character guard the
   token cap made dead) is gone. The question parser reads an array to its own closing bracket,
